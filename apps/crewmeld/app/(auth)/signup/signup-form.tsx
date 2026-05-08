@@ -54,6 +54,11 @@ function SignupFormContent({
   const [passwordErrors, setPasswordErrors] = useState<string[]>([])
   const [showValidationError, setShowValidationError] = useState(false)
 
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [confirmPasswordErrors, setConfirmPasswordErrors] = useState<string[]>([])
+  const [showConfirmValidationError, setShowConfirmValidationError] = useState(false)
+
   const [email, setEmail] = useState('')
   const [emailError, setEmailError] = useState('')
   const [emailErrors, setEmailErrors] = useState<string[]>([])
@@ -108,6 +113,12 @@ function SignupFormContent({
     return errors
   }
 
+  const validateConfirmPassword = (pw: string, confirm: string): string[] => {
+    if (!confirm) return [t('auth.enterPassword')]
+    if (pw !== confirm) return [t('auth.passwordMismatch')]
+    return []
+  }
+
   const validateName = (val: string): string[] => {
     if (!val || typeof val !== 'string') return [t('auth.nameRequired')]
     const trimmed = val.trim()
@@ -122,14 +133,14 @@ function SignupFormContent({
     const v = e.target.value
     setName(v)
     setNameErrors(validateName(v))
-    setShowNameValidationError(false)
+    setShowNameValidationError(true)
   }
 
   const handleEmailChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = e.target.value
     setEmail(v)
     setEmailErrors(validateEmailField(v))
-    setShowEmailValidationError(false)
+    setShowEmailValidationError(true)
     if (emailError) setEmailError('')
   }
 
@@ -137,7 +148,18 @@ function SignupFormContent({
     const v = e.target.value
     setPassword(v)
     setPasswordErrors(validatePassword(v))
-    setShowValidationError(false)
+    setShowValidationError(true)
+    if (confirmPassword) {
+      setConfirmPasswordErrors(validateConfirmPassword(v, confirmPassword))
+      setShowConfirmValidationError(true)
+    }
+  }
+
+  const handleConfirmPasswordChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const v = e.target.value
+    setConfirmPassword(v)
+    setConfirmPasswordErrors(validateConfirmPassword(password, v))
+    setShowConfirmValidationError(true)
   }
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -152,6 +174,7 @@ function SignupFormContent({
     const nameErrs = validateName(trimmedName)
     const emailErrs = validateEmailField(emailValue)
     const pwErrs = validatePassword(passwordValue)
+    const confirmErrs = validateConfirmPassword(passwordValue, confirmPassword)
 
     setNameErrors(nameErrs)
     setShowNameValidationError(nameErrs.length > 0)
@@ -159,8 +182,15 @@ function SignupFormContent({
     setShowEmailValidationError(emailErrs.length > 0)
     setPasswordErrors(pwErrs)
     setShowValidationError(pwErrs.length > 0)
+    setConfirmPasswordErrors(confirmErrs)
+    setShowConfirmValidationError(confirmErrs.length > 0)
 
-    if (nameErrs.length > 0 || emailErrs.length > 0 || pwErrs.length > 0) {
+    if (
+      nameErrs.length > 0 ||
+      emailErrs.length > 0 ||
+      pwErrs.length > 0 ||
+      confirmErrs.length > 0
+    ) {
       setIsLoading(false)
       return
     }
@@ -362,6 +392,45 @@ function SignupFormContent({
             {showValidationError && passwordErrors.length > 0 && (
               <div className='mt-1 space-y-1 text-red-400 text-xs'>
                 {passwordErrors.map((err, i) => (
+                  <p key={i}>{err}</p>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Confirm Password */}
+          <div className='space-y-2'>
+            <Label htmlFor='confirmPassword'>{t('auth.confirmPassword')}</Label>
+            <div className='relative'>
+              <Input
+                id='confirmPassword'
+                name='confirmPassword'
+                type={showConfirmPassword ? 'text' : 'password'}
+                autoCapitalize='none'
+                autoComplete='new-password'
+                placeholder={t('auth.confirmPasswordPlaceholder')}
+                autoCorrect='off'
+                value={confirmPassword}
+                onChange={handleConfirmPasswordChange}
+                className={cn(
+                  'rounded-[10px] pr-10 shadow-sm transition-colors focus:border-gray-400 focus:ring-2 focus:ring-gray-100',
+                  showConfirmValidationError &&
+                    confirmPasswordErrors.length > 0 &&
+                    'border-red-500 focus:border-red-500 focus:ring-red-100 focus-visible:ring-red-500'
+                )}
+              />
+              <button
+                type='button'
+                onClick={() => setShowConfirmPassword((v) => !v)}
+                className='-translate-y-1/2 absolute top-1/2 right-3 text-gray-500 transition hover:text-gray-700'
+                aria-label={showConfirmPassword ? t('auth.hidePassword') : t('auth.showPassword')}
+              >
+                {showConfirmPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
+            </div>
+            {showConfirmValidationError && confirmPasswordErrors.length > 0 && (
+              <div className='mt-1 space-y-1 text-red-400 text-xs'>
+                {confirmPasswordErrors.map((err, i) => (
                   <p key={i}>{err}</p>
                 ))}
               </div>
