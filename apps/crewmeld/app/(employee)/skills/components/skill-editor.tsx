@@ -103,13 +103,16 @@ export function ToolEditor({
       for (const [key, prop] of Object.entries(skill.parameters.properties)) {
         // Secret params injected via env vars, not as input params
         if (prop.secret) continue
-        // Prefer saved preset values
+        // Connection-bound params (envName set) intentionally start empty so the
+        // server's env-fill (e.g. CONN_HOST) wins. Preset values for these are
+        // stale generation-time placeholders ("localhost", "3306", etc.) and
+        // shouldn't shadow real connection config when the user hits Run.
+        if (prop.envName) {
+          initial[key] = ''
+          continue
+        }
         if (skill.presetParams?.[key] !== undefined && skill.presetParams[key] !== null) {
           initial[key] = String(skill.presetParams[key])
-        } else if (prop.type === 'number') {
-          initial[key] = '0'
-        } else if (prop.type === 'boolean') {
-          initial[key] = 'true'
         } else {
           initial[key] = ''
         }
@@ -242,12 +245,23 @@ export function ToolEditor({
     setRunning(true)
     setResult(null)
 
+    // Only forward params the user actually filled in. The form pre-fills empty
+    // strings / "0" placeholders for untouched fields; sending those would shadow
+    // env-injected defaults (e.g. CONN_HOST) on the server side.
     const execParams: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(params)) {
+      const trimmed = typeof value === 'string' ? value.trim() : value
+      if (trimmed === '' || trimmed === undefined || trimmed === null) continue
       const prop = skill.parameters?.properties?.[key]
-      if (prop?.type === 'number') execParams[key] = Number(value) || 0
-      else if (prop?.type === 'boolean') execParams[key] = value === 'true'
-      else execParams[key] = value
+      if (prop?.type === 'number') {
+        const n = Number(trimmed)
+        if (!Number.isFinite(n)) continue
+        execParams[key] = n
+      } else if (prop?.type === 'boolean') {
+        execParams[key] = trimmed === 'true'
+      } else {
+        execParams[key] = trimmed
+      }
     }
 
     // Convert env vars array to key-value object
@@ -270,6 +284,11 @@ export function ToolEditor({
           timeout: 30000,
           envVars: envVarsMap,
           language: skill.language ?? 'javascript',
+          // Send schema + presets so the server can fill connection-bound params
+          // (host/password/etc.) from process.env when the user form omits them.
+          parameters: skill.parameters,
+          presetParams: skill.presetParams,
+          ...(selectedConnId ? { connectionId: selectedConnId } : {}),
         }),
       })
       const data = await res.json()
@@ -284,7 +303,7 @@ export function ToolEditor({
       setRunning(false)
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
     }
-  }, [skill, params, envVars])
+  }, [skill, params, envVars, selectedConnId])
 
   const handleSave = useCallback(() => {
     const validEnvVars = envVars.filter(
@@ -355,7 +374,7 @@ export function ToolEditor({
                   {prop.type === 'boolean' ? (
                     <select
                       id={`skill-editor-param-${key}`}
-                      value={params[key] ?? 'true'}
+                      value={params[key] || 'true'}
                       onChange={(e) => setParams((prev) => ({ ...prev, [key]: e.target.value }))}
                       className='w-full rounded-lg border border-gray-700 bg-gray-900 px-3 py-2 text-sm text-white focus:border-violet-400 focus:outline-none'
                       data-testid={`dialog:skill-editor:select:${key}`}

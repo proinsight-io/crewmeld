@@ -2,6 +2,12 @@ import http from 'http'
 import https from 'https'
 import { createLogger } from '@crewmeld/logger'
 import type { SkillLanguage, SkillPackage } from '@/app/(employee)/skills/types'
+import {
+  buildJsResolvePrelude,
+  buildPyResolvePrelude,
+  extractParamResolution,
+  type ParamResolution,
+} from '@/lib/tools/param-resolution'
 import { allocateFromPool, findAssignedPod, isWarmPoolEnabled, recycleToPool } from './warm-pool'
 
 const logger = createLogger('K8sDeploySkill')
@@ -111,6 +117,26 @@ const toolCode = readFileSync('/app/tool.js', 'utf-8');
 
 const SAFE_IDENT = /^[\\p{L}_$][\\p{L}\\p{N}_$]*$/u;
 
+// Optional defaults.json: { preset, envMap, types } — see deploy-skill.ts.
+// Merged into request params so secret/connection params (e.g. CONN_HOST) reach
+// the tool code even when the caller omits them in the request body.
+let __defaults__ = { preset: {}, envMap: {}, types: {} };
+try { __defaults__ = JSON.parse(readFileSync('/app/defaults.json', 'utf-8')); } catch {}
+const __coerce__ = (v, t) => {
+  if (v === undefined || v === null || v === '') return v;
+  if (t === 'number') { const n = Number(v); return Number.isFinite(n) ? n : v; }
+  if (t === 'boolean') return v === true || v === 'true' || v === 1 || v === '1';
+  return v;
+};
+const __presetCoerced__ = {};
+for (const [__k__, __v__] of Object.entries(__defaults__.preset || {})) __presetCoerced__[__k__] = __coerce__(__v__, (__defaults__.types || {})[__k__]);
+const __envFilled__ = {};
+for (const [__k__, __envName__] of Object.entries(__defaults__.envMap || {})) {
+  const __ev__ = process.env[__envName__];
+  if (__ev__ !== undefined && __ev__ !== '') __envFilled__[__k__] = __coerce__(__ev__, (__defaults__.types || {})[__k__]);
+}
+const __baseParams__ = Object.assign({}, __presetCoerced__, __envFilled__);
+
 const server = createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -130,17 +156,19 @@ const server = createServer(async (req, res) => {
 
   let body = '';
   for await (const chunk of req) body += chunk;
-  let params = {};
-  try { params = JSON.parse(body); } catch {}
+  let bodyParams = {};
+  try { bodyParams = JSON.parse(body); } catch {}
 
-  const paramKeys = Object.keys(params);
-  for (const key of paramKeys) {
+  // Validate body keys before merge (preset/env keys came through generation-time validation)
+  for (const key of Object.keys(bodyParams)) {
     if (!SAFE_IDENT.test(key)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: false, error: 'Invalid param name: ' + key }));
       return;
     }
   }
+  const params = Object.assign({}, __baseParams__, bodyParams);
+  const paramKeys = Object.keys(params);
 
   const paramLines = paramKeys
     .map(k => 'const ' + k + ' = __params__[' + JSON.stringify(k) + '];')
@@ -590,7 +618,7 @@ function extractJsDeps(code: string): string[] {
 }
 
 /** Wrap Python tool code as standalone executable script (read params from env vars, output JSON to stdout) */
-function wrapPyToolCode(code: string): string {
+function wrapPyToolCode(code: string, resolution: ParamResolution): string {
   const lines = code.split('\n')
   const imports: string[] = []
   const body: string[] = []
@@ -606,7 +634,8 @@ function wrapPyToolCode(code: string): string {
     'import json, os, sys',
     '',
     '__params__ = json.loads(os.environ.get("__TOOL_PARAMS__", "{}"))',
-    'for __k__, __v__ in __params__.items(): globals()[__k__] = __v__',
+    buildPyResolvePrelude(resolution),
+    'for __k__, __v__ in __merged__.items(): globals()[__k__] = __v__',
     '',
     'try:',
     ...body.map((l) => `    ${l}`),
@@ -649,9 +678,16 @@ function extractPyDeps(code: string): string[] {
 
 /**
  * Wrap tool code as ESM module: extract top-level imports, wrap remaining code in export async function run(params)
- * paramNames from tool parameters schema, for destructuring params as local variables
+ * paramNames from tool parameters schema, for destructuring params as local variables.
+ *
+ * Resolution metadata is inlined as JS literals so the deployed pod can fill missing
+ * params from process.env (e.g. CONN_HOST) and presetParams without external files.
  */
-function wrapAsEsmModule(code: string, paramNames: string[]): string {
+function wrapAsEsmModule(
+  code: string,
+  paramNames: string[],
+  resolution: ParamResolution
+): string {
   const lines = code.split('\n')
   const imports: string[] = []
   const body: string[] = []
@@ -662,12 +698,14 @@ function wrapAsEsmModule(code: string, paramNames: string[]): string {
       body.push(line)
     }
   }
-  // Destructure params as local variables
-  const destructure = paramNames.length > 0 ? `  const { ${paramNames.join(', ')} } = params;` : ''
+  // Destructure params (from the merged object) as local variables
+  const destructure =
+    paramNames.length > 0 ? `  const { ${paramNames.join(', ')} } = __merged__;` : ''
   return [
     ...imports,
     '',
     'export async function run(params) {',
+    buildJsResolvePrelude(resolution, '  '),
     destructure,
     ...body.map((l) => `  ${l}`),
     '}',
@@ -682,6 +720,8 @@ function buildConfigMap(skill: SkillPackage) {
   const jsDeps = isJs ? extractJsDeps(skill.code ?? '') : []
   const hasImports = jsDeps.length > 0 || /\bimport\s/.test(skill.code ?? '')
 
+  const resolution = extractParamResolution(skill.parameters, skill.presetParams)
+
   let data: Record<string, string>
 
   if (isJs) {
@@ -691,7 +731,8 @@ function buildConfigMap(skill: SkillPackage) {
         'server.mjs': JS_SERVER_MODULE,
         'tool.mjs': wrapAsEsmModule(
           skill.code ?? '',
-          Object.keys((skill.parameters?.properties as Record<string, unknown>) ?? {})
+          Object.keys((skill.parameters?.properties as Record<string, unknown>) ?? {}),
+          resolution
         ),
         ...(jsDeps.length > 0
           ? {
@@ -703,16 +744,18 @@ function buildConfigMap(skill: SkillPackage) {
           : {}),
       }
     } else {
-      // Simple mode: new Function sandbox execution
+      // Simple mode: new Function sandbox execution. defaults.json carries the
+      // preset/envMap/types bundle; server.mjs reads it once at boot to merge.
       data = {
         'server.mjs': JS_SERVER_SIMPLE,
         'tool.js': skill.code ?? '',
+        'defaults.json': JSON.stringify(resolution),
       }
     }
   } else {
     data = {
       'server.py': PY_SERVER_CODE,
-      'tool.py': wrapPyToolCode(skill.code ?? ''),
+      'tool.py': wrapPyToolCode(skill.code ?? '', resolution),
       'requirements.txt': extractPyDeps(skill.code ?? '').join('\n'),
     }
   }

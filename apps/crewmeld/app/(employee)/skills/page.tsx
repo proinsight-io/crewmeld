@@ -1435,7 +1435,9 @@ export default function SkillsPage() {
         preloadedConnections={preloadedConnections}
         importProjectContext={importProjectContext}
         onCreated={async (tool) => {
-          // Separate secret from parameters: secret -> envVars, non-secret -> input params
+          // Separate secret from parameters: secret -> envVars + keep in properties
+          // (so server-side wrap can still destructure `password` etc. from __merged__).
+          // The `secret:true` flag keeps the editor form from prompting for them.
           const secretEnvVars: Array<{ name: string; value: string }> = []
           let cleanedParameters = tool.parameters
           if (tool.parameters?.properties) {
@@ -1443,12 +1445,18 @@ export default function SkillsPage() {
             const normalRequired: string[] = []
             for (const [key, prop] of Object.entries(tool.parameters.properties)) {
               if (prop.secret) {
-                const envName = skillEnvName(key)
+                // Prefer the param's mapped envName (e.g. CONN_PASSWORD when bound to
+                // a connection). Fall back to CREWMELD_<KEY> for standalone secrets.
+                const envName = prop.envName ?? skillEnvName(key)
                 const testVal = tool.testParams?.[key]
                 const apiVal =
                   apiKeys.find((k) => k.name.toLowerCase().includes(key.toLowerCase()) && k.value)
                     ?.value ?? apiKeys.find((k) => k.name && k.value)?.value
                 secretEnvVars.push({ name: envName, value: testVal || apiVal || '' })
+                // Ensure properties retains the secret entry (with its envName) so
+                // the deployed pod can fall back to env at runtime — but DO NOT
+                // mark it as required (secret values come from env, not body).
+                normalProps[key] = { ...prop, envName }
               } else {
                 normalProps[key] = prop
                 if (tool.parameters!.required?.includes(key)) {
