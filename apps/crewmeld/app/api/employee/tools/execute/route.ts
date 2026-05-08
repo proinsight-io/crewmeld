@@ -12,6 +12,12 @@ import { apiAuthErr, apiErr, apiOk } from '@/lib/api/response'
 import { withAudit } from '@/lib/audit/with-audit'
 import { requirePermission } from '@/lib/auth/rbac/check-permission'
 import { resolveConnectionEnvVars } from '@/lib/connectors/resolve-conn-env'
+import {
+  buildJsResolvePrelude,
+  buildPyResolvePrelude,
+  extractParamResolution,
+  type ParamResolution,
+} from '@/lib/tools/param-resolution'
 
 const logger = createLogger('ToolExecuteAPI')
 
@@ -26,6 +32,18 @@ function validatePackageNames(deps: string[]): void {
     }
   }
 }
+
+const IS_WINDOWS = process.platform === 'win32'
+
+/**
+ * On Windows, npm / pip / python are batch / CMD wrappers (npm.cmd, pip.cmd).
+ * Node's `execFile` doesn't auto-resolve those extensions and fails with
+ * `spawn npm ENOENT`. Setting `shell: true` lets the system shell resolve the
+ * command via PATHEXT. Args are package names already vetted by validatePackageNames.
+ */
+const WIN_SHELL_OPT: { shell: boolean } | Record<string, never> = IS_WINDOWS
+  ? { shell: true }
+  : {}
 
 // Whitelisted environment variable keys for child processes
 const SAFE_ENV_KEYS = [
@@ -98,6 +116,8 @@ async function _POST(request: NextRequest) {
       podEndpoint,
       instanceId,
       connectionId,
+      parameters,
+      presetParams,
     } = body as {
       code: string
       params: Record<string, unknown>
@@ -108,6 +128,10 @@ async function _POST(request: NextRequest) {
       instanceId?: string
       /** Connection ID passed directly (used during testing, takes priority over instanceId) */
       connectionId?: string
+      /** Tool parameter schema (with optional envName per property) for env merging */
+      parameters?: { properties?: Record<string, { type?: string; envName?: string }> }
+      /** Default values captured at publish time, used as fallback when caller omits them */
+      presetParams?: Record<string, string>
     }
 
     if (!code || typeof code !== 'string' || code.trim().length === 0) {
@@ -130,6 +154,12 @@ async function _POST(request: NextRequest) {
       const connEnv = await resolveConnectionEnvVars(resolvedConnId)
       mergedEnvVars = { ...connEnv, ...envVars }
     }
+    // CONN_* keys present in the merged env (whether sourced from connectionId
+    // resolution or already inlined in the request envVars). Used below to
+    // backfill envMap for legacy tools that have no envName saved.
+    const connEnvKeys = new Set(
+      Object.keys(mergedEnvVars).filter((k) => k.startsWith('CONN_'))
+    )
 
     const startTime = Date.now()
 
@@ -153,18 +183,45 @@ async function _POST(request: NextRequest) {
     let result: unknown
     let mode: string
 
+    const resolution = extractParamResolution(parameters, presetParams)
+
+    // Backfill envMap for legacy tools (saved before envName was populated):
+    // when a connection is resolved AND a parameter has no explicit envName but
+    // its (aliased) name matches a CONN_* key, synthesize the mapping. This lets
+    // existing MySQL tools work after just selecting a connection — no regen needed.
+    if (parameters?.properties && connEnvKeys.size > 0) {
+      const DB_PARAM_ALIASES: Record<string, string> = {
+        user: 'username',
+        pwd: 'password',
+        db: 'database',
+        dbName: 'database',
+        databaseName: 'database',
+      }
+      const camelToConn = (k: string) =>
+        `CONN_${k.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase()}`
+      for (const [k, p] of Object.entries(parameters.properties)) {
+        if (resolution.envMap[k]) continue
+        const canonical = DB_PARAM_ALIASES[k] ?? k
+        const candidate = camelToConn(canonical)
+        if (connEnvKeys.has(candidate)) {
+          resolution.envMap[k] = candidate
+          if (p?.type) resolution.types[k] = p.type
+        }
+      }
+    }
+
     if (isPython) {
       // Python tool: write temp file, execute via python subprocess
       mode = 'python'
-      result = await executeAsPython(code, params, mergedEnvVars, timeout)
+      result = await executeAsPython(code, params, mergedEnvVars, timeout, resolution)
     } else if (hasImport) {
       // JS module mode: write temp file, execute via node subprocess
       mode = 'module'
-      result = await executeAsModule(code, params, mergedEnvVars, timeout)
+      result = await executeAsModule(code, params, mergedEnvVars, timeout, resolution)
     } else {
       // JS simple mode: new Function sandbox execution
       mode = 'sandbox'
-      result = await executeInSandbox(code, params, mergedEnvVars, timeout)
+      result = await executeInSandbox(code, params, mergedEnvVars, timeout, resolution)
     }
 
     const executionTime = Date.now() - startTime
@@ -186,18 +243,29 @@ async function executeInSandbox(
   code: string,
   params: Record<string, unknown>,
   envVars: Record<string, string>,
-  timeout: number
+  timeout: number,
+  resolution: ParamResolution
 ): Promise<unknown> {
-  const paramKeys = Object.keys(params)
   const SAFE_IDENT = /^[\p{L}_$][\p{L}\p{N}_$]*$/u
-  for (const key of paramKeys) {
+  for (const key of Object.keys(params)) {
     if (!SAFE_IDENT.test(key)) {
       throw new Error(`Invalid parameter name: ${key}`)
     }
   }
+  // Destructure from __merged__ so preset/env values reach the user code even
+  // when the caller omits them in `params`. Union of body keys + resolution keys
+  // ensures connection-bound params (e.g. host) get a `const host = __merged__.host`
+  // line even if the request body only carried `sql`.
+  const allKeys = Array.from(
+    new Set([
+      ...Object.keys(params),
+      ...Object.keys(resolution.preset),
+      ...Object.keys(resolution.envMap),
+    ])
+  ).filter((k) => SAFE_IDENT.test(k))
 
-  const paramDestructuring = paramKeys
-    .map((key) => `const ${key} = __params__[${JSON.stringify(key)}];`)
+  const paramDestructuring = allKeys
+    .map((key) => `const ${key} = __merged__[${JSON.stringify(key)}];`)
     .join('\n')
 
   const envSetup =
@@ -208,6 +276,8 @@ async function executeInSandbox(
   const wrappedCode = `
     return (async () => {
       ${envSetup}
+      const params = __params__;
+${buildJsResolvePrelude(resolution, '      ')}
       ${paramDestructuring}
       ${code}
     })();
@@ -234,7 +304,8 @@ async function executeAsModule(
   code: string,
   params: Record<string, unknown>,
   envVars: Record<string, string>,
-  timeout: number
+  timeout: number,
+  resolution: ParamResolution
 ): Promise<unknown> {
   // Create temp directory
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crewmeld-tool-'))
@@ -261,16 +332,26 @@ async function executeAsModule(
     const pkgJson = isESM ? { type: 'module' } : {}
     await fs.writeFile(path.join(tmpDir, 'package.json'), JSON.stringify(pkgJson))
 
-    // Generate executable script
-    const paramKeys = Object.keys(params)
-    const paramLines = paramKeys
-      .map((k) => `const ${k} = __params__[${JSON.stringify(k)}];`)
+    // Destructure __merged__ (preset + env + body) so connection-bound params
+    // reach user code even when the caller only supplies a subset.
+    const SAFE_IDENT = /^[\p{L}_$][\p{L}\p{N}_$]*$/u
+    const allKeys = Array.from(
+      new Set([
+        ...Object.keys(params),
+        ...Object.keys(resolution.preset),
+        ...Object.keys(resolution.envMap),
+      ])
+    ).filter((k) => SAFE_IDENT.test(k))
+    const paramLines = allKeys
+      .map((k) => `const ${k} = __merged__[${JSON.stringify(k)}];`)
       .join('\n')
 
     const scriptLines = [
       ...(isESM ? imports : []),
       '',
       'const __params__ = JSON.parse(process.env.__TOOL_PARAMS__);',
+      'const params = __params__;',
+      buildJsResolvePrelude(resolution, ''),
       paramLines,
       '',
       '(async () => {',
@@ -338,6 +419,7 @@ async function executeAsModule(
           {
             cwd: tmpDir,
             timeout: Math.min(timeout, 60000),
+            ...WIN_SHELL_OPT,
           },
           (err) => {
             if (err) reject(new Error(`Dependency installation failed: ${err.message}`))
@@ -543,7 +625,8 @@ async function executeAsPython(
   code: string,
   params: Record<string, unknown>,
   envVars: Record<string, string>,
-  timeout: number
+  timeout: number,
+  resolution: ParamResolution
 ): Promise<unknown> {
   const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crewmeld-py-'))
 
@@ -578,6 +661,7 @@ async function executeAsPython(
             {
               cwd: tmpDir,
               timeout: Math.min(timeout, 60000),
+              ...WIN_SHELL_OPT,
             },
             (err) => {
               if (err) tryPip(cmds.slice(1))
@@ -594,10 +678,18 @@ async function executeAsPython(
       })
     }
 
-    // Generate Python script: inject params, execute tool code, output JSON result
-    const paramLines = Object.keys(params)
-      .map((k) => `${k} = __params__[${JSON.stringify(k)}]`)
-      .join('\n')
+    // Generate Python script: inject params, execute tool code, output JSON result.
+    // Bind from __merged__ (preset + env + body) so connection-bound params reach
+    // the user code even when only a subset is supplied in the request body.
+    const PY_IDENT = /^[A-Za-z_][A-Za-z0-9_]*$/
+    const allKeys = Array.from(
+      new Set([
+        ...Object.keys(params),
+        ...Object.keys(resolution.preset),
+        ...Object.keys(resolution.envMap),
+      ])
+    ).filter((k) => PY_IDENT.test(k))
+    const paramLines = allKeys.map((k) => `${k} = __merged__[${JSON.stringify(k)}]`).join('\n')
 
     const script = [
       'import json, os, sys',
@@ -614,6 +706,7 @@ async function executeAsPython(
       '    return str(obj)',
       '',
       '__params__ = json.loads(os.environ["__TOOL_PARAMS__"])',
+      buildPyResolvePrelude(resolution),
       paramLines,
       '',
       'try:',
@@ -643,6 +736,7 @@ async function executeAsPython(
               __TOOL_PARAMS__: JSON.stringify(params),
             } as unknown as NodeJS.ProcessEnv,
             maxBuffer: 10 * 1024 * 1024,
+            ...WIN_SHELL_OPT,
           },
           (err: Error | null, stdout: string, stderr: string) => {
             if (err && cmd === 'python') {
@@ -775,6 +869,7 @@ async function installDepsAndUpload(
             [...args, 'install', '--quiet', '--target', tmpDir, ...deps],
             {
               timeout: 120000,
+              ...WIN_SHELL_OPT,
             },
             (err) => {
               if (err) tryPip(cmds.slice(1))
@@ -803,7 +898,7 @@ async function installDepsAndUpload(
             'https://registry.npmmirror.com',
             ...deps,
           ],
-          { cwd: tmpDir, timeout: 120000 },
+          { cwd: tmpDir, timeout: 120000, ...WIN_SHELL_OPT },
           (err, _stdout, stderr) => {
             if (err)
               reject(new Error(`JS dependency installation failed: ${stderr || err.message}`))
@@ -822,6 +917,7 @@ async function installDepsAndUpload(
         {
           maxBuffer: 100 * 1024 * 1024, // 100MB
           encoding: 'buffer' as BufferEncoding,
+          ...WIN_SHELL_OPT,
         },
         (err, stdout) => {
           if (err) reject(new Error(`Failed to package dependencies: ${err.message}`))
