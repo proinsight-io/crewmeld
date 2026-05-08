@@ -33,7 +33,7 @@ import { cn } from '@/lib/core/utils/cn'
 import { useTranslation } from '@/hooks/use-translation'
 import { checkSecurity } from '../security-check'
 import type { GitHubProjectContext } from '../types'
-import { skillEnvName } from '../types'
+import { configKeyToEnvName, skillEnvName } from '../types'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -65,7 +65,10 @@ interface GeneratedTool {
   description: string
   parameters: {
     type: string
-    properties: Record<string, { type: string; description: string; secret?: boolean }>
+    properties: Record<
+      string,
+      { type: string; description: string; secret?: boolean; envName?: string }
+    >
     required?: string[]
   }
   code: string
@@ -242,6 +245,19 @@ function validateResultBasic(
   }
   if (typeof result === 'object' && !Array.isArray(result)) {
     const obj = result as Record<string, unknown>
+    // Tool self-reported failure (success:false). Surface error/message/error_message
+    // so we don't waste a round on LLM semantic validation for an obvious failure.
+    if (obj.success === false) {
+      const detail =
+        (obj.error as unknown) ||
+        (obj.message as unknown) ||
+        (obj.error_message as unknown) ||
+        (obj.errorMessage as unknown) ||
+        ''
+      return t('skills.generatorReturnError', {
+        error: String(detail).trim() || t('skills.generatorReturnSuccessFalse'),
+      })
+    }
     // Object with only error field -> API call failed
     if (obj.error && Object.keys(obj).length <= 2) {
       return t('skills.generatorReturnError', { error: String(obj.error) })
@@ -255,6 +271,41 @@ function validateResultBasic(
     return t('skills.generatorReturnEmptyArr')
   }
   return null
+}
+
+// DB driver imports we recognize as "this tool talks to a database".
+// Triggers a connection-required guard before running in the sandbox Pod, where
+// `localhost:3306` would otherwise resolve to the Pod itself, not the user's DB.
+const DB_DRIVER_PATTERNS: RegExp[] = [
+  /\b(?:from|import)\s+['"]mysql2?(?:\/[^'"]*)?['"]/,
+  /\b(?:from|import)\s+['"]pg(?:\/[^'"]*)?['"]/,
+  /\b(?:from|import)\s+['"]mongodb(?:\/[^'"]*)?['"]/,
+  /\b(?:from|import)\s+['"]mssql(?:\/[^'"]*)?['"]/,
+  /\b(?:from|import)\s+['"]oracledb(?:\/[^'"]*)?['"]/,
+  /\b(?:from|import)\s+['"]ioredis(?:\/[^'"]*)?['"]/,
+  /\brequire\s*\(\s*['"]mysql2?(?:\/[^'"]*)?['"]\s*\)/,
+  /\brequire\s*\(\s*['"]pg(?:\/[^'"]*)?['"]\s*\)/,
+  /\brequire\s*\(\s*['"]mongodb(?:\/[^'"]*)?['"]\s*\)/,
+  /\brequire\s*\(\s*['"]mssql(?:\/[^'"]*)?['"]\s*\)/,
+  /\brequire\s*\(\s*['"]oracledb(?:\/[^'"]*)?['"]\s*\)/,
+  /\brequire\s*\(\s*['"]ioredis(?:\/[^'"]*)?['"]\s*\)/,
+  // Python
+  /^\s*(?:from|import)\s+(?:pymysql|psycopg2|psycopg|pymongo|sqlalchemy|cx_Oracle|oracledb|redis)\b/m,
+  /^\s*(?:from|import)\s+mysql\.connector\b/m,
+]
+
+/** True when the tool code talks to a database (requires a real Connection at test time). */
+function isDatabaseTool(
+  code: string,
+  paramProperties: Record<string, { type?: string }> | undefined
+): boolean {
+  if (DB_DRIVER_PATTERNS.some((re) => re.test(code))) return true
+  // Fallback heuristic: parameters look like a DB connection (host + database/port)
+  const keys = new Set(Object.keys(paramProperties ?? {}).map((k) => k.toLowerCase()))
+  if (keys.has('host') && (keys.has('database') || keys.has('port') || keys.has('dbname'))) {
+    return true
+  }
+  return false
 }
 
 /** Detect if result is file type (supports MinIO download link and base64) */
@@ -350,6 +401,26 @@ export function AiToolGenerator({
   const [trialParams, setTrialParams] = useState<Record<string, string>>({})
   const [fixCount, setFixCount] = useState(0)
   const [regenCount, setRegenCount] = useState(0)
+  // Refs mirror fixCount/regenCount so MAX_FIX/MAX_REGEN guards read the latest
+  // value inside the recursive runPipeline → sendFixRequest chain (avoid stale closures).
+  const fixCountRef = useRef(0)
+  const regenCountRef = useRef(0)
+  const bumpFixCount = useCallback(() => {
+    fixCountRef.current += 1
+    setFixCount(fixCountRef.current)
+  }, [])
+  const resetFixCount = useCallback(() => {
+    fixCountRef.current = 0
+    setFixCount(0)
+  }, [])
+  const bumpRegenCount = useCallback(() => {
+    regenCountRef.current += 1
+    setRegenCount(regenCountRef.current)
+  }, [])
+  const resetRegenCount = useCallback(() => {
+    regenCountRef.current = 0
+    setRegenCount(0)
+  }, [])
   // Test Pod: lifecycle tied to dialog (ref ensures idempotency, avoids closure re-creation)
   const [testPod, setTestPod] = useState<{ podName: string; endpoint: string } | null>(null)
   const testPodRef = useRef<{ podName: string; endpoint: string } | null>(null)
@@ -358,7 +429,7 @@ export function AiToolGenerator({
   const pendingConfirmRef = useRef<{
     tool: GeneratedTool
     chatHistory: ChatMessage[]
-    type?: 'security' | 'file-verify'
+    type?: 'security' | 'file-verify' | 'db-conn'
   } | null>(null)
   const fileFixFeedbackRef = useRef<string | null>(null)
   // Track security items confirmed by user in this session to avoid re-asking
@@ -592,8 +663,8 @@ export function AiToolGenerator({
     setPhase('idle')
     setCurrentTool(null)
     setTrialParams({})
-    setFixCount(0)
-    setRegenCount(0)
+    resetFixCount()
+    resetRegenCount()
     setTestPod(null)
     setShowScrollBtn(false)
     setInputHeight(120)
@@ -1096,12 +1167,12 @@ export function AiToolGenerator({
         }
 
         setMessages((prev) => [...prev, sysMsg])
-        setFixCount((c) => c + 1)
+        bumpFixCount()
 
-        if (fixCount + 1 >= MAX_FIX) {
-          if (regenCount < MAX_REGEN) {
-            setRegenCount((c) => c + 1)
-            setFixCount(0)
+        if (fixCountRef.current >= MAX_FIX) {
+          if (regenCountRef.current < MAX_REGEN) {
+            bumpRegenCount()
+            resetFixCount()
             const regenMsg: ChatMessage = {
               id: nextId(),
               role: 'user',
@@ -1160,6 +1231,32 @@ export function AiToolGenerator({
         setMessages((prev) => [...prev, confirmMsg])
         pendingConfirmRef.current = { tool, chatHistory, type: 'security' }
         setPhase('need-confirm')
+        return
+      }
+
+      // 1.5 Database tools must run against a real Connection. The sandbox Pod's
+      // localhost has no DB, so without a Connection any DB tool will fail at TCP
+      // dial and waste fix attempts on environment errors the LLM cannot resolve.
+      if (
+        isDatabaseTool(tool.code, tool.parameters?.properties) &&
+        selectedConnIdsRef.current.size === 0
+      ) {
+        setPhase('need-input')
+        const dbConns = availableConnectionsRef.current.filter((c) => c.type === 'database')
+        const hint =
+          dbConns.length > 0
+            ? t('skills.generatorNeedDbConnHint', {
+                conns: dbConns.map((c) => `「${c.name}」`).join('、'),
+              })
+            : t('skills.generatorNeedDbConnNoneHint')
+        const needConnMsg: ChatMessage = {
+          id: nextId(),
+          role: 'assistant',
+          content: `${t('skills.generatorNeedDbConn')}\n${hint}`,
+          phaseBadge: t('skills.generatorBadgeWaitConn'),
+        }
+        setMessages((prev) => [...prev, needConnMsg])
+        pendingConfirmRef.current = { tool, chatHistory, type: 'db-conn' }
         return
       }
 
@@ -1256,6 +1353,9 @@ export function AiToolGenerator({
             timeout: 30000,
             envVars: envVarsMap,
             language: tool.language ?? 'javascript',
+            // Schema is needed server-side so missing connection-bound params get
+            // filled from process.env (e.g. CONN_HOST) instead of arriving as undefined.
+            parameters: tool.parameters,
             ...(pod ? { podEndpoint: pod.endpoint } : {}),
             ...(selectedConnId ? { connectionId: selectedConnId } : {}),
           }),
@@ -1279,11 +1379,11 @@ export function AiToolGenerator({
               phaseBadge: t('skills.generatorBadgeResultInvalid'),
             }
             setMessages((prev) => prev.map((m) => (m.id === testMsg.id ? failMsg : m)))
-            setFixCount((c) => c + 1)
-            if (fixCount + 1 >= MAX_FIX) {
-              if (regenCount < MAX_REGEN) {
-                setRegenCount((c) => c + 1)
-                setFixCount(0)
+            bumpFixCount()
+            if (fixCountRef.current >= MAX_FIX) {
+              if (regenCountRef.current < MAX_REGEN) {
+                bumpRegenCount()
+                resetFixCount()
                 await sendFixRequest(t('skills.generatorMultiFixRedesign'), [
                   ...chatHistory,
                   failMsg,
@@ -1406,11 +1506,11 @@ export function AiToolGenerator({
             setCurrentTool(valTool)
             await runPipeline(valTool, [...validationHistory, valFinalMsg])
           } else {
-            setFixCount((c) => c + 1)
-            if (fixCount + 1 >= MAX_FIX) {
-              if (regenCount < MAX_REGEN) {
-                setRegenCount((c) => c + 1)
-                setFixCount(0)
+            bumpFixCount()
+            if (fixCountRef.current >= MAX_FIX) {
+              if (regenCountRef.current < MAX_REGEN) {
+                bumpRegenCount()
+                resetFixCount()
                 await sendFixRequest(t('skills.generatorMultiFixRedesign'), [
                   ...validationHistory,
                   valFinalMsg,
@@ -1440,11 +1540,11 @@ export function AiToolGenerator({
         setMessages((prev) => prev.map((m) => (m.id === testMsg.id ? failMsg : m)))
 
         // Auto fix
-        setFixCount((c) => c + 1)
-        if (fixCount + 1 >= MAX_FIX) {
-          if (regenCount < MAX_REGEN) {
-            setRegenCount((c) => c + 1)
-            setFixCount(0)
+        bumpFixCount()
+        if (fixCountRef.current >= MAX_FIX) {
+          if (regenCountRef.current < MAX_REGEN) {
+            bumpRegenCount()
+            resetFixCount()
             await sendFixRequest(t('skills.generatorMultiFixRedesign'), [...chatHistory, failMsg])
           } else {
             setPhase('idle')
@@ -1478,7 +1578,7 @@ export function AiToolGenerator({
         setPhase('idle')
       }
     },
-    [nextId, fixCount, regenCount, streamChat, ensureTestPod]
+    [nextId, bumpFixCount, resetFixCount, bumpRegenCount, streamChat, ensureTestPod]
   )
 
   // After user confirms security, trigger runPipeline to continue (skipConfirm=true)
@@ -1488,6 +1588,21 @@ export function AiToolGenerator({
     pendingConfirmRef.current = null
     runPipeline(tool, chatHistory, true)
   }, [phase, runPipeline])
+
+  // Resume pipeline after the user picks a database connection for a DB tool that
+  // was paused (need-input + pendingConfirmRef.type==='db-conn').
+  useEffect(() => {
+    if (phase !== 'need-input') return
+    if (pendingConfirmRef.current?.type !== 'db-conn') return
+    if (selectedConnIds.size === 0) return
+    const hasDbConn = Array.from(selectedConnIds).some(
+      (id) => availableConnectionsRef.current.find((c) => c.id === id)?.type === 'database'
+    )
+    if (!hasDbConn) return
+    const { tool, chatHistory } = pendingConfirmRef.current
+    pendingConfirmRef.current = null
+    runPipeline(tool, chatHistory, true)
+  }, [phase, selectedConnIds, runPipeline])
 
   const sendFixRequest = useCallback(
     async (errorContext: string, history: ChatMessage[]) => {
@@ -1851,10 +1966,14 @@ export function AiToolGenerator({
       // Pass selected connection config as connectionEnvVars (Map dedup, later overrides earlier)
       const envMap = new Map<string, string>()
       let connectorType: { type: string; dbType?: string } | undefined
+      let hasConnection = false
+      const connEnvKeys = new Set<string>()
       for (const conn of availableConnections) {
         if (selectedConnIds.has(conn.id)) {
+          hasConnection = true
           for (const [envName, envVal] of Object.entries(conn.envValues)) {
             envMap.set(envName, envVal)
+            connEnvKeys.add(envName)
           }
           // Record first selected connection type as tool connection type requirement
           if (!connectorType) {
@@ -1863,8 +1982,49 @@ export function AiToolGenerator({
         }
       }
       const connEnvVars = Array.from(envMap.entries()).map(([name, value]) => ({ name, value }))
-      onCreated?.({
+
+      // Tag each parameter with the env-var name the deployed pod should fall back to
+      // when the request body omits it. Without this, secret/connection-bound params
+      // arrive as `undefined` at the tool code (e.g. mysql2 throws ERR_INVALID_ARG_TYPE
+      // when password is undefined).
+      // Mapping rules:
+      //   - prop.secret === true        → CREWMELD_<KEY>
+      //   - matches a connection env    → CONN_<KEY> (only when a connection is selected)
+      // Common DB-param aliases (user→username) are normalized so connection values reach them.
+      const DB_PARAM_ALIASES: Record<string, string> = {
+        user: 'username',
+        pwd: 'password',
+        db: 'database',
+        dbName: 'database',
+        databaseName: 'database',
+      }
+      const paramsWithEnv: GeneratedTool['parameters']['properties'] = {}
+      for (const [paramName, prop] of Object.entries(currentTool.parameters?.properties ?? {})) {
+        let envName: string | undefined
+        // Connection-bound param (e.g. password matching CONN_PASSWORD) wins over a
+        // secret-tagged CREWMELD_* fallback so the real connection value reaches
+        // the tool, not whatever placeholder the user typed during testing.
+        if (hasConnection) {
+          const canonical = DB_PARAM_ALIASES[paramName] ?? paramName
+          const candidate = configKeyToEnvName(canonical)
+          if (connEnvKeys.has(candidate)) envName = candidate
+        }
+        if (!envName && prop.secret) {
+          envName = skillEnvName(paramName)
+        }
+        paramsWithEnv[paramName] = envName ? { ...prop, envName } : prop
+      }
+
+      const updatedTool: GeneratedTool = {
         ...currentTool,
+        parameters: {
+          ...currentTool.parameters,
+          properties: paramsWithEnv,
+        },
+      }
+
+      onCreated?.({
+        ...updatedTool,
         connectionEnvVars: connEnvVars.length > 0 ? connEnvVars : undefined,
         connectorType,
       })
@@ -1957,6 +2117,9 @@ export function AiToolGenerator({
           timeout: 30000,
           envVars: trialEnvVars,
           language: currentTool.language ?? 'javascript',
+          // Schema lets server fill CONN_*/CREWMELD_* env values for params the
+          // user form omitted (avoids undefined reaching driver code like mysql2).
+          parameters: currentTool.parameters,
           ...(pod ? { podEndpoint: pod.endpoint } : {}),
           ...(trialConnId ? { connectionId: trialConnId } : {}),
         }),
