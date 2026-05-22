@@ -680,6 +680,16 @@ export const en: LooseMessages = {
     headerDeleteConfirmTitle: 'Confirm Deletion',
     headerCancel: 'Cancel',
     headerDeleteBtn: 'Delete',
+    headerEditBtn: 'Edit',
+    headerSaveBtn: 'Save',
+    headerSaving: 'Saving...',
+    headerNamePlaceholder: 'Employee name',
+    headerDescriptionPlaceholder: 'Describe the main responsibilities of this employee...',
+    headerNameRequired: 'Employee name is required',
+    headerNameTooLong: 'Employee name must be at most 50 characters',
+    headerDescriptionTooLong: 'Description must be at most 200 characters',
+    headerUpdateSuccess: 'Employee information updated',
+    headerUpdateFailed: 'Update failed',
     // employee-detail shared components
     detailOverviewTitle: 'Overview',
     detailTasksCompleted: 'Tasks Completed',
@@ -1621,6 +1631,8 @@ export const en: LooseMessages = {
     confirmDeleteDatasetDesc:
       'Delete "{name}"? All documents and chunks will be permanently removed.',
     deleteDataset: 'Delete Knowledge Base',
+    editDataset: 'Edit Knowledge Base',
+    editDatasetTitle: 'Edit Knowledge Base',
     addDatasetTitle: 'Add Knowledge Base',
     datasetNameLabel: 'Name',
     datasetNamePlaceholder: 'e.g. Product Manual, FAQ',
@@ -1628,6 +1640,7 @@ export const en: LooseMessages = {
     datasetDescPlaceholder: 'Briefly describe the purpose and scope',
     createFailed: 'Creation failed',
     deleteFailed: 'Deletion failed',
+    updateFailed: 'Update failed',
     fetchDocsFailed: 'Failed to load documents',
     deleteDocFailed: 'Failed to delete document',
     downloadFailed: 'Download failed, please retry',
@@ -2388,6 +2401,7 @@ export const en: LooseMessages = {
     generatorRequestFailed: 'Request failed',
     generatorReturnNull: 'Return value is null/undefined. The tool must return meaningful data.',
     generatorReturnError: 'Tool returned an error: {error}',
+    generatorReturnSuccessFalse: 'Tool returned success:false without an error message',
     generatorReturnEmptyObj: 'Returned empty object {}. The tool must return meaningful data.',
     generatorReturnEmptyArr: 'Returned empty array []. The tool must return meaningful data.',
     generatorFileVerifyPassed:
@@ -2421,6 +2435,12 @@ export const en: LooseMessages = {
     generatorConfirmSuffix: '\n\nReply "Confirm" to continue, or describe changes you want.',
     generatorBadgeWaitConfirm: 'Waiting for confirmation',
     generatorNeedInput: 'Your input is needed: ',
+    generatorNeedDbConn:
+      'This tool connects to a database but no Connection is selected. The sandbox Pod\'s localhost does not point at your DB. Pick a database connection from the "Connections" dropdown so the tool can resolve a real address at trial run.',
+    generatorNeedDbConnHint: 'Available database connections: {conns}',
+    generatorNeedDbConnNoneHint:
+      'No database connections exist yet. Please create one under Connection Management and then select it here.',
+    generatorBadgeWaitConn: 'Waiting for connection',
     generatorSecretLabel: ' (secret)',
     generatorInputFormat:
       '\n\nPlease provide the parameter values (format: `{example}`), or tell me your thoughts.',
@@ -3407,6 +3427,8 @@ You are a general-purpose intelligent assistant that can handle various daily wo
       datasetCreateFailed: 'Failed to create knowledge base',
       datasetIdRequired: 'Missing knowledge base ID',
       datasetDeleteFailed: 'Failed to delete knowledge base',
+      datasetUpdateFailed: 'Failed to update knowledge base',
+      datasetUpdateNoChange: 'No fields provided to update',
       datasetDetailFailed: 'Failed to fetch knowledge base detail',
       documentListFailed: 'Failed to fetch document list',
       documentDownloadFailed: 'Failed to download file',

@@ -237,14 +237,20 @@ export const dingtalkPlugin: ChannelPlugin<DingtalkPluginConfig> = {
     textChunkLimit: CHANNEL_MAX_LENGTH.dingtalk,
 
     async sendText(params, config) {
+      // DingTalk robot Markdown does not support GFM tables and folds single
+      // newlines — sanitize once here so both sessionWebhook and Robot API
+      // paths receive bullet-list-formatted content.
+      const { sanitizeForDingtalk, sendDingtalkChunked } = await import('../../dingtalk-sender')
+      const sanitized = sanitizeForDingtalk(params.content)
+
       // Prefer sessionWebhook (included in robot callback, most reliable, no extra permissions needed)
       const sessionWebhook = (params as unknown as Record<string, unknown>).sessionWebhook as
         | string
         | undefined
       if (sessionWebhook) {
         const { sendWebhookMessage } = await import('../../dingtalk-client')
-        const title = params.content.slice(0, 20).replace(/[#*\n]/g, '') || t('channelDingtalkMsg')
-        await sendWebhookMessage(sessionWebhook, 'markdown', { title, text: params.content })
+        const title = sanitized.slice(0, 20).replace(/[#*\n]/g, '') || t('channelDingtalkMsg')
+        await sendWebhookMessage(sessionWebhook, 'markdown', { title, text: sanitized })
         return
       }
 
@@ -252,14 +258,13 @@ export const dingtalkPlugin: ChannelPlugin<DingtalkPluginConfig> = {
       if (!config.appKey || !config.appSecret) return
       const robotCode = config.robotCode || config.appKey
 
-      const { sendDingtalkChunked } = await import('../../dingtalk-sender')
       await sendDingtalkChunked(
         config.appKey,
         config.appSecret,
         robotCode,
         params.receiveId,
         params.receiveIdType === 'chat_id' ? params.receiveId : undefined,
-        params.content
+        sanitized
       )
     },
 

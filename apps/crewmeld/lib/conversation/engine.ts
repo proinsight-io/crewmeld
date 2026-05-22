@@ -939,10 +939,8 @@ async function runMessageLoop(
           enqueue(encodeSSE(sopProgressEvent))
 
           // SOP call (with timeout wait)
-          // Inject original user message into input/value fields, ensure workflow start_trigger can access it
-          // - input: start_trigger built-in field
-          // - value: inputFormat common custom field name
-          // LLM-extracted precise params (sopInput) expanded later, same-name fields override above fallback values
+          // Inject original user message into input, ensure SOP start_trigger can access it.
+          // LLM-extracted precise params (sopInput) expanded later; same-name fields override input.
           const sopInput = (args.input as Record<string, unknown>) ?? args
           // Grab the most recent user message with [附件: url=...] from history, take all [附件] annotations
           // append to input end, ensure SOP inner LLM can see real file URLs (prevent hallucinated public URLs)
@@ -958,7 +956,6 @@ async function runMessageLoop(
           }
           const triggerData: Record<string, unknown> = {
             input: sopInputMessage,
-            value: sopInputMessage,
             ...sopInput,
           }
           const result = await executeSopFromConversation(

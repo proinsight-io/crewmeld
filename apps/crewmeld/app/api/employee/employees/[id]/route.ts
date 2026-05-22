@@ -191,8 +191,9 @@ async function _DELETE(_request: NextRequest, { params }: { params: Promise<{ id
 
 const UpdateEmployeeSchema = z.object({
   persona: z.string().nullable().optional(),
-  name: z.string().min(1).optional(),
-  description: z.string().nullable().optional(),
+  name: z.string().min(1).max(50).optional(),
+  description: z.string().max(200).nullable().optional(),
+  avatar: z.string().min(1).max(16).optional(),
   modelConfigId: z.string().nullable().optional(),
   ragflowDatasetIds: z.array(z.string()).optional(),
 })
@@ -233,6 +234,7 @@ async function _PATCH(request: NextRequest, { params }: { params: Promise<{ id: 
     if (parsed.data.persona !== undefined) updates.persona = parsed.data.persona
     if (parsed.data.name !== undefined) updates.name = parsed.data.name
     if (parsed.data.description !== undefined) updates.description = parsed.data.description
+    if (parsed.data.avatar !== undefined) updates.avatar = parsed.data.avatar
     if (parsed.data.modelConfigId !== undefined) updates.modelConfigId = parsed.data.modelConfigId
     if (parsed.data.ragflowDatasetIds !== undefined) {
       const existingConfig = (existing[0].config as Record<string, unknown>) ?? {}

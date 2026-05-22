@@ -10,13 +10,27 @@ import { sendGroupChatMessage, sendSingleChatMessage } from './dingtalk-client'
 const logger = createLogger('DingtalkSender')
 
 /**
- * Sanitize Markdown syntax not supported by DingTalk (mainly tables)
+ * Sanitize Markdown syntax not supported by DingTalk.
+ *
+ * DingTalk robot Markdown does not render GFM tables, and folds single newlines
+ * into whitespace (only blank lines start a new paragraph). Tables are converted
+ * to bullet lists so each row renders on its own line.
+ *
+ * Idempotent — calling twice on the same input is safe.
  */
-function sanitizeForDingtalk(md: string): string {
+export function sanitizeForDingtalk(md: string): string {
   const lines = md.split('\n')
   const result: string[] = []
   let inTable = false
   let tableHeaders: string[] = []
+
+  const stripBoldWrap = (s: string): string => s.replace(/^\*\*(.*)\*\*$/, '$1').trim()
+
+  const ensureBlankBefore = () => {
+    if (result.length > 0 && result[result.length - 1].trim() !== '') {
+      result.push('')
+    }
+  }
 
   for (const line of lines) {
     const trimmed = line.trim()
@@ -26,7 +40,7 @@ function sanitizeForDingtalk(md: string): string {
       continue
     }
 
-    // Table row -> convert to "column: value"
+    // Table row -> convert to bullet list item
     if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
       const cells = trimmed
         .slice(1, -1)
@@ -35,19 +49,32 @@ function sanitizeForDingtalk(md: string): string {
       if (!inTable) {
         inTable = true
         tableHeaders = cells
+        ensureBlankBefore()
         continue
       }
-      const parts = cells.map((cell, i) => {
-        const header = tableHeaders[i]
-        return header ? `**${header}**${t('channelCardColon')}${cell}` : cell
-      })
-      result.push(parts.join('  '))
+      const colon = t('channelCardColon')
+      if (cells.length === 2) {
+        // Field/value table: "- **field**: value"
+        const field = stripBoldWrap(cells[0])
+        result.push(`- **${field}**${colon}${cells[1]}`)
+      } else {
+        // Multi-column: "- **header1**: cell1  **header2**: cell2"
+        const parts = cells.map((cell, i) => {
+          const header = tableHeaders[i] ? stripBoldWrap(tableHeaders[i]) : ''
+          return header ? `**${header}**${colon}${cell}` : cell
+        })
+        result.push(`- ${parts.join('  ')}`)
+      }
       continue
     }
 
     if (inTable) {
       inTable = false
       tableHeaders = []
+      // Close list block with a blank line
+      if (result.length > 0 && result[result.length - 1].trim() !== '') {
+        result.push('')
+      }
     }
     result.push(line)
   }

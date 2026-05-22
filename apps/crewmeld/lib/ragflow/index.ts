@@ -16,6 +16,7 @@ export {
   retrieval,
   stopDocumentsParsing,
   updateChunk,
+  updateDataset,
   updateDocumentEnabled,
   uploadDocument,
 } from './client'

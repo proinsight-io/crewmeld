@@ -112,13 +112,14 @@ export default function EmployeeWizardPage() {
       setSelectedRoleId(role.id)
       setSelectedRoleName(role.name)
       const rolePersona = role.persona ?? ''
-      setAutoFilledConfig({ name: role.name, description: role.description, persona: rolePersona })
+      const roleDescription = role.description ?? ''
+      setAutoFilledConfig({ name: role.name, description: roleDescription, persona: rolePersona })
       setEmployeeConfig((prev) => ({
         ...prev,
         name: !prev.name || prev.name === autoFilledConfig.name ? role.name : prev.name,
         description:
           !prev.description || prev.description === autoFilledConfig.description
-            ? role.description
+            ? roleDescription
             : prev.description,
         persona:
           !prev.persona || prev.persona === autoFilledConfig.persona ? rolePersona : prev.persona,
@@ -137,13 +138,14 @@ export default function EmployeeWizardPage() {
       setSelectedRoleId(role.id)
       setSelectedRoleName(role.name)
       const rolePersona = role.persona ?? ''
-      setAutoFilledConfig({ name: role.name, description: role.description, persona: rolePersona })
+      const roleDescription = role.description ?? ''
+      setAutoFilledConfig({ name: role.name, description: roleDescription, persona: rolePersona })
       setEmployeeConfig((prev) => ({
         ...prev,
         name: !prev.name || prev.name === autoFilledConfig.name ? role.name : prev.name,
         description:
           !prev.description || prev.description === autoFilledConfig.description
-            ? role.description
+            ? roleDescription
             : prev.description,
         persona:
           !prev.persona || prev.persona === autoFilledConfig.persona ? rolePersona : prev.persona,

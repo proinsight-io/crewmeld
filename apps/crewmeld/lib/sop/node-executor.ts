@@ -9,7 +9,7 @@ import {
   workLogs,
 } from '@crewmeld/db/schema'
 import { createLogger } from '@crewmeld/logger'
-import { and, eq } from 'drizzle-orm'
+import { and, asc, eq, inArray, ne } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import { resolveModelConfig } from '@/lib/conversation/model-config'
 import type { ConversationModelConfig } from '@/lib/conversation/types'
@@ -36,6 +36,218 @@ function isSandboxNotificationAllowed(snapshot: SopStateSnapshot): boolean {
   if (!policy) return true // Not sandbox, allow
   // Allow notification if either email or push is enabled
   return !!(policy.email || policy.push)
+}
+
+/** Character budget for the task-log history block injected into a digital_employee prompt. */
+export const HISTORY_LOG_MAX_CHARS = 6000
+
+/** Per-tool-output preview budget within a single log line.
+ *  Raised from 200 → 800 so downstream nodes can read non-immediate-previous tool
+ *  outputs (e.g. OCR results ~750 chars) from history instead of relying on
+ *  manual field echo via "accumulating pass-through" in node descriptions. */
+const TOOL_OUTPUT_PREVIEW_MAX = 800
+
+/** Internal entry used while merging multiple data sources into a chronological history. */
+interface HistoryEntry {
+  /** Sort key — workLogs.createdAt or sopNodeExecutions.completedAt. */
+  timestamp: Date
+  /** Node display name. Falls back to 'unknown' when sources lack it. */
+  nodeName: string
+  /** Stable grouping key — workLogs.taskId or sopNodeExecutions.id. Lets the same node
+   *  appear as multiple sections across retries, loop re-entry, or gateway revisits
+   *  instead of being merged-then-disproportionately-trimmed. */
+  groupKey: string
+  /** Single-line content without timestamp or node-name prefix (prefix is added at render time). */
+  line: string
+}
+
+/** Render entries grouped by execution (taskId / nodeExecution id) into markdown sections,
+ *  applying the budget by dropping oldest sections first; if a single remaining section
+ *  still exceeds the budget, line trimming kicks in within that section. */
+function renderHistorySections(entries: HistoryEntry[]): string {
+  if (entries.length === 0) return ''
+
+  // Group consecutive entries by groupKey — same nodeName running twice (retry, loop)
+  // produces two adjacent sections instead of being silently merged.
+  const groups: Array<{ groupKey: string; nodeName: string; lines: string[] }> = []
+  for (const entry of entries) {
+    const last = groups[groups.length - 1]
+    if (last && last.groupKey === entry.groupKey) {
+      last.lines.push(entry.line)
+    } else {
+      groups.push({ groupKey: entry.groupKey, nodeName: entry.nodeName, lines: [entry.line] })
+    }
+  }
+
+  const sectionText = (g: { nodeName: string; lines: string[] }): string =>
+    `### ${g.nodeName}\n${g.lines.map((l) => `- ${l}`).join('\n')}`
+
+  // Stage 1: drop oldest whole sections until total fits.
+  while (groups.length > 1 && groups.map(sectionText).join('\n\n').length > HISTORY_LOG_MAX_CHARS) {
+    groups.shift()
+  }
+
+  // Stage 2: if one remaining section still exceeds budget, trim lines from its start.
+  if (groups.length === 1) {
+    const only = groups[0]
+    while (only.lines.length > 1 && sectionText(only).length > HISTORY_LOG_MAX_CHARS) {
+      only.lines.shift()
+    }
+  }
+
+  const rendered = groups.map(sectionText).join('\n\n')
+  // Stage 3 (defensive): a single oversized line (e.g. a 10KB error message) bypasses
+  // both stages above because Stage 2 preserves the last remaining line. Hard-trim the
+  // tail so the block never blows past the budget under any input.
+  return rendered.length > HISTORY_LOG_MAX_CHARS
+    ? `${rendered.slice(0, HISTORY_LOG_MAX_CHARS - 3)}...`
+    : rendered
+}
+
+/**
+ * Build a chronological, node-grouped history block from `work_logs` and
+ * `sop_node_executions` for the given SOP execution. Two sources are merged:
+ *
+ * - `work_logs` (action + tool_call) joined to `task_executions.sopExecutionId`, capturing
+ *   digital_employee tool calls and completion summaries. `Started executing` rows
+ *   (identified by `metadata.i18nKey === 'logWorkSopStartExecution'`) are filtered out
+ *   because the node name is already shown in the section header.
+ * - `sop_node_executions` for completed `human_employee` / `human_confirm` nodes, so the
+ *   downstream LLM can see approval decisions and comments that never reach `work_logs`.
+ *
+ * Output format (markdown, grouped by node, no timestamps):
+ * ```
+ * ### <node name>
+ * - <event line>
+ * - <event line>
+ *
+ * ### <next node name>
+ * - ...
+ * ```
+ *
+ * When total size exceeds {@link HISTORY_LOG_MAX_CHARS}, the earliest section is dropped
+ * first. If the final remaining section is still over budget, lines are trimmed from its
+ * start.
+ *
+ * @returns Markdown-formatted history block, or empty string if no applicable entries.
+ */
+export async function buildHistoryFromWorkLogs(executionId: string): Promise<string> {
+  const logRows = await db
+    .select({
+      taskId: workLogs.taskId,
+      logType: workLogs.logType,
+      content: workLogs.content,
+      metadata: workLogs.metadata,
+      createdAt: workLogs.createdAt,
+      taskInput: taskExecutions.input,
+    })
+    .from(workLogs)
+    .innerJoin(taskExecutions, eq(workLogs.taskId, taskExecutions.id))
+    .where(
+      and(
+        eq(taskExecutions.sopExecutionId, executionId),
+        inArray(workLogs.logType, ['action', 'tool_call', 'error'])
+      )
+    )
+    .orderBy(workLogs.createdAt)
+
+  const humanRows = await db
+    .select({
+      id: sopNodeExecutions.id,
+      nodeName: sopNodeExecutions.nodeName,
+      status: sopNodeExecutions.status,
+      result: sopNodeExecutions.result,
+      errorMessage: sopNodeExecutions.errorMessage,
+      completedAt: sopNodeExecutions.completedAt,
+    })
+    .from(sopNodeExecutions)
+    .where(
+      and(
+        eq(sopNodeExecutions.executionId, executionId),
+        inArray(sopNodeExecutions.nodeType, ['human_employee', 'human_confirm']),
+        // Take every terminal state (completed/error/timeout/rejected/...) so the
+        // downstream LLM sees approval failures + timeouts, not just successes.
+        ne(sopNodeExecutions.status, 'running')
+      )
+    )
+    .orderBy(asc(sopNodeExecutions.completedAt))
+
+  const entries: HistoryEntry[] = []
+
+  for (const row of logRows) {
+    const meta = (row.metadata ?? {}) as Record<string, unknown>
+    // Skip "Started executing: <node name>" rows — fully redundant once we group by node.
+    if (meta.i18nKey === 'logWorkSopStartExecution') continue
+    if (!(row.createdAt instanceof Date)) continue
+
+    const taskInput = (row.taskInput ?? {}) as Record<string, unknown>
+    const nodeName =
+      (typeof meta.nodeName === 'string' && meta.nodeName) ||
+      (typeof taskInput.nodeName === 'string' && taskInput.nodeName) ||
+      // Suffix the taskId so multiple orphan tasks don't all collide into a single
+      // `### unknown` section that mixes their workLogs together.
+      `unknown-${row.taskId.slice(-6)}`
+
+    let line: string
+    if (row.logType === 'tool_call') {
+      const toolDisplay =
+        (typeof meta.instanceName === 'string' && meta.instanceName) ||
+        (typeof meta.toolName === 'string' && meta.toolName) ||
+        'tool'
+      // Treat any non-`false` success marker as success — tolerates writers that omit
+      // the field or set non-boolean values; explicit `false` is the only failure signal.
+      const isSuccess = meta.success !== false
+      let outputPreview = ''
+      if (meta.output !== undefined && meta.output !== null) {
+        try {
+          const json = JSON.stringify(meta.output)
+          // Failures get a tighter budget — error type matters more than payload detail.
+          const max = isSuccess ? TOOL_OUTPUT_PREVIEW_MAX : 100
+          const truncated = json.length > max ? `${json.slice(0, max)}...` : json
+          outputPreview = isSuccess ? ` (output: ${truncated})` : ` (error: ${truncated})`
+        } catch {
+          // ignore unserializable outputs
+        }
+      }
+      line = `tool_call: ${toolDisplay} ${isSuccess ? '✓' : '✗'}${outputPreview}`
+    } else if (row.logType === 'error') {
+      // Failed node completion (logWorkSopExecFailed). [FAILED] prefix signals to the
+      // downstream LLM that this is a failure event, not a normal action result.
+      line = `[FAILED] ${typeof row.content === 'string' ? row.content : ''}`
+    } else {
+      line = typeof row.content === 'string' ? row.content : ''
+    }
+
+    entries.push({ timestamp: row.createdAt, nodeName, groupKey: row.taskId, line })
+  }
+
+  for (const row of humanRows) {
+    if (!(row.completedAt instanceof Date)) continue
+    const result = (row.result ?? {}) as Record<string, unknown>
+    const decision = typeof result.decision === 'string' ? result.decision : ''
+    const comment = typeof result.comment === 'string' ? result.comment.trim() : ''
+    const nodeName =
+      (typeof row.nodeName === 'string' && row.nodeName) || `unknown-${row.id.slice(-6)}`
+
+    let line: string
+    if (decision) {
+      // Normal approval outcome (approved / rejected).
+      line = comment ? `${decision} — ${comment}` : decision
+    } else if (row.status === 'error') {
+      // Approval node failed (system error, notification dispatch failure, etc).
+      line = `[FAILED] ${row.errorMessage ?? 'unknown error'}`
+    } else {
+      // Other terminal states without a decision (e.g. timeout).
+      const detail = row.errorMessage ? `: ${row.errorMessage}` : ''
+      line = `[STATUS: ${row.status}]${detail}`
+    }
+
+    entries.push({ timestamp: row.completedAt, nodeName, groupKey: row.id, line })
+  }
+
+  entries.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime())
+
+  return renderHistorySections(entries)
 }
 
 /**
@@ -669,7 +881,7 @@ async function executeDigitalEmployeeWithLLMTools(
   }
 
   try {
-    // Query digital employee name and persona (for system prompt)
+    // Query digital employee name and persona (persona retained for log signal only; not injected into prompt)
     const [employee] = await db
       .select({ name: digitalEmployees.name, persona: digitalEmployees.persona })
       .from(digitalEmployees)
@@ -719,10 +931,9 @@ async function executeDigitalEmployeeWithLLMTools(
       `You are digital employee "${employeeName}", executing a task step in an SOP workflow.`,
     ]
 
-    // Inject digital employee persona (if available)
-    if (employeePersona) {
-      systemPromptSections.push('', '## Persona Settings', employeePersona)
-    }
+    // Persona is intentionally NOT injected here: SOP nodes operate in task-execution context,
+    // where deterministic, tool-driven output is preferred over conversational persona styling.
+    // The employee's persona still applies in the chat/conversation engine.
 
     // Inject the identity of the user who triggered this conversation, so tools can be scoped to that user.
     // Without this block, the LLM cannot resolve placeholders like "userId" in node descriptions and
@@ -775,6 +986,26 @@ async function executeDigitalEmployeeWithLLMTools(
         '## Workflow Context (results from preceding steps, for your reference)',
         JSON.stringify(contextOutput, null, 2)
       )
+    }
+
+    // Inject chronological task-log history sourced from work_logs (action + tool_call
+    // entries from earlier nodes in this SOP execution). Gives the LLM continuity across
+    // multiple steps without re-loading raw tool results from the snapshot.
+    try {
+      const taskLogHistory = await buildHistoryFromWorkLogs(executionId)
+      if (taskLogHistory) {
+        systemPromptSections.push(
+          '',
+          '## Task Log History (chronological events from earlier steps in this SOP)',
+          taskLogHistory
+        )
+      }
+    } catch (historyErr) {
+      logger.warn('Task log history build failed, continuing without it', {
+        executionId,
+        nodeId: node.id,
+        error: historyErr instanceof Error ? historyErr.message : String(historyErr),
+      })
     }
 
     // Always query knowledge bases bound to digital employee, inject relevant content into system prompt, let model decide whether to use it
@@ -919,25 +1150,10 @@ async function executeDigitalEmployeeWithLLMTools(
       logger.warn('SOP node taskExecution creation failed', { error: e })
     }
 
-    // Write action log for node execution start, ensure visible record even if LLM calls no tools
-    try {
-      await db.insert(workLogs).values({
-        id: `log_${nanoid()}`,
-        taskId: nodeTaskId,
-        employeeId,
-        logType: 'action',
-        content: t('sopStartExecution', 'en', { name: node.description || node.name || 'node' }),
-        metadata: {
-          executionId,
-          nodeId: node.id,
-          nodeName: node.name,
-          i18nKey: 'logWorkSopStartExecution',
-          i18nParams: { name: node.description || node.name || 'node' },
-        },
-      })
-    } catch (logErr) {
-      logger.warn('SOP node start log write failed', { error: logErr })
-    }
+    // Started workLog intentionally not written: it duplicated the full node.description
+    // (often 1–2 KB) without adding signal beyond what the completion log already provides.
+    // Legacy rows in old executions are still tolerated by the reader-side filter in
+    // buildHistoryFromWorkLogs and the i18n key remains defined in locale files.
 
     const result = await executeLLMWithTools({
       modelConfig,
@@ -1118,9 +1334,11 @@ async function executeDigitalEmployeeWithLLMTools(
     // Write action log for node completion
     try {
       const completionI18n = result.error
-        ? { key: 'logWorkSopExecFailed', params: { error: result.error } }
+        ? { key: 'logWorkSopExecFailed', params: { error: result.error.slice(0, 500) } }
         : result.summary
-          ? { key: 'logWorkSopExecCompleted', params: { result: result.summary.slice(0, 200) } }
+          ? // Keep in sync with the `content` field below (1000 chars) so the
+            // i18n re-render path stays consistent with what was originally written.
+            { key: 'logWorkSopExecCompleted', params: { result: result.summary.slice(0, 1000) } }
           : { key: 'logWorkSopExecCompletedShort', params: {} }
       await db.insert(workLogs).values({
         id: `log_${nanoid()}`,
@@ -1128,9 +1346,12 @@ async function executeDigitalEmployeeWithLLMTools(
         employeeId,
         logType: result.error ? 'error' : 'action',
         content: result.error
-          ? t('sopExecFailed', 'en', { error: result.error })
+          ? t('sopExecFailed', 'en', { error: result.error.slice(0, 500) })
           : result.summary
-            ? t('sopExecCompleted', 'en', { result: result.summary.slice(0, 200) })
+            ? // Raised 500 → 1000 so a full OCR-style JSON dump (~500-700 chars)
+              // plus a short natural-language preamble fits without losing trailing
+              // fields like amountInWords/expenseType/invoiceType.
+              t('sopExecCompleted', 'en', { result: result.summary.slice(0, 1000) })
             : t('sopExecCompletedShort', 'en'),
         metadata: {
           executionId,

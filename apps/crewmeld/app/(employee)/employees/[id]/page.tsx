@@ -140,7 +140,7 @@ export default function EmployeeDetailPage() {
 
   return (
     <div className='min-h-screen bg-gray-50'>
-      <EmployeeHeader employee={employee} onDelete={handleDelete} />
+      <EmployeeHeader employee={employee} onDelete={handleDelete} onUpdate={fetchEmployee} />
 
       <div className='border-gray-200 border-b bg-white px-6'>
         <nav className='flex gap-8'>

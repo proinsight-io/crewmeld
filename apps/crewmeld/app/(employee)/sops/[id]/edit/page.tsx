@@ -41,6 +41,7 @@ export default function SopEditPage() {
   const isDirty = useSopEditorStore((s) => s.isDirty)
   const isSaving = useSopEditorStore((s) => s.isSaving)
   const setName = useSopEditorStore((s) => s.setName)
+  const setDescription = useSopEditorStore((s) => s.setDescription)
   const loadDefinition = useSopEditorStore((s) => s.loadDefinition)
   const reset = useSopEditorStore((s) => s.reset)
   const setIsSaving = useSopEditorStore((s) => s.setIsSaving)
@@ -186,25 +187,37 @@ export default function SopEditPage() {
   return (
     <div className='flex h-[calc(100vh-3rem)] flex-col gap-3'>
       {/* Header */}
-      <div className='flex items-center justify-between'>
-        <div className='flex items-center gap-3'>
+      <div className='flex items-start justify-between gap-3'>
+        <div className='flex flex-1 items-start gap-3'>
           <button
             onClick={() => router.push('/sops')}
-            className='text-gray-500 hover:text-gray-900'
+            className='mt-2 text-gray-500 hover:text-gray-900'
             data-testid='sop-editor:back'
           >
             <ArrowLeft className='h-5 w-5' />
           </button>
-          <Input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className='w-64 font-semibold text-lg'
-            placeholder={t('sops.editNamePlaceholder')}
-            data-testid='sop-editor:input:name'
-          />
-          {isDirty && <span className='text-amber-600 text-xs'>{t('sops.editUnsaved')}</span>}
+          <div className='flex flex-1 flex-col gap-1.5'>
+            <div className='flex items-center gap-3'>
+              <Input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className='w-64 font-semibold text-lg'
+                placeholder={t('sops.editNamePlaceholder')}
+                data-testid='sop-editor:input:name'
+              />
+              {isDirty && <span className='text-amber-600 text-xs'>{t('sops.editUnsaved')}</span>}
+            </div>
+            <Input
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className='max-w-xl text-sm'
+              maxLength={200}
+              placeholder={t('sops.newDescPlaceholder')}
+              data-testid='sop-editor:input:description'
+            />
+          </div>
         </div>
-        <div className='flex items-center gap-2'>
+        <div className='flex shrink-0 items-center gap-2'>
           <span className='text-gray-400 text-xs'>v{version}</span>
           <Button
             variant='outline'

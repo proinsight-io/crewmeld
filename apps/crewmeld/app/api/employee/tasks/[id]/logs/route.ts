@@ -25,6 +25,20 @@ interface TimelineEntry {
 }
 
 /**
+ * Keep only the fields the UI cares about from triggerData. Drops historical duplicates
+ * (`value` mirrored `input` verbatim; `file_url` / `project_name` are substrings of
+ * `input` and only matter to the SOP runtime, not the timeline view).
+ */
+function pickTriggerFields(raw: unknown): Record<string, unknown> {
+  if (!raw || typeof raw !== 'object') return {}
+  const src = raw as Record<string, unknown>
+  const picked: Record<string, unknown> = {}
+  if (src._meta !== undefined) picked._meta = src._meta
+  if (src.input !== undefined) picked.input = src.input
+  return picked
+}
+
+/**
  * GET /api/employee/tasks/[id]/logs
  *
  * Query SOP execution logs and approval status.
@@ -194,7 +208,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
         ),
         data: {
           executionId: exec.id,
-          triggerData: exec.triggerData ?? {},
+          triggerData: pickTriggerFields(exec.triggerData),
         },
       })
     }
@@ -215,7 +229,7 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
           timestamp: n.startedAt.toISOString(),
           type: 'node_started',
           content: t('api.taskLog.nodeStarted', { name: n.nodeName, type: typeLabel }, locale),
-          data: { nodeId: n.nodeId, nodeType: n.nodeType },
+          data: { nodeId: n.nodeId, nodeName: n.nodeName, nodeType: n.nodeType },
         })
       }
 
@@ -237,30 +251,52 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
                 )
               : t('api.taskLog.nodeCompleted', { name: n.nodeName }, locale),
         }
-        // Attach node result data (LLM summary, tool call list, tokens, etc.)
+        // Only the node's natural-language output is exposed. Tool call details already
+        // appear as individual worklog_tool_call entries — re-emitting toolResults here
+        // would duplicate them. Rounds / totalTokens / switch gateway flags omitted as
+        // they are not part of the user-visible node output.
         if (result) {
           entry.data = {
             nodeId: n.nodeId,
+            nodeName: n.nodeName,
             summary: result.summary ?? null,
-            toolResults: result.toolResults ?? null,
-            rounds: result.rounds ?? null,
-            totalTokens: result.totalTokens ?? null,
-            // Switch node gateway value
-            _gatewayValue: result._gatewayValue ?? undefined,
-            _llmEvaluated: result._llmEvaluated ?? undefined,
           }
         }
         timeline.push(entry)
       }
     }
 
-    // workLogs (tool call details)
+    // workLogs (tool call details).
+    // - Skip rows whose i18nKey === 'logWorkSopExecCompleted': they 100% duplicate the
+    //   summary already surfaced via the node_completed event.
+    // - For tool_call rows, narrow metadata to {toolName, input, output, success} —
+    //   raw toolId, instanceName fallback, i18n metadata, and the redundant skill_inst-* name
+    //   add noise without giving the UI extra signal.
     for (const l of allWorkLogs) {
+      const meta = (l.metadata ?? {}) as Record<string, unknown>
+      if (meta.i18nKey === 'logWorkSopExecCompleted') continue
+
+      let data: Record<string, unknown>
+      if (l.logType === 'tool_call') {
+        const display =
+          (typeof meta.instanceName === 'string' && meta.instanceName) ||
+          (typeof meta.toolName === 'string' && meta.toolName) ||
+          'tool'
+        data = {
+          toolName: display,
+          input: meta.input,
+          output: meta.output,
+          success: meta.success,
+        }
+      } else {
+        data = meta
+      }
+
       timeline.push({
         timestamp: l.createdAt.toISOString(),
         type: `worklog_${l.logType}`,
         content: l.content,
-        data: l.metadata as Record<string, unknown>,
+        data,
       })
     }
 

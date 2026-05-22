@@ -230,6 +230,28 @@ export async function createDataset(
 }
 
 /**
+ * PUT /api/v1/datasets/{id} - update knowledge base name and/or description
+ */
+export async function updateDataset(
+  config: RagflowConfig,
+  datasetId: string,
+  params: { name?: string; description?: string }
+): Promise<void> {
+  const body: Record<string, string> = {}
+  if (params.name !== undefined) body.name = params.name
+  if (params.description !== undefined) body.description = params.description
+  await ragflowRequest<Record<string, never>>(
+    config,
+    `/api/v1/datasets/${encodeURIComponent(datasetId)}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+  )
+}
+
+/**
  * DELETE /api/v1/datasets - delete knowledge base (v0.15+ API requires ids array)
  */
 export async function deleteDataset(config: RagflowConfig, datasetId: string): Promise<void> {

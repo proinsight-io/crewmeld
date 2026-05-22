@@ -662,6 +662,16 @@ export const zhCN = {
     headerDeleteConfirmTitle: '确认删除',
     headerCancel: '取消',
     headerDeleteBtn: '删除',
+    headerEditBtn: '编辑',
+    headerSaveBtn: '保存',
+    headerSaving: '保存中...',
+    headerNamePlaceholder: '员工名称',
+    headerDescriptionPlaceholder: '描述该员工的主要职责...',
+    headerNameRequired: '员工名称不能为空',
+    headerNameTooLong: '员工名称不能超过 50 个字符',
+    headerDescriptionTooLong: '描述不能超过 200 个字符',
+    headerUpdateSuccess: '员工信息已更新',
+    headerUpdateFailed: '更新失败',
     // employee-detail 共享组件
     detailOverviewTitle: '运行概况',
     detailTasksCompleted: '任务完成',
@@ -1613,6 +1623,8 @@ export const zhCN = {
     confirmDeleteDatasetDesc:
       '确定要删除知识库「{name}」吗？此操作将删除该知识库内的所有文档和切片，无法恢复。',
     deleteDataset: '删除知识库',
+    editDataset: '编辑知识库',
+    editDatasetTitle: '编辑知识库',
     addDatasetTitle: '添加知识库',
     datasetNameLabel: '名称',
     datasetNamePlaceholder: '例如：产品手册、客服话术',
@@ -1620,6 +1632,7 @@ export const zhCN = {
     datasetDescPlaceholder: '简要描述知识库的用途和内容范围',
     createFailed: '创建失败',
     deleteFailed: '删除失败',
+    updateFailed: '更新失败',
     // 文档列表
     fetchDocsFailed: '获取文档列表失败',
     deleteDocFailed: '删除文档失败',
@@ -2376,6 +2389,7 @@ export const zhCN = {
     generatorRequestFailed: '请求失败',
     generatorReturnNull: '返回值为空（null/undefined），工具必须返回有意义的数据',
     generatorReturnError: '工具返回了错误信息：{error}',
+    generatorReturnSuccessFalse: '工具返回 success:false 但未提供错误信息',
     generatorReturnEmptyObj: '返回了空对象 {}，工具必须返回有意义的数据',
     generatorReturnEmptyArr: '返回了空数组 []，工具必须返回有意义的数据',
     generatorFileVerifyPassed:
@@ -2406,6 +2420,12 @@ export const zhCN = {
     generatorConfirmSuffix: '\n\n请回复「确认」继续，或回复其他内容要求修改。',
     generatorBadgeWaitConfirm: '等待确认',
     generatorNeedInput: '需要您的输入：',
+    generatorNeedDbConn:
+      '该工具会连接数据库，但当前没有选择「连接」。沙箱 Pod 中的 localhost 不指向你的数据库，必须先在右上角"连接"下拉里选一个数据库连接，工具才能在试运行时拿到真实的数据库地址。',
+    generatorNeedDbConnHint: '可用的数据库连接：{conns}',
+    generatorNeedDbConnNoneHint:
+      '当前还没有任何数据库连接。请先到「连接管理」新建一个数据库连接，再回到本对话框选择。',
+    generatorBadgeWaitConn: '等待选择连接',
     generatorSecretLabel: '（密钥）',
     generatorInputFormat: '\n\n请提供以上参数值（格式：`{example}`），或者告诉我您的其他想法。',
     generatorBadgeWaitInput: '等待输入',
@@ -3380,6 +3400,8 @@ export const zhCN = {
       datasetCreateFailed: '创建知识库失败',
       datasetIdRequired: '缺少知识库 ID',
       datasetDeleteFailed: '删除知识库失败',
+      datasetUpdateFailed: '更新知识库失败',
+      datasetUpdateNoChange: '未提供需要更新的字段',
       datasetDetailFailed: '获取知识库详情失败',
       documentListFailed: '获取文档列表失败',
       documentDownloadFailed: '下载文件失败',
