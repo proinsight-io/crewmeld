@@ -17,6 +17,7 @@ import {
   Layers,
   Loader2,
   Package,
+  Pencil,
   Plus,
   Power,
   Rocket,
@@ -24,15 +25,23 @@ import {
   Sparkles,
   Trash2,
   Upload,
+  Wrench,
   X,
 } from 'lucide-react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import { copyToClipboard } from '@/lib/core/utils/clipboard'
 import { cn } from '@/lib/core/utils/cn'
 import { useTranslation } from '@/hooks/use-translation'
 import { PermissionGuard } from '../components/permission-guard'
 // import { loadOfficialTools } from './load-official-skills'
 import { AiToolGenerator } from './components/ai-tool-generator'
+import { ApiKeyPanel } from './components/api-key-panel'
+import { DevStudioDialog } from './components/dev-studio/dev-studio-dialog'
+import { useSessionList } from './components/dev-studio/hooks/use-session-list'
+import { RedeployPrompt } from './components/redeploy-prompt'
 import { ToolEditor } from './components/skill-editor'
 import type { DeployInfo, GitHubProjectContext, SkillPackage, ToolInstance } from './types'
 import { skillEnvName } from './types'
@@ -117,8 +126,9 @@ function TemplateCard({
   onUninstall,
   onUpgrade,
   onClick,
-  onRename,
+  onEditMeta,
   onExport,
+  onDevelop,
 }: {
   skill: SkillPackage
   instanceCount: number
@@ -129,30 +139,14 @@ function TemplateCard({
   onUninstall?: () => void
   onUpgrade?: () => void
   onClick?: () => void
-  onRename?: (newName: string) => void
+  onEditMeta?: () => void
   onExport?: () => void
+  /** Open DevStudio filtered to this tool (dev-studio source only) */
+  onDevelop?: () => void
 }) {
   const { t } = useTranslation()
   const needsUpgrade =
     latestVersion !== undefined && compareVersions(latestVersion, skill.version) > 0
-  const [editing, setEditing] = useState(false)
-  const [editName, setEditName] = useState(skill.name)
-  const nameInputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    if (editing) {
-      nameInputRef.current?.focus()
-      nameInputRef.current?.select()
-    }
-  }, [editing])
-
-  const handleRenameConfirm = () => {
-    const trimmed = editName.trim()
-    if (trimmed && trimmed !== skill.name && onRename) {
-      onRename(trimmed)
-    }
-    setEditing(false)
-  }
 
   return (
     <div
@@ -160,9 +154,7 @@ function TemplateCard({
         'flex flex-col rounded-xl border border-gray-200 bg-white p-5 shadow-sm transition hover:shadow-md',
         onClick && 'cursor-pointer'
       )}
-      onClick={() => {
-        if (!editing) onClick?.()
-      }}
+      onClick={() => onClick?.()}
       data-testid={`skills:template-card:${skill.id}`}
     >
       <div className='mb-3 flex items-start justify-between gap-2'>
@@ -171,42 +163,45 @@ function TemplateCard({
             <Package className='h-5 w-5 text-blue-600' />
           </div>
           <div>
-            {editing ? (
-              <input
-                ref={nameInputRef}
-                type='text'
-                value={editName}
-                onChange={(e) => setEditName(e.target.value)}
-                onBlur={handleRenameConfirm}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleRenameConfirm()
-                  if (e.key === 'Escape') {
-                    setEditName(skill.name)
-                    setEditing(false)
-                  }
-                }}
-                onClick={(e) => e.stopPropagation()}
-                className='w-full border-violet-400 border-b bg-transparent px-0 py-0 font-semibold text-gray-900 text-sm outline-none'
-                data-testid={`skills:input:rename:${skill.id}`}
-              />
-            ) : (
+            <div className='flex items-center gap-1.5'>
               <p
                 className={cn(
                   'font-semibold text-gray-900 text-sm',
-                  onRename && 'cursor-pointer hover:text-violet-600'
+                  onClick && 'hover:text-violet-600'
                 )}
-                onClick={(e) => {
-                  if (onRename) {
-                    e.stopPropagation()
-                    setEditName(skill.name)
-                    setEditing(true)
-                  }
-                }}
-                title={onRename ? t('skills.clickToRename') : undefined}
               >
                 {skill.name}
               </p>
-            )}
+              {skill.source === 'dev-studio' && (
+                <Badge variant='outline' className='border-green-200 bg-green-50 text-green-700'>
+                  {t('devStudio.source.devStudio')}
+                </Badge>
+              )}
+              {skill.source === 'installed' && (
+                <Badge variant='outline' className='border-gray-200 bg-gray-50 text-gray-600'>
+                  {t('devStudio.source.installed')}
+                </Badge>
+              )}
+              {skill.source === 'official' && (
+                <Badge variant='outline' className='border-blue-200 bg-blue-50 text-blue-700'>
+                  {t('devStudio.source.official')}
+                </Badge>
+              )}
+              {onEditMeta && (
+                <button
+                  type='button'
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onEditMeta()
+                  }}
+                  className='shrink-0 rounded p-0.5 text-gray-400 hover:bg-violet-50 hover:text-violet-600'
+                  title={t('skills.editMeta')}
+                  data-testid={`skills:button:edit-meta:${skill.id}`}
+                >
+                  <Pencil className='h-3.5 w-3.5' />
+                </button>
+              )}
+            </div>
             <div className='flex items-center gap-1.5'>
               <p className='text-gray-400 text-xs'>
                 {fmtVer(skill.version)} · {skill.size}
@@ -284,6 +279,17 @@ function TemplateCard({
               {t('skills.install')}
             </button>
           )}
+          {onDevelop && (
+            <button
+              type='button'
+              onClick={onDevelop}
+              className='flex items-center gap-1 rounded-md px-2 py-1 text-emerald-600 hover:bg-emerald-50'
+              data-testid={`skills:button:develop:${skill.id}`}
+            >
+              <Wrench className='h-3.5 w-3.5' />
+              {t('skills.develop')}
+            </button>
+          )}
           {onExport && (
             <button
               type='button'
@@ -314,26 +320,74 @@ function TemplateCard({
 // ---------------------------------------------------------------------------
 // Instance card
 // ---------------------------------------------------------------------------
+/** JSON-Schema types whose preset/example values must serialize as unquoted numbers. */
+const NUMERIC_SCHEMA_TYPES = new Set(['number', 'integer', 'float', 'double'])
+
+/**
+ * Build an example input object for the deploy-endpoint curl, coercing each
+ * field to its manifest-declared JSON type. presetParams are stored as strings,
+ * so numeric/boolean fields must be parsed back — the deployed service receives
+ * this JSON verbatim through the sandbox proxy and validates types strictly
+ * (e.g. an `integer` field rejects the string "13", a `number` field "3.14").
+ * `presets` is consulted in order; the first non-empty value wins.
+ */
+function buildCurlInput(
+  properties: Record<string, { type?: string; description?: string }>,
+  presets: Array<Record<string, string> | undefined>
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [key, prop] of Object.entries(properties)) {
+    let raw: string | undefined
+    for (const preset of presets) {
+      const val = preset?.[key]
+      if (val !== undefined && val !== null && val !== '') {
+        raw = val
+        break
+      }
+    }
+    const isNumeric = prop.type !== undefined && NUMERIC_SCHEMA_TYPES.has(prop.type)
+    if (raw !== undefined) {
+      if (isNumeric) {
+        const n = Number(raw)
+        out[key] = Number.isFinite(n) ? n : raw
+      } else if (prop.type === 'boolean') {
+        out[key] = raw === 'true'
+      } else {
+        out[key] = raw
+      }
+    } else {
+      out[key] = isNumeric ? 0 : prop.type === 'boolean' ? true : prop.description || key
+    }
+  }
+  return out
+}
+
 function InstanceCard({
   instance,
   template,
   onDeploy,
   onUndeploy,
+  onOpen,
   onEdit,
   onRename,
   onDelete,
+  onExportCompose,
   deploying,
   undeploying,
+  onTogglePublishApi,
 }: {
   instance: ToolInstance
   template: SkillPackage
   onDeploy?: () => void
   onUndeploy?: () => void
+  onOpen?: () => void
   onEdit?: () => void
   onRename?: (newName: string) => void
   onDelete?: () => void
+  onExportCompose?: () => void
   deploying?: boolean
   undeploying?: boolean
+  onTogglePublishApi?: (checked: boolean) => void
 }) {
   const { t } = useTranslation()
   const deployStatus = instance.deploy?.status
@@ -385,16 +439,33 @@ function InstanceCard({
                 data-testid={`skills:input:rename-instance:${instance.id}`}
               />
             ) : (
-              <p
-                className='cursor-pointer font-semibold text-gray-900 text-sm hover:text-violet-600'
-                onClick={() => {
-                  setEditName(instance.name)
-                  setEditing(true)
-                }}
-                title={t('skills.clickToRename')}
-              >
-                {instance.name}
-              </p>
+              <div className='flex items-center gap-1.5'>
+                <p
+                  className={cn(
+                    'font-semibold text-gray-900 text-sm',
+                    onOpen && 'cursor-pointer hover:text-violet-600'
+                  )}
+                  onClick={() => onOpen?.()}
+                  title={onOpen ? t('skills.openInstance') : undefined}
+                >
+                  {instance.name}
+                </p>
+                {onRename && (
+                  <button
+                    type='button'
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      setEditName(instance.name)
+                      setEditing(true)
+                    }}
+                    className='shrink-0 rounded p-0.5 text-gray-400 hover:bg-violet-50 hover:text-violet-600'
+                    title={t('skills.clickToRename')}
+                    data-testid={`skills:button:rename-instance:${instance.id}`}
+                  >
+                    <Pencil className='h-3.5 w-3.5' />
+                  </button>
+                )}
+              </div>
             )}
             <p className='text-gray-400 text-xs'>
               {t('skills.templateLabel', { name: template.name })}
@@ -433,20 +504,10 @@ function InstanceCard({
               type='button'
               onClick={(e) => {
                 e.stopPropagation()
-                const params = template.parameters?.properties
-                  ? Object.fromEntries(
-                      Object.entries(template.parameters.properties).map(([k, v]) => [
-                        k,
-                        instance.presetParams?.[k] ??
-                          template.presetParams?.[k] ??
-                          (v.type === 'number'
-                            ? 0
-                            : v.type === 'boolean'
-                              ? true
-                              : v.description || k),
-                      ])
-                    )
-                  : {}
+                const params = buildCurlInput(template.parameters?.properties ?? {}, [
+                  instance.presetParams,
+                  template.presetParams,
+                ])
                 const cmd = `curl -X POST ${instance.deploy?.endpoint} -H "Content-Type: application/json" -d '${JSON.stringify(params)}'`
                 const btn = e.currentTarget
                 const showCopied = () => {
@@ -481,6 +542,26 @@ function InstanceCard({
             {t('skills.deployErrorPrefix', { message: instance.deploy.errorMessage })}
           </p>
         </div>
+      )}
+
+      {/* Publish as API toggle */}
+      {onTogglePublishApi && (
+        <div className='mb-3 flex items-center gap-2'>
+          <Switch
+            checked={!!instance.publishedAsApi}
+            onCheckedChange={onTogglePublishApi}
+            data-testid={`skills:switch:publish-api:${instance.id}`}
+          />
+          <span className='text-sm text-gray-600'>{t('skills.publishApi')}</span>
+        </div>
+      )}
+
+      {/* API Key management panel — visible when published as API */}
+      {instance.publishedAsApi && (
+        <ApiKeyPanel
+          instanceId={instance.id}
+          parameters={template?.parameters as Parameters<typeof ApiKeyPanel>[0]['parameters']}
+        />
       )}
 
       <div className='mt-auto flex items-center justify-end gap-1 text-xs'>
@@ -554,6 +635,18 @@ function InstanceCard({
             {t('skills.editTool')}
           </button>
         )}
+        {/* Export docker-compose button (dev-studio NFS tools only) */}
+        {onExportCompose && template.source === 'dev-studio' && (
+          <button
+            type='button'
+            onClick={onExportCompose}
+            className='flex items-center gap-1 rounded-md px-2 py-1 text-gray-500 hover:bg-gray-50'
+            data-testid={`skills:button:export-compose:${instance.id}`}
+          >
+            <Download className='h-3.5 w-3.5' />
+            {t('skills.exportCompose')}
+          </button>
+        )}
         {/* Delete button */}
         {onDelete && (
           <PermissionGuard requires='skill:delete'>
@@ -593,6 +686,19 @@ export default function SkillsPage() {
   const [skillsLoading, setSkillsLoading] = useState(true)
   // const [officialSkills, setOfficialSkills] = useState<SkillPackage[]>([])
   const [aiGeneratorOpen, setAiGeneratorOpen] = useState(false)
+  const [devStudioOpen, setDevStudioOpen] = useState(false)
+  const [devStudioInitialSessionId, setDevStudioInitialSessionId] = useState<string | null>(null)
+  const [devStudioToolId, setDevStudioToolId] = useState<string | undefined>()
+  // Drives the dev-studio entry button label: when the operator has a
+  // resumable (active) session in the background the single button reads
+  // "open dev studio" and reopening returns them to it; otherwise it reads
+  // "new tool". Either way the click does resume-or-create — the label just
+  // reflects which branch will run. Scoped to toolId=none to match the
+  // button's tool-agnostic resume lookup.
+  const { sessions: devStudioSessions } = useSessionList()
+  const hasResumableDevSession = devStudioSessions.some((s) => s.status === 'active')
+  const router = useRouter()
+  const searchParams = useSearchParams()
   const [importProjectContext, setImportProjectContext] = useState<GitHubProjectContext | null>(
     null
   )
@@ -629,6 +735,16 @@ export default function SkillsPage() {
     name: string
   } | null>(null)
   const [editingInstance, setEditingInstance] = useState<ToolInstance | null>(null)
+  /**
+   * Instance awaiting a redeploy decision after an env/connection edit. Only
+   * set for deployed long-lived tools (opensandbox service / k8s), whose
+   * running container snapshots env at deploy time.
+   */
+  const [redeployPrompt, setRedeployPrompt] = useState<ToolInstance | null>(null)
+  const [editingTemplateMeta, setEditingTemplateMeta] = useState<SkillPackage | null>(null)
+  const [metaDraftName, setMetaDraftName] = useState('')
+  const [metaDraftDescription, setMetaDraftDescription] = useState('')
+  const [metaSaving, setMetaSaving] = useState(false)
 
   useEffect(() => {
     // loadOfficialTools().then(setOfficialSkills).catch(() => {})
@@ -654,6 +770,22 @@ export default function SkillsPage() {
 
     fetchInstalledSkills()
   }, [])
+
+  // Open the DevStudioDialog onto an existing session when the URL carries
+  // `?devStudio=<sessionId>` — set by the global NotificationCenter cards in
+  // (employee)/components/notifications/notification-center.tsx. After
+  // opening we strip the param so a manual close + reopen creates a fresh
+  // session instead of pivoting back to the deep-linked one.
+  useEffect(() => {
+    const id = searchParams.get('devStudio')
+    if (!id) return
+    setDevStudioInitialSessionId(id)
+    setDevStudioOpen(true)
+    const next = new URLSearchParams(searchParams.toString())
+    next.delete('devStudio')
+    const query = next.toString()
+    router.replace(query ? `/skills?${query}` : '/skills')
+  }, [searchParams, router])
 
   const fetchInstalledSkills = () => {
     fetch('/api/employee/skills')
@@ -715,7 +847,11 @@ export default function SkillsPage() {
 
   // Enter instance list
   const handleTemplateClick = (skill: SkillPackage) => {
-    if (!skill.code) return // Without code, instances not supported
+    // OpenClaw-style templates have no code (external service); still allow instance management.
+    const ct = skill.connectorType
+    const isOpenclaw =
+      typeof ct === 'object' && ct !== null && (ct as { type?: string }).type === 'openclaw'
+    if (!skill.code && !isOpenclaw && skill.source !== 'dev-studio') return
     setSelectedTemplate(skill)
     loadInstances(skill.id)
   }
@@ -870,6 +1006,33 @@ export default function SkillsPage() {
     showToast('success', t('skills.renamedTo', { name: newName }))
   }
 
+  // Toggle publish-as-API for an instance
+  const handleTogglePublishApi = async (inst: ToolInstance, checked: boolean) => {
+    // Optimistically update UI
+    setInstances((prev) =>
+      prev.map((i) => (i.id === inst.id ? { ...i, publishedAsApi: checked } : i))
+    )
+    try {
+      const res = await fetch(`/api/employee/skills/instances/${inst.id}/publish-api`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ publishedAsApi: checked }),
+      })
+      if (!res.ok) {
+        // Revert on failure
+        setInstances((prev) =>
+          prev.map((i) => (i.id === inst.id ? { ...i, publishedAsApi: !checked } : i))
+        )
+        showToast('info', t('skills.saveFailed'))
+      }
+    } catch {
+      setInstances((prev) =>
+        prev.map((i) => (i.id === inst.id ? { ...i, publishedAsApi: !checked } : i))
+      )
+      showToast('info', t('skills.saveFailed'))
+    }
+  }
+
   // Delete instance
   const confirmDeleteInstance = async () => {
     if (!deleteInstanceTarget) return
@@ -896,69 +1059,108 @@ export default function SkillsPage() {
 
   // Installed tab: template card props
   const getInstalledCardProps = (installed: SkillPackage) => {
+    const ct = installed.connectorType
+    const isOpenclaw =
+      typeof ct === 'object' && ct !== null && (ct as { type?: string }).type === 'openclaw'
+    const clickable = installed.code || isOpenclaw || installed.source === 'dev-studio'
     return {
       onUninstall: () => setDeleteTarget({ id: installed.id, name: installed.name }),
-      onClick: installed.code ? () => handleTemplateClick(installed) : undefined,
-      onRename: (newName: string) => handleRename(installed, newName),
+      onClick: clickable ? () => handleTemplateClick(installed) : undefined,
+      onEditMeta: () => {
+        setEditingTemplateMeta(installed)
+        setMetaDraftName(installed.name)
+        setMetaDraftDescription(installed.description ?? '')
+      },
+      onDevelop:
+        installed.source === 'dev-studio'
+          ? () => {
+              setDevStudioToolId(installed.id)
+              setDevStudioOpen(true)
+            }
+          : undefined,
     }
   }
 
-  const handleRename = async (skill: SkillPackage, newName: string) => {
-    const updated = { ...skill, name: newName }
-    const res = await fetch('/api/employee/skills', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ skill: updated }),
-    })
-    if (!res.ok) {
-      showToast('info', t('skills.renameFailed'))
+  const handleSaveTemplateMeta = async () => {
+    if (!editingTemplateMeta || metaSaving) return
+    const name = metaDraftName.trim()
+    if (!name) {
+      showToast('info', t('skills.metaSaveFailed'))
       return
     }
-    setInstalledSkills((prev) => prev.map((s) => (s.id === skill.id ? updated : s)))
-    showToast('success', t('skills.renamedTo', { name: newName }))
+    const description = metaDraftDescription
+    const updated: SkillPackage = { ...editingTemplateMeta, name, description }
+    setMetaSaving(true)
+    try {
+      const res = await fetch('/api/employee/skills', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ skill: updated }),
+      })
+      if (!res.ok) {
+        showToast('info', t('skills.metaSaveFailed'))
+        return
+      }
+      setInstalledSkills((prev) => prev.map((s) => (s.id === updated.id ? updated : s)))
+      if (selectedTemplate?.id === updated.id) {
+        setSelectedTemplate(updated)
+      }
+      setEditingTemplateMeta(null)
+      showToast('success', t('skills.metaSaved'))
+    } catch {
+      showToast('info', t('skills.metaSaveFailed'))
+    } finally {
+      setMetaSaving(false)
+    }
   }
 
   // handleUpgrade depends on official tools, not needed after hiding
   // const handleUpgrade = async (official: SkillPackage) => { ... }
 
-  // Export template as zip
+  // Export template via BFF route (handles both inline-code and .cmtool)
   const handleExportTemplate = async (skill: SkillPackage) => {
-    const zip = new JSZip()
-
-    // manifest.json - template metadata (no deploy/runtime state)
-    // _crewmeld_export flag: directly restore on import, skip AI generation
-    const manifest = {
-      _crewmeld_export: true,
-      id: skill.id,
-      name: skill.name,
-      description: skill.description,
-      version: skill.version,
-      source: skill.source,
-      category: skill.category,
-      author: skill.author,
-      language: skill.language ?? 'javascript',
-      parameters: skill.parameters,
-      presetParams: skill.presetParams,
-      envVars: skill.envVars?.map((e) => ({ name: e.name, value: '' })),
-      apiDoc: skill.apiDoc,
-      connectorType: skill.connectorType,
+    try {
+      const res = await fetch(`/api/employee/skills/${skill.id}/export`)
+      if (!res.ok) {
+        showToast('info', t('skills.exportFailed'))
+        return
+      }
+      const blob = await res.blob()
+      const disposition = res.headers.get('Content-Disposition') ?? ''
+      const filenameMatch = disposition.match(/filename="?([^"]+)"?/)
+      const filename = filenameMatch ? decodeURIComponent(filenameMatch[1]) : `${skill.name}.zip`
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      a.click()
+      URL.revokeObjectURL(url)
+      showToast('success', t('skills.exported'))
+    } catch {
+      showToast('info', t('skills.exportFailed'))
     }
-    zip.file('manifest.json', JSON.stringify(manifest, null, 2))
+  }
 
-    // Code file
-    if (skill.code) {
-      const ext = (skill.language ?? 'javascript') === 'python' ? 'py' : 'js'
-      zip.file(`tool.${ext}`, skill.code)
+  // Export instance as standalone docker-compose package
+  const handleExportInstance = async (instanceId: string, instanceName: string) => {
+    try {
+      const res = await fetch(`/api/employee/skills/instances/${instanceId}/export`)
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        showToast('info', text || t('skills.exportFailed'))
+        return
+      }
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${instanceName}-docker.zip`
+      a.click()
+      URL.revokeObjectURL(url)
+      showToast('success', t('skills.exported'))
+    } catch {
+      showToast('info', t('skills.exportFailed'))
     }
-
-    const blob = await zip.generateAsync({ type: 'blob' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${skill.name}.zip`
-    a.click()
-    URL.revokeObjectURL(url)
-    showToast('success', t('skills.exported'))
   }
 
   // Import .md/.txt -> extract content, feed to AI generator
@@ -1177,12 +1379,38 @@ export default function SkillsPage() {
     }
   }
 
+  // Import a .cmtool (dev-studio workspace zip) — server uploads to MinIO + DB
+  const handleImportCmtool = async (file: File) => {
+    try {
+      const form = new FormData()
+      form.append('file', file)
+      const res = await fetch('/api/employee/skills/import-cmtool', {
+        method: 'POST',
+        body: form,
+      })
+      const body = (await res.json().catch(() => null)) as {
+        success?: boolean
+        skill?: SkillPackage
+      } | null
+      if (!res.ok || !body?.success || !body.skill) {
+        showToast('info', t('skills.importFileFailed'))
+        return
+      }
+      setInstalledSkills((prev) => [body.skill as SkillPackage, ...prev])
+      showToast('success', t('skills.importedDirectly', { name: body.skill.name }))
+    } catch {
+      showToast('info', t('skills.importFileFailed'))
+    }
+  }
+
   // Unified import entry: route by file extension
   const importInputRef = useRef<HTMLInputElement>(null)
   const handleImportFile = (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase()
     if (ext === 'zip') {
       handleImportTemplate(file)
+    } else if (ext === 'cmtool') {
+      handleImportCmtool(file)
     } else if (ext === 'md' || ext === 'txt') {
       handleImportTextFile(file)
     } else {
@@ -1276,7 +1504,7 @@ export default function SkillsPage() {
               <input
                 ref={importInputRef}
                 type='file'
-                accept='.zip,.md,.txt'
+                accept='.zip,.cmtool,.md,.txt'
                 className='hidden'
                 onChange={(e) => {
                   const file = e.target.files?.[0]
@@ -1294,18 +1522,34 @@ export default function SkillsPage() {
               </Button>
               <PermissionGuard requires='skill:create'>
                 <Button
-                  onClick={() => setAiGeneratorOpen(true)}
+                  onClick={() => setDevStudioOpen(true)}
                   className='bg-violet-600 hover:bg-violet-700'
-                  data-testid='skills:button:ai-generate'
+                  data-testid='skills:open-dev-studio'
                 >
-                  <Sparkles className='mr-2 h-4 w-4' />
-                  {t('skills.createTool')}
+                  {hasResumableDevSession ? (
+                    <Sparkles className='mr-2 h-4 w-4' />
+                  ) : (
+                    <Plus className='mr-2 h-4 w-4' />
+                  )}
+                  {hasResumableDevSession ? t('skills.openDevStudio') : t('skills.createTool')}
                 </Button>
               </PermissionGuard>
             </>
           )}
         </div>
       </div>
+
+      <DevStudioDialog
+        open={devStudioOpen}
+        onClose={() => {
+          setDevStudioOpen(false)
+          setDevStudioInitialSessionId(null)
+          setDevStudioToolId(undefined)
+          fetchInstalledSkills()
+        }}
+        initialSessionId={devStudioInitialSessionId}
+        toolId={devStudioToolId}
+      />
 
       {/* Instance list view */}
       {selectedTemplate ? (
@@ -1334,11 +1578,14 @@ export default function SkillsPage() {
                   template={selectedTemplate}
                   onDeploy={() => handleDeployInstance(inst)}
                   onUndeploy={() => handleUndeployInstance(inst)}
+                  onOpen={() => setEditingInstance(inst)}
                   onEdit={() => setEditingInstance(inst)}
                   onRename={(name) => handleRenameInstance(inst, name)}
                   onDelete={() => setDeleteInstanceTarget({ id: inst.id, name: inst.name })}
+                  onExportCompose={() => handleExportInstance(inst.id, inst.name)}
                   deploying={deployingIds.has(inst.id)}
                   undeploying={undeployingIds.has(inst.id)}
+                  onTogglePublishApi={(checked) => handleTogglePublishApi(inst, checked)}
                 />
               ))}
             </div>
@@ -1346,28 +1593,28 @@ export default function SkillsPage() {
         </div>
       ) : (
         <>
-          {/* Tabs */}
-          <div className='flex w-fit gap-1 rounded-xl border border-gray-200 bg-gray-50 p-1'>
-            {TABS_META.map(({ key, tKey, icon: Icon }) => (
-              <button
-                key={key}
-                type='button'
-                onClick={() => setActiveTab(key)}
-                className={cn(
-                  'flex items-center gap-2 rounded-lg px-4 py-2 font-medium text-sm transition-colors',
-                  activeTab === key
-                    ? 'bg-white text-gray-900 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700'
-                )}
-                data-testid={`skills:tab:${key}`}
-              >
-                <Icon className='h-4 w-4' />
-                {t(tKey)}
-              </button>
-            ))}
-          </div>
-
-          {/* Upgrade reminder banner（Not needed after hiding official tools）*/}
+          {/* Tabs chip temporarily hidden — only one tab remains, restore when adding official tab back */}
+          {false && (
+            <div className='flex w-fit gap-1 rounded-xl border border-gray-200 bg-gray-50 p-1'>
+              {TABS_META.map(({ key, tKey, icon: Icon }) => (
+                <button
+                  key={key}
+                  type='button'
+                  onClick={() => setActiveTab(key)}
+                  className={cn(
+                    'flex items-center gap-2 rounded-lg px-4 py-2 font-medium text-sm transition-colors',
+                    activeTab === key
+                      ? 'bg-white text-gray-900 shadow-sm'
+                      : 'text-gray-500 hover:text-gray-700'
+                  )}
+                  data-testid={`skills:tab:${key}`}
+                >
+                  <Icon className='h-4 w-4' />
+                  {t(tKey)}
+                </button>
+              ))}
+            </div>
+          )}
 
           {/* Skill grid */}
           {activeTab === 'installed' && skillsLoading ? (
@@ -1503,6 +1750,9 @@ export default function SkillsPage() {
             envVars: allEnvVars.length > 0 ? allEnvVars : undefined,
             apiDoc: apiDoc || undefined,
             connectorType: tool.connectorType,
+            // Carry over the LLM's mode decision so the skill is created in
+            // mount mode directly — no manual SQL UPDATE needed afterwards.
+            needsFileMount: tool.needsFileMount === true,
           }
           const res = await fetch('/api/employee/skills', {
             method: 'POST',
@@ -1548,6 +1798,8 @@ export default function SkillsPage() {
       {/* Instance preset editor dialog */}
       {editingInstance && selectedTemplate && (
         <ToolEditor
+          instanceId={editingInstance.id}
+          instanceDeploy={editingInstance.deploy}
           skill={{
             ...selectedTemplate,
             presetParams: editingInstance.presetParams ?? selectedTemplate.presetParams,
@@ -1591,8 +1843,137 @@ export default function SkillsPage() {
             )
             setEditingInstance(null)
             showToast('success', t('skills.instancePresetUpdated', { name: editingInstance.name }))
+
+            // Long-lived deployments snapshot env at deploy time, so an
+            // env/connection edit only reaches the running container after a
+            // redeploy. Script tools resolve env per-invocation → no prompt.
+            const envChanged =
+              JSON.stringify(editingInstance.envVars ?? []) !==
+              JSON.stringify(updated.envVars ?? [])
+            const connChanged =
+              (editingInstance.connectionId ?? null) !== (updated.connectionId ?? null)
+            const deployType = editingInstance.deploy?.deployType
+            const isDeployed = editingInstance.deploy?.status === 'deployed'
+            if (
+              (envChanged || connChanged) &&
+              isDeployed &&
+              (deployType === 'opensandbox' || deployType === 'k8s')
+            ) {
+              setRedeployPrompt({
+                ...editingInstance,
+                envVars: updated.envVars,
+                connectionId: updated.connectionId,
+                presetParams: updated.presetParams,
+              })
+            }
           }}
         />
+      )}
+
+      {redeployPrompt && (
+        <RedeployPrompt
+          instanceName={redeployPrompt.name}
+          redeploying={deployingIds.has(redeployPrompt.id)}
+          onLater={() => setRedeployPrompt(null)}
+          onRedeploy={async () => {
+            const target = redeployPrompt
+            setRedeployPrompt(null)
+            await handleDeployInstance(target)
+          }}
+        />
+      )}
+
+      {/* Edit template meta (name + description) dialog */}
+      {editingTemplateMeta && (
+        <div
+          className='fixed inset-0 z-40 flex items-center justify-center bg-black/30'
+          onClick={() => {
+            if (!metaSaving) setEditingTemplateMeta(null)
+          }}
+        >
+          <div
+            className='relative w-[480px] rounded-2xl bg-white p-6 shadow-2xl'
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className='mb-4 flex items-center justify-between'>
+              <div className='flex items-center gap-3'>
+                <div className='flex h-10 w-10 items-center justify-center rounded-full bg-violet-100'>
+                  <Pencil className='h-5 w-5 text-violet-600' />
+                </div>
+                <h2 className='font-semibold text-gray-900 text-lg'>{t('skills.editMetaTitle')}</h2>
+              </div>
+              <button
+                type='button'
+                onClick={() => {
+                  if (!metaSaving) setEditingTemplateMeta(null)
+                }}
+                className='rounded-lg p-1.5 hover:bg-gray-100'
+              >
+                <X className='h-4 w-4 text-gray-400' />
+              </button>
+            </div>
+
+            <div className='space-y-4'>
+              <div>
+                <label
+                  htmlFor='template-meta-name'
+                  className='mb-1.5 block font-medium text-gray-700 text-sm'
+                >
+                  {t('skills.aiGeneratorToolName')}
+                </label>
+                <input
+                  id='template-meta-name'
+                  type='text'
+                  value={metaDraftName}
+                  onChange={(e) => setMetaDraftName(e.target.value)}
+                  className='w-full rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-violet-400 focus:outline-none focus:ring-1 focus:ring-violet-300'
+                  data-testid='dialog:edit-meta:input:name'
+                />
+              </div>
+              <div>
+                <label
+                  htmlFor='template-meta-description'
+                  className='mb-1.5 block font-medium text-gray-700 text-sm'
+                >
+                  {t('skills.aiGeneratorToolDesc')}
+                </label>
+                <textarea
+                  id='template-meta-description'
+                  value={metaDraftDescription}
+                  onChange={(e) => setMetaDraftDescription(e.target.value)}
+                  rows={3}
+                  className='w-full resize-none rounded-lg border border-gray-200 px-3 py-2 text-sm focus:border-violet-400 focus:outline-none focus:ring-1 focus:ring-violet-300'
+                  data-testid='dialog:edit-meta:input:description'
+                />
+              </div>
+            </div>
+
+            <div className='mt-6 flex justify-end gap-3'>
+              <Button
+                variant='outline'
+                onClick={() => setEditingTemplateMeta(null)}
+                disabled={metaSaving}
+              >
+                {t('common.cancel')}
+              </Button>
+              <Button
+                onClick={handleSaveTemplateMeta}
+                disabled={metaSaving || !metaDraftName.trim()}
+                className='bg-violet-600 hover:bg-violet-700'
+                data-testid='dialog:edit-meta:submit'
+              >
+                {metaSaving ? (
+                  <>
+                    <Loader2 className='mr-2 h-4 w-4 animate-spin' />
+                    {t('common.save')}
+                  </>
+                ) : (
+                  t('common.save')
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Uninstall confirmation dialog */}

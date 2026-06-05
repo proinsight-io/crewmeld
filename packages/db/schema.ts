@@ -504,6 +504,23 @@ export {
   taskTriggerTypeEnum,
 } from './schema/task-executions'
 export { toolApiKeys } from './schema/tool-api-keys'
+export { toolInstanceApiKeys } from './schema/tool-instance-api-keys'
+export type { ToolDevMessageKind } from './schema/tool-dev-messages'
+export { toolDevMessages } from './schema/tool-dev-messages'
+export type {
+  ToolDevPendingActionStatus,
+  ToolDevPendingActionType,
+} from './schema/tool-dev-pending-actions'
+export { toolDevPendingActions } from './schema/tool-dev-pending-actions'
+export type {
+  ToolDevApprovedDependencies,
+  ToolDevContainerStatus,
+  ToolDevPhaseHistoryEntry,
+  ToolDevSessionStatus,
+} from './schema/tool-dev-sessions'
+export { toolDevSessions } from './schema/tool-dev-sessions'
+export type { NewToolExecution, ToolExecution } from './schema/tool-executions'
+export { toolExecutions } from './schema/tool-executions'
 export { toolInstances } from './schema/tool-instances'
 export { tools } from './schema/tools'
 export type { WorkLogType } from './schema/work-logs'

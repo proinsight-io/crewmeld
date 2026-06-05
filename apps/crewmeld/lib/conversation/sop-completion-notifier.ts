@@ -32,6 +32,12 @@ interface NotifyParams {
   executionId: string
   output?: string
   files?: Array<{ name: string; mimeType: string; base64: string }>
+  /**
+   * Attachments already copied from sop/{execId}/outputs/ into
+   * conversations/{convId}/ by sop-bridge. Merged into the message's
+   * metadata.files alongside any base64-uploaded files.
+   */
+  workspaceFiles?: FileAttachment[]
   errorMessage?: string
   status: 'completed' | 'failed' | 'error'
 }
@@ -74,11 +80,19 @@ export async function notifyChannelOnSopCompletion(params: NotifyParams): Promis
       status: params.status,
     })
 
-    // Store files in MinIO (unified storage for all channels)
+    // Store files in MinIO (unified storage for all channels). Two
+    // sources are merged:
+    //   - params.files  : base64 from non-mount tools, upload now
+    //   - params.workspaceFiles : already in conversations/ (copied by
+    //                             sop-bridge from sop/{execId}/outputs/),
+    //                             use as-is
     let fileMetadata: FileAttachment[] | undefined
-    if (params.files && params.files.length > 0) {
+    if (
+      (params.files && params.files.length > 0) ||
+      (params.workspaceFiles && params.workspaceFiles.length > 0)
+    ) {
       fileMetadata = []
-      for (const f of params.files) {
+      for (const f of params.files ?? []) {
         try {
           const buf = Buffer.from(f.base64, 'base64')
           const attachment = await uploadConversationFile(
@@ -91,6 +105,9 @@ export async function notifyChannelOnSopCompletion(params: NotifyParams): Promis
         } catch (err) {
           logger.warn('SOP file upload to MinIO failed', { fileName: f.name, error: err })
         }
+      }
+      if (params.workspaceFiles && params.workspaceFiles.length > 0) {
+        fileMetadata.push(...params.workspaceFiles)
       }
     }
 

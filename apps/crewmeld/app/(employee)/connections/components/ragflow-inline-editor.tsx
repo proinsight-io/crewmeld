@@ -347,7 +347,7 @@ export function RagflowInlineEditor({
                   data-testid={`ragflow-inline:input:${field.key}`}
                   type={
                     isConfiguredPwd
-                      ? 'text' // 显示脱敏值，不用 password 遮盖
+                      ? 'text' // show the masked preview as plain text, no password obfuscation
                       : field.type === 'password'
                         ? 'password'
                         : field.type === 'number'

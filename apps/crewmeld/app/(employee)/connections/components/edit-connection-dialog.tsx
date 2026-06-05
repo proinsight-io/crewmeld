@@ -5,7 +5,12 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
-import type { ConnectionCardData, ConnectionType, DatabaseSubtype } from '@/lib/connectors/types'
+import type {
+  ConnectionCardData,
+  ConnectionType,
+  DatabaseSubtype,
+  OpenclawEndpoint,
+} from '@/lib/connectors/types'
 import {
   CONNECTION_CONFIG_FIELDS,
   CONNECTION_TYPE_I18N_KEYS,
@@ -21,6 +26,7 @@ import {
   flatToCustomApiConfig,
   type TestResponse,
 } from './custom-api-editor'
+import { newEmptyEndpoint, OpenclawEndpointsEditor } from './openclaw-endpoints-editor'
 
 interface EditConnectionDialogProps {
   connection: ConnectionCardData | null
@@ -48,7 +54,11 @@ export function EditConnectionDialog({
   const [customApiResponse, setCustomApiResponse] = useState<TestResponse | null>(null)
   const [isApiTesting, setIsApiTesting] = useState(false)
 
+  // OpenClaw specific state — pool of endpoints; tokens come in masked (****).
+  const [openclawEndpoints, setOpenclawEndpoints] = useState<OpenclawEndpoint[] | null>(null)
+
   const isCustomApi = connection?.type === 'custom_api'
+  const isOpenclaw = connection?.type === 'openclaw'
 
   useEffect(() => {
     if (connection) {
@@ -61,8 +71,29 @@ export function EditConnectionDialog({
         setCustomApiConfig(flatToCustomApiConfig(connection.config as Record<string, unknown>))
         setConfig({})
         setConfiguredPasswordKeys(new Set())
+        setOpenclawEndpoints(null)
+      } else if (connection.type === 'openclaw') {
+        setCustomApiConfig(null)
+        setConfig({})
+        setConfiguredPasswordKeys(new Set())
+        const raw = (connection.config as Record<string, unknown>).endpoints
+        const list: OpenclawEndpoint[] = Array.isArray(raw)
+          ? (raw as unknown[])
+              .map((entry) => {
+                if (!entry || typeof entry !== 'object') return null
+                const e = entry as Record<string, unknown>
+                return {
+                  label: typeof e.label === 'string' ? e.label : '',
+                  url: typeof e.url === 'string' ? e.url : '',
+                  token: typeof e.token === 'string' ? e.token : '',
+                }
+              })
+              .filter((x): x is OpenclawEndpoint => x !== null)
+          : []
+        setOpenclawEndpoints(list.length > 0 ? list : [newEmptyEndpoint()])
       } else {
         setCustomApiConfig(null)
+        setOpenclawEndpoints(null)
         const cfg: Record<string, string | number | boolean> = {}
         const pwdConfigured = new Set<string>()
         const pwdKeys = new Set(
@@ -129,6 +160,16 @@ export function EditConnectionDialog({
 
       if (isCustomApi && customApiConfig) {
         payload.config = customApiConfigToFlat(customApiConfig)
+      } else if (isOpenclaw && openclawEndpoints) {
+        payload.config = {
+          endpoints: openclawEndpoints
+            .map((ep) => ({
+              label: ep.label.trim(),
+              url: ep.url.trim(),
+              token: ep.token,
+            }))
+            .filter((ep) => ep.label && ep.url && ep.token),
+        }
       } else {
         const cleanConfig: Record<string, unknown> = {}
         let hasConfigChanges = false
@@ -168,9 +209,12 @@ export function EditConnectionDialog({
     configuredPasswordKeys,
     isCustomApi,
     customApiConfig,
+    isOpenclaw,
+    openclawEndpoints,
     onOpenChange,
     onUpdated,
     t,
+    tMessage,
   ])
 
   const fields = (() => {
@@ -187,7 +231,10 @@ export function EditConnectionDialog({
   return (
     <Dialog open={connection !== null} onOpenChange={onOpenChange}>
       <DialogContent
-        className={cn('max-h-[90vh] overflow-y-auto', isCustomApi ? 'max-w-3xl' : 'max-w-md')}
+        className={cn(
+          'max-h-[90vh] overflow-y-auto',
+          isCustomApi || isOpenclaw ? 'max-w-3xl' : 'max-w-md'
+        )}
       >
         <DialogHeader>
           <DialogTitle>
@@ -255,6 +302,12 @@ export function EditConnectionDialog({
               isTesting={isApiTesting}
               onSend={handleTestApi}
               compact
+            />
+          ) : isOpenclaw && openclawEndpoints ? (
+            <OpenclawEndpointsEditor
+              value={openclawEndpoints}
+              onChange={setOpenclawEndpoints}
+              disabled={isSaving}
             />
           ) : (
             /* Other types: original field form */

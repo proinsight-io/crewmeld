@@ -15,11 +15,16 @@ import { resolveModelConfig } from '@/lib/conversation/model-config'
 import type { ConversationModelConfig } from '@/lib/conversation/types'
 import { t } from '@/lib/core/server-i18n'
 import { generateApprovalToken } from '@/lib/human-employees/approval-token'
-import { loadRagflowConfig, retrieval } from '@/lib/ragflow'
+import { buildImageProxyUrl, loadRagflowConfig, retrieval } from '@/lib/ragflow'
 import type { NodeExecutionResult, SopNode, SopStateSnapshot } from '@/types/sop'
 import { executeLLMWithTools, type ToolCallLogEntry } from './llm-tool-executor'
 import { getSopNotificationQueue, getSopTimeoutQueue } from './queue'
-import { buildToolDefinitionsFromIds, type ToolEndpointInfo } from './tool-builder'
+import {
+  buildToolDefinitionsFromIds,
+  cleanupMountedTools,
+  materializeMountedTools,
+  type ToolEndpointInfo,
+} from './tool-builder'
 
 const logger = createLogger('SopNodeExecutor')
 
@@ -732,6 +737,12 @@ async function supplementUpstreamTools(
       systemPrompt,
       userMessage,
       maxRounds: 3,
+      // Carry the SOP execution id through the supplement path so any
+      // needsFileMount tool gets `_sopFileDir` + `_sopExecutionId` injected
+      // (lib/sop/llm-tool-executor.ts:284). Without this the tool falls
+      // back to its own input only and ends up reading the wrong /root/io
+      // subdir — silent on the BFF side, FileNotFoundError on the pod side.
+      sopExecutionId: executionId,
     })
 
     if (result.toolResults.length === 0) {
@@ -880,6 +891,15 @@ async function executeDigitalEmployeeWithLLMTools(
     return { error: errorMessage }
   }
 
+  // Hoisted so the finally block can observe what mounted tools were
+  // materialized. Under the B1 shared-mount model these Pods are
+  // long-lived and cleanup is a no-op; the list is mostly diagnostic.
+  let deployedMountedTools: Array<{
+    toolName: string
+    skillId: string
+    instanceId: string
+  }> = []
+
   try {
     // Query digital employee name and persona (persona retained for log signal only; not injected into prompt)
     const [employee] = await db
@@ -901,6 +921,22 @@ async function executeDigitalEmployeeWithLLMTools(
     const { tools, endpointMap } = node.toolIds?.length
       ? await buildToolDefinitionsFromIds(node.toolIds)
       : { tools: [], endpointMap: new Map() }
+
+    // For any tool with needsFileMount=true, deploy a per-execution Pod
+    // For any tool with needsFileMount=true, ensure the shared instance
+    // Pod exists and patch its endpoint into the map. Under the B1
+    // shared-mount model these Pods are long-lived; the returned list
+    // is observational only — the finally block does not tear them down.
+    deployedMountedTools = await materializeMountedTools(endpointMap, executionId)
+
+    // URL prefix the tool will get as `_sopFileUrlPrefix` for output
+    // links it returns. Must point at the project's proxy route.
+    const appBaseUrl = (
+      process.env.APP_BASE_URL ??
+      process.env.NEXT_PUBLIC_APP_URL ??
+      'http://localhost:6100'
+    ).replace(/\/$/, '')
+    const sopFileUrlPrefix = `${appBaseUrl}/api/sop/${executionId}/files`
 
     logger.info('[SOP Node] Resources ready - digital employee/model/tools', {
       executionId,
@@ -1055,8 +1091,16 @@ async function executeDigitalEmployeeWithLLMTools(
           })),
         })
         if (chunks.length > 0) {
+          // Preserve images RagFlow attaches to chunks (e.g. PDF figures) by
+          // appending a markdown image pointing at the same-origin proxy; the
+          // chat UI renders it inline.
           const referenceText = chunks
-            .map((c, i) => `[Reference ${i + 1}] ${c.content}`)
+            .map((c, i) => {
+              const body = c.image_id
+                ? `${c.content}\n\n![](${buildImageProxyUrl(c.image_id)})`
+                : c.content
+              return `[Reference ${i + 1}] ${body}`
+            })
             .join('\n\n')
           systemPromptSections.push(
             '',
@@ -1105,7 +1149,17 @@ async function executeDigitalEmployeeWithLLMTools(
       '- Queried entity does not exist (e.g. no inventory for a specific model, no price for a product)',
       '- Values are 0 or lists are empty',
       'Even if the result is "not found" or "quantity is 0", report the query results as-is.',
-      'Let subsequent workflow steps decide how to handle them.'
+      'Let subsequent workflow steps decide how to handle them.',
+      '',
+      '## File Deliverables',
+      // The literal executionId is embedded here so the LLM never has to
+      // GUESS the execId path segment from the filename — that's how a
+      // production SOP wound up with broken URLs (the LLM stripped the
+      // `sop_` prefix because it looked like decoration). Tool results
+      // now also carry a ready-made `download_url` field (see
+      // lib/sop/llm-tool-executor.ts) — prefer copying that over
+      // constructing your own.
+      `If any tool returned a downloadable file the user should keep, you MUST include those URLs in your final answer as markdown links: \`[fileName](downloadUrl)\`. The current SOP execution id is \`${executionId}\` — when constructing URLs the path is \`/api/sop/${executionId}/files/<filename>\` (use this id VERBATIM, do not strip, abbreviate, or modify it). If the tool result already contains a \`download_url\` / \`downloadUrl\` field, copy it directly without rebuilding. Files you do NOT mention in the final answer are treated as intermediate artifacts and will be deleted after 30 days. If the task produced no files, answer normally and ignore this rule.`
     )
 
     const systemPrompt = systemPromptSections.join('\n') + getLanguageInstruction(snapshot)
@@ -1162,6 +1216,8 @@ async function executeDigitalEmployeeWithLLMTools(
       systemPrompt,
       userMessage,
       maxRounds: 5,
+      sopExecutionId: executionId,
+      sopFileUrlPrefix,
       onToolResult: async (entry: ToolCallLogEntry) => {
         try {
           const displayName = entry.instanceName || entry.toolName
@@ -1239,6 +1295,8 @@ async function executeDigitalEmployeeWithLLMTools(
           systemPrompt: supplementPrompt,
           userMessage: userMessage,
           maxRounds: 3,
+          sopExecutionId: executionId,
+          sopFileUrlPrefix,
           onToolResult: async (entry: ToolCallLogEntry) => {
             try {
               const displayName = entry.instanceName || entry.toolName
@@ -1426,6 +1484,18 @@ async function executeDigitalEmployeeWithLLMTools(
       .where(eq(sopNodeExecutions.id, nodeExecId))
 
     return { error: errorMessage }
+  } finally {
+    // Always tear down per-execution mounted-tool Pods, success or fail.
+    if (deployedMountedTools.length > 0) {
+      try {
+        await cleanupMountedTools(deployedMountedTools, executionId)
+      } catch (cleanupErr) {
+        logger.warn('Mounted tool cleanup failed', {
+          executionId,
+          error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+        })
+      }
+    }
   }
 }
 

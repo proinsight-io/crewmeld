@@ -29,6 +29,7 @@ function rowToSkill(row: typeof tools.$inferSelect): SkillPackage {
     envVars: row.envVars as SkillPackage['envVars'],
     apiDoc: row.apiDoc ?? undefined,
     connectorType: row.connectorType as SkillPackage['connectorType'],
+    needsFileMount: row.needsFileMount ?? false,
   }
 }
 
@@ -77,6 +78,7 @@ async function _POST(request: NextRequest) {
         envVars: skill.envVars ?? null,
         apiDoc: skill.apiDoc ?? null,
         connectorType: skill.connectorType ?? null,
+        needsFileMount: skill.needsFileMount ?? false,
         updatedAt: now,
       })
       .where(eq(tools.id, skill.id))
@@ -98,6 +100,7 @@ async function _POST(request: NextRequest) {
       envVars: skill.envVars ?? null,
       apiDoc: skill.apiDoc ?? null,
       connectorType: skill.connectorType ?? null,
+      needsFileMount: skill.needsFileMount ?? false,
       createdBy: auth.userId!,
       createdAt: now,
       updatedAt: now,

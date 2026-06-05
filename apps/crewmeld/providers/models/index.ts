@@ -1,19 +1,23 @@
 import { chineseProviders } from '@/providers/models/chinese'
+import { codingProviders } from '@/providers/models/coding'
 import type {
   ModelCapabilities,
   ModelDefinition,
+  ProviderCategory,
   ProviderDefinition,
 } from '@/providers/models/types'
 import { westernProviders } from '@/providers/models/western'
 import type { ModelPricing } from '@/providers/types'
 
-export type { ModelCapabilities, ModelDefinition, ProviderDefinition }
+export type { ModelCapabilities, ModelDefinition, ProviderCategory, ProviderDefinition }
 
 /** Combined registry of all provider definitions — single source of truth. */
 export const PROVIDER_DEFINITIONS: Record<string, ProviderDefinition> = {
   ...westernProviders,
   ...chineseProviders,
+  ...codingProviders,
 }
+
 
 // ---------------------------------------------------------------------------
 // Provider / model lookup helpers

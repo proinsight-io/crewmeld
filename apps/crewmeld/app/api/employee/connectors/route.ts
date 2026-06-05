@@ -11,6 +11,7 @@ import { decryptConfig, encryptConfig, maskSensitiveFields } from '@/lib/connect
 import { sanitizeConnectionConfig } from '@/lib/connectors/sanitize'
 import type { ConnectionStatus, StatusIndicator } from '@/lib/connectors/types'
 import { CHANNEL_TYPE_LIST } from '@/lib/connectors/types'
+import { maskSensitive } from '@/lib/dev-studio/connection-resolver'
 
 const logger = createLogger('ConnectorsAPI')
 
@@ -37,6 +38,8 @@ export async function GET(request: NextRequest) {
     const url = new URL(request.url)
     const typeFilter = url.searchParams.get('type')
     const statusFilter = url.searchParams.get('status')
+    const subtypeFilter = url.searchParams.get('subtype')
+    const withConfig = url.searchParams.get('withConfig') === 'true'
 
     const filters = [
       // Exclude message channel types, channels are managed by /api/employee/channels
@@ -55,15 +58,24 @@ export async function GET(request: NextRequest) {
       .where(filters.length > 0 ? and(...filters) : undefined)
       .orderBy(systemConnections.createdAt)
 
-    const connections = rows.map((row) => {
+    const connections: Array<Record<string, unknown>> = []
+    for (const row of rows) {
       let config: Record<string, unknown> = {}
+      let decrypted: Record<string, unknown> = {}
       try {
-        config = maskSensitiveFields(JSON.parse(decryptConfig(row.configEncrypted)))
+        decrypted = JSON.parse(decryptConfig(row.configEncrypted)) as Record<string, unknown>
+        config = maskSensitiveFields({ ...decrypted })
       } catch {
         logger.warn(`Failed to decrypt connection config: ${row.id}`)
       }
 
-      return {
+      // Post-query subtype filter: check the decrypted config's dbType field
+      if (subtypeFilter) {
+        const dbType = typeof decrypted.dbType === 'string' ? decrypted.dbType : undefined
+        if (dbType !== subtypeFilter) continue
+      }
+
+      const entry: Record<string, unknown> = {
         id: row.id,
         name: row.name,
         type: row.type,
@@ -76,7 +88,17 @@ export async function GET(request: NextRequest) {
         updatedAt: row.updatedAt?.toISOString() ?? '',
         config,
       }
-    })
+
+      if (withConfig) {
+        const preview: Record<string, unknown> = {}
+        for (const [k, v] of Object.entries(decrypted)) {
+          preview[k] = maskSensitive(k, v)
+        }
+        entry.configPreview = preview
+      }
+
+      connections.push(entry)
+    }
 
     return apiOk({ connections, total: connections.length })
   } catch (error) {

@@ -19,6 +19,13 @@ interface AddModelWizardProps {
   onCreated: () => void
 }
 
+const CODING_DEFAULT_ENDPOINTS: Record<string, string> = {
+  'kimi-coding': 'https://api.moonshot.cn/v1',
+  'qianfan-coding': 'https://qianfan.baidubce.com/anthropic/coding',
+  'qwen-coding': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  'claude-coding': 'https://api.anthropic.com/v1',
+}
+
 const PROVIDER_GROUP_IDS = [
   {
     key: 'domestic' as const,
@@ -32,7 +39,11 @@ const PROVIDER_GROUP_IDS = [
       'google' /*, 'azure-openai', 'azure-anthropic', 'xai', 'mistral' */,
     ],
   },
-  // 平台聚合分组暂不展示
+  {
+    key: 'coding' as const,
+    ids: ['kimi-coding', 'qianfan-coding', 'qwen-coding', 'claude-coding'],
+  },
+  // Platform aggregator group is hidden for now
   // { key: 'platform' as const, ids: ['openrouter', 'groq', 'cerebras', 'bedrock', 'vertex'] },
   { key: 'local' as const, ids: ['ollama', 'vllm'] },
 ]
@@ -51,8 +62,9 @@ export function AddModelWizard({
     () => [
       { label: t('connections.modelGroupDomestic'), ids: PROVIDER_GROUP_IDS[0].ids },
       { label: t('connections.modelGroupInternational'), ids: PROVIDER_GROUP_IDS[1].ids },
-      // { label: t('connections.modelGroupPlatform'), ids: ... }, // 平台聚合暂不展示
-      { label: t('connections.modelGroupLocal'), ids: PROVIDER_GROUP_IDS[2].ids },
+      { label: t('connections.modelGroupCoding'), ids: PROVIDER_GROUP_IDS[2].ids },
+      // { label: t('connections.modelGroupPlatform'), ids: ... }, // platform aggregators hidden for now
+      { label: t('connections.modelGroupLocal'), ids: PROVIDER_GROUP_IDS[3].ids },
     ],
     [t]
   )
@@ -98,6 +110,11 @@ export function AddModelWizard({
   const handleGoStep2 = useCallback(() => {
     if (!selectedProvider) return
     setDisplayName(selectedProvider.name)
+    const def = PROVIDER_DEFINITIONS[selectedProvider.id]
+    if (def?.category === 'coding') {
+      setApiEndpoint(CODING_DEFAULT_ENDPOINTS[selectedProvider.id] ?? '')
+      setModelName(def.defaultModel)
+    }
     setStep(2)
   }, [selectedProvider])
 
@@ -115,10 +132,12 @@ export function AddModelWizard({
           modelName: modelName.trim() || undefined,
           apiKey: apiKey || undefined,
           apiEndpoint: apiEndpoint || undefined,
-          defaultParams: {
-            temperature: Number.parseFloat(temperature),
-            maxTokens: Number.parseInt(maxTokens, 10),
-          },
+          defaultParams: PROVIDER_DEFINITIONS[selectedProvider.id]?.category === 'coding'
+            ? {}
+            : {
+                temperature: Number.parseFloat(temperature),
+                maxTokens: Number.parseInt(maxTokens, 10),
+              },
         }),
       })
       const data = await res.json()
@@ -348,6 +367,7 @@ export function AddModelWizard({
               )}
             </div>
 
+            {PROVIDER_DEFINITIONS[selectedProvider.id]?.category !== 'coding' && (
             <div className='grid grid-cols-2 gap-4'>
               <div className='space-y-2'>
                 <Label htmlFor='wiz-temperature'>Temperature</Label>
@@ -372,6 +392,7 @@ export function AddModelWizard({
                 />
               </div>
             </div>
+            )}
 
             <div className='flex justify-between pt-2'>
               <Button variant='outline' onClick={() => setStep(1)}>

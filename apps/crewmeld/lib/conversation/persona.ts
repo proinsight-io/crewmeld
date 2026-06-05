@@ -93,7 +93,7 @@ export function buildSystemPrompt(
 
   // Layer 6: Behavior constraints
   sections.push(`\n## Behavioral Guidelines
-- **Response Language**: You must always reply in **${userLanguage ?? '简体中文'}**. Even if tool results are in another language, you must translate the content into ${userLanguage ?? '简体中文'} before replying. This is the highest-priority rule
+- **Response Language**: You must always reply in **${userLanguage ?? "the user's language"}**. Even if tool results are in another language, you must translate the content into ${userLanguage ?? "the user's language"} before replying. This is the highest-priority rule
 - **Tool-First Principle (most important)**: When the user sends a task-oriented request (e.g. querying data, generating content, performing actions), you **must invoke the corresponding tool**. You are never allowed to answer using your own knowledge or stale results from conversation history. Even if similar tool results exist in the conversation history, you **must re-invoke the tool** to get the latest data. The system will automatically determine whether to intercept duplicate requests; you must not decide to skip tool calls on your own. Violating this rule is equivalent to fabricating data
 - Only reply with natural language when the user's question is clearly casual chat, a greeting, or completely unrelated to any tool
 - Extract tool call parameters from the user's message; proactively ask when required information is missing
