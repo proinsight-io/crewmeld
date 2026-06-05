@@ -90,18 +90,22 @@ async function _POST(req: Request, { params }: { params: Promise<{ id: string }>
 
     logger.info('Start skill deployment', { id, name: skill.name })
 
-    const { endpoint, nodePort } = await deploySkill(skill as Parameters<typeof deploySkill>[0])
+    const result = await deploySkill(skill as Parameters<typeof deploySkill>[0])
+    if (result.deployType === 'opensandbox-script') {
+      return apiErr('api.skill.deployFailed', { status: 400, extra: { detail: 'Template-level deploy not supported for script-type .cmtool tools' } })
+    }
 
     const deploy: DeployInfo = {
       status: 'deployed',
-      endpoint,
-      nodePort,
+      deployType: result.deployType,
+      endpoint: result.endpoint,
+      nodePort: result.nodePort,
       deployedAt: new Date().toISOString(),
     }
 
     await db.update(tools).set({ deploy, updatedAt: new Date() }).where(eq(tools.id, id))
 
-    logger.info('Skill deployed successfully', { id, endpoint })
+    logger.info('Skill deployed successfully', { id, endpoint: result.endpoint })
     return apiOk(null, { extra: { deploy } })
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)

@@ -66,6 +66,13 @@ export function KnowledgeTab({ employeeId, ragflowDatasetIds = [], onUpdate }: K
 
   const boundDatasets = allDatasets.filter((ds) => ragflowDatasetIds.includes(ds.id))
   const availableDatasets = allDatasets.filter((ds) => !ragflowDatasetIds.includes(ds.id))
+  // IDs the employee config still references but RagFlow no longer has
+  // (dataset was deleted directly in RagFlow / via another path). Surface
+  // them so the user can clean up the stale binding from the UI — otherwise
+  // they sit forever and break KB retrieval with "you don't own the dataset".
+  const deadBindingIds = ragflowDatasetIds.filter(
+    (id) => !allDatasets.some((ds) => ds.id === id)
+  )
 
   const saveBinding = async (newIds: string[]) => {
     setSaving(true)
@@ -192,14 +199,54 @@ export function KnowledgeTab({ employeeId, ragflowDatasetIds = [], onUpdate }: K
         </button>
       </div>
 
+      {/* Dead bindings (referenced but no longer in RagFlow) */}
+      {deadBindingIds.length > 0 && (
+        <div className='mb-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3'>
+          {deadBindingIds.map((id) => (
+            <div
+              key={id}
+              className='group relative flex items-start gap-3 rounded-xl border border-red-200 border-dashed bg-red-50/40 p-4'
+              data-testid={`knowledge-tab:dead-binding:${id}`}
+            >
+              <div className='flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-red-100'>
+                <AlertCircle className='h-4 w-4 text-red-500' />
+              </div>
+              <div className='min-w-0 flex-1 pr-8'>
+                <p className='truncate font-medium text-red-700 text-sm'>
+                  {t('employees.knowledgeDeadBinding')}
+                </p>
+                <p className='mt-0.5 line-clamp-1 text-red-400 text-xs'>
+                  {t('employees.knowledgeDeadBindingHint')}
+                </p>
+                <p className='mt-1.5 truncate font-mono text-red-300 text-xs'>{id}</p>
+              </div>
+              <button
+                type='button'
+                onClick={() => handleUnbind(id)}
+                disabled={removingId === id || saving}
+                className='absolute top-3 right-3 rounded-md p-1 text-red-400 transition-all hover:bg-red-100 hover:text-red-600 disabled:opacity-50'
+                title={t('employees.knowledgeCleanupDead')}
+                data-testid={`knowledge-tab:cleanup-dead:${id}`}
+              >
+                {removingId === id ? (
+                  <Loader2 className='h-4 w-4 animate-spin' />
+                ) : (
+                  <Trash2 className='h-4 w-4' />
+                )}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Bound list */}
-      {boundDatasets.length === 0 ? (
+      {boundDatasets.length === 0 && deadBindingIds.length === 0 ? (
         <div className='flex h-48 flex-col items-center justify-center rounded-xl border border-gray-200 border-dashed bg-white'>
           <BookOpen className='h-10 w-10 text-gray-200' />
           <p className='mt-3 text-gray-500 text-sm'>{t('employees.knowledgeEmpty')}</p>
           <p className='mt-1 text-gray-400 text-xs'>{t('employees.knowledgeEmptyHint')}</p>
         </div>
-      ) : (
+      ) : boundDatasets.length === 0 ? null : (
         <div className='grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3'>
           {boundDatasets.map((ds) => (
             <div

@@ -47,8 +47,6 @@ export interface BrandConfig {
 
 /** Public-facing brand name. */
 export const BRAND_NAME = 'CrewMeld'
-/** Longer display name used where more context fits (e.g. page titles). */
-export const BRAND_DISPLAY_NAME = 'CrewMeld 数字员工平台'
 /** Primary brand domain. */
 export const BRAND_DOMAIN = 'crewmeld.io'
 /** Support inbox address. */
@@ -59,10 +57,6 @@ export const BRAND_SUPPORT_EMAIL = 'contact@crewmeld.ai'
 export const BRAND_LOGO_URL = '/logo/crewmeld-text-dark.svg'
 /** Default favicon path served from the `public/` directory. */
 export const BRAND_FAVICON_URL = '/favicon/favicon.ico'
-/** Chinese tagline used on marketing surfaces. */
-export const BRAND_TAGLINE_ZH = '企业 AI 数字员工平台'
-/** English tagline used on marketing surfaces. */
-export const BRAND_TAGLINE_EN = 'Enterprise AI Digital Employee Platform'
 /** Relative URL to the privacy policy page. */
 export const BRAND_PRIVACY_URL = '/privacy'
 /** Relative URL to the terms of service page. */

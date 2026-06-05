@@ -15,6 +15,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import type { ModelConfigData, ModelTestResult } from '@/lib/models/types'
 import { type TranslationKey, useTranslation } from '@/hooks/use-translation'
+import { PROVIDER_DEFINITIONS } from '@/providers/models'
 
 interface ModelConfigDialogProps {
   open: boolean
@@ -47,7 +48,7 @@ export function ModelConfigDialog({ open, onOpenChange, config, onSaved }: Model
     setTestResult(null)
   }, [config])
 
-  // 当 Dialog 由父组件 open prop 打开时，resetForm 回填表单
+  // When the dialog is opened via the parent's `open` prop, run resetForm to repopulate the form
   useEffect(() => {
     if (open && config) {
       resetForm()
@@ -105,10 +106,12 @@ export function ModelConfigDialog({ open, onOpenChange, config, onSaved }: Model
       body.modelName = modelName.trim() || null
       if (apiKey) body.apiKey = apiKey
       if (apiEndpoint !== (config.apiEndpoint ?? '')) body.apiEndpoint = apiEndpoint
-      body.defaultParams = {
-        temperature: Number.parseFloat(temperature),
-        maxTokens: Number.parseInt(maxTokens, 10),
-      }
+      body.defaultParams = PROVIDER_DEFINITIONS[config.providerId]?.category === 'coding'
+        ? {}
+        : {
+            temperature: Number.parseFloat(temperature),
+            maxTokens: Number.parseInt(maxTokens, 10),
+          }
       await fetch(`/api/employee/models/${config.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -219,6 +222,7 @@ export function ModelConfigDialog({ open, onOpenChange, config, onSaved }: Model
             />
           </div>
 
+          {PROVIDER_DEFINITIONS[config.providerId]?.category !== 'coding' && (
           <div className='grid grid-cols-2 gap-4'>
             <div className='space-y-2'>
               <Label htmlFor='temperature'>Temperature</Label>
@@ -243,6 +247,7 @@ export function ModelConfigDialog({ open, onOpenChange, config, onSaved }: Model
               />
             </div>
           </div>
+          )}
 
           {testResult && (
             <div

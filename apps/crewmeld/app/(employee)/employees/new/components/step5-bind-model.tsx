@@ -146,7 +146,14 @@ export function Step5BindModel({ selectedModelId, onSelectModel }: Step5BindMode
                         )}
                       </div>
                       <div className='min-w-0 flex-1'>
-                        <p className='font-medium text-gray-900 text-sm'>{model.displayName}</p>
+                        <div className='flex items-center gap-1.5'>
+                          <p className='font-medium text-gray-900 text-sm'>{model.displayName}</p>
+                          {PROVIDER_DEFINITIONS[model.providerId]?.category === 'coding' && (
+                            <span className='inline-flex items-center rounded bg-violet-100 px-1.5 py-0.5 font-medium text-violet-700 text-[10px]'>
+                              {t('connections.codingBadge')}
+                            </span>
+                          )}
+                        </div>
                         <div className='mt-0.5 flex items-center gap-2 text-gray-500 text-xs'>
                           <span>{model.providerName}</span>
                           {model.modelName && (

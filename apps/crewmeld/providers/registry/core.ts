@@ -1,15 +1,19 @@
 import { createLogger } from '@crewmeld/logger'
 import { anthropicProvider } from '@/providers/anthropic'
+import { claudeCodingProvider } from '@/providers/claude-coding'
 import { deepseekProvider } from '@/providers/deepseek'
 import { doubaoProvider } from '@/providers/doubao'
 import { ernieProvider } from '@/providers/ernie'
 import { googleProvider } from '@/providers/google'
 import { hunyuanProvider } from '@/providers/hunyuan'
+import { kimiCodingProvider } from '@/providers/kimi-coding'
 import { minimaxProvider } from '@/providers/minimax'
 import { moonshotProvider } from '@/providers/moonshot'
 import { ollamaProvider } from '@/providers/ollama'
 import { openaiProvider } from '@/providers/openai'
+import { qianfanCodingProvider } from '@/providers/qianfan-coding'
 import { qwenProvider } from '@/providers/qwen'
+import { qwenCodingProvider } from '@/providers/qwen-coding'
 import type { ProviderConfig, ProviderId } from '@/providers/types'
 import { vllmProvider } from '@/providers/vllm'
 import { zhipuProvider } from '@/providers/zhipu'
@@ -43,6 +47,10 @@ const REGISTRY_ENTRIES: RegistryEntry[] = [
   ['zhipu', zhipuProvider],
   ['doubao', doubaoProvider],
   ['minimax', minimaxProvider],
+  ['kimi-coding', kimiCodingProvider],
+  ['qianfan-coding', qianfanCodingProvider],
+  ['qwen-coding', qwenCodingProvider],
+  ['claude-coding', claudeCodingProvider],
 ]
 
 // ---------------------------------------------------------------------------
@@ -98,6 +106,10 @@ const CAPABILITY_OVERRIDES: Partial<Record<ProviderId, ProviderCapabilityFlags>>
   google: { streaming: true, functionCalling: true, visionInput: true, domesticHosting: false },
   vllm: { streaming: true, functionCalling: false, visionInput: false, domesticHosting: false },
   ollama: { streaming: true, functionCalling: false, visionInput: false, domesticHosting: false },
+  'kimi-coding': { streaming: true, functionCalling: true, visionInput: false, domesticHosting: true },
+  'qianfan-coding': { streaming: true, functionCalling: true, visionInput: false, domesticHosting: true },
+  'qwen-coding': { streaming: true, functionCalling: true, visionInput: false, domesticHosting: true },
+  'claude-coding': { streaming: true, functionCalling: true, visionInput: false, domesticHosting: false },
 }
 
 function getCapabilities(pid: ProviderId): ProviderCapabilityFlags {
@@ -591,6 +603,11 @@ const TIER_ASSIGNMENTS: Record<ProviderId, ProviderTier> = {
   minimax: 'experimental',
   vllm: 'selfhosted',
   ollama: 'selfhosted',
+  // Coding-specialized providers inherit their base vendor's tier.
+  'claude-coding': 'enterprise',
+  'qwen-coding': 'enterprise',
+  'qianfan-coding': 'enterprise',
+  'kimi-coding': 'standard',
 }
 
 function getTierFor(pid: ProviderId): ProviderTier {

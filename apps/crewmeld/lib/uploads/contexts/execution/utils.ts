@@ -54,7 +54,7 @@ function isValidExecutionKey(key: string): boolean {
   }
 
   const [, workspaceId, workflowId, executionId] = segments
-  return isUuid(workspaceId) && isUuid(workflowId) && isUuid(executionId)
+  return isUuid(workspaceId) && isUuid(workflowId) && executionId.length > 0
 }
 
 /**

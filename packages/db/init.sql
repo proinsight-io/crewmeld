@@ -561,6 +561,7 @@ CREATE TABLE "tool_instances" (
 	"preset_params" jsonb,
 	"env_vars" jsonb,
 	"deploy" jsonb,
+	"published_as_api" boolean DEFAULT false NOT NULL,
 	"created_by" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
@@ -583,6 +584,8 @@ CREATE TABLE "tools" (
 	"env_vars" jsonb,
 	"api_doc" text,
 	"connector_type" jsonb,
+	"needs_file_mount" boolean DEFAULT false NOT NULL,
+	"package_sha256" text,
 	"created_by" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
@@ -821,7 +824,83 @@ CREATE INDEX "work_logs_created_at_idx" ON "work_logs" USING btree ("created_at"
 CREATE INDEX "workspace_files_key_idx" ON "workspace_files" USING btree ("key");--> statement-breakpoint
 CREATE INDEX "workspace_files_user_id_idx" ON "workspace_files" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "workspace_files_workspace_id_idx" ON "workspace_files" USING btree ("workspace_id");--> statement-breakpoint
-CREATE INDEX "workspace_files_context_idx" ON "workspace_files" USING btree ("context");
+CREATE INDEX "workspace_files_context_idx" ON "workspace_files" USING btree ("context");--> statement-breakpoint
+-- ============================================================
+-- Migration 0006: Tool Dev Studio (Sub-spec B) — sessions / messages / pending_actions
+-- Source: packages/db/migrations/0006_tool_dev_studio_b_tables.sql
+-- ============================================================
+CREATE TABLE "tool_dev_messages" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"session_id" uuid NOT NULL,
+	"sequence" bigint NOT NULL,
+	"kind" text NOT NULL,
+	"payload" jsonb NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "tool_dev_pending_actions" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"session_id" uuid NOT NULL,
+	"ask_id" text NOT NULL,
+	"type" text NOT NULL,
+	"payload" jsonb NOT NULL,
+	"status" text DEFAULT 'pending' NOT NULL,
+	"answer" jsonb,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"answered_at" timestamp with time zone
+);
+--> statement-breakpoint
+CREATE TABLE "tool_dev_sessions" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"user_id" text NOT NULL,
+	"title" text,
+	"status" text DEFAULT 'active' NOT NULL,
+	"adopted_at" timestamp with time zone,
+	"tool_id" text,
+	"last_message_preview" text,
+	"pipeline_phases" jsonb,
+	"phase" text,
+	"phase_history" jsonb DEFAULT '[]'::jsonb NOT NULL,
+	"active_container_id" text,
+	"container_status" text DEFAULT 'destroyed' NOT NULL,
+	"workspace_dir" text NOT NULL,
+	"claude_state_dir" text NOT NULL,
+	"right_panel_visible" boolean DEFAULT false NOT NULL,
+	"approved_dependencies" jsonb DEFAULT '{"libraries":[],"domains":[]}'::jsonb NOT NULL,
+	"last_package" jsonb,
+	"model_config_id" text,
+	"model_name" text,
+	"total_input_tokens" bigint DEFAULT 0 NOT NULL,
+	"total_output_tokens" bigint DEFAULT 0 NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"last_active_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "tool_instance_api_keys" (
+	"id" text PRIMARY KEY NOT NULL,
+	"instance_id" text NOT NULL,
+	"name" text NOT NULL,
+	"key_prefix" text NOT NULL,
+	"hashed_key" text NOT NULL,
+	"active" boolean DEFAULT true NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"last_used_at" timestamp with time zone
+);
+--> statement-breakpoint
+ALTER TABLE "tool_dev_messages" ADD CONSTRAINT "tool_dev_messages_session_id_tool_dev_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."tool_dev_sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tool_dev_pending_actions" ADD CONSTRAINT "tool_dev_pending_actions_session_id_tool_dev_sessions_id_fk" FOREIGN KEY ("session_id") REFERENCES "public"."tool_dev_sessions"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tool_dev_sessions" ADD CONSTRAINT "tool_dev_sessions_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tool_dev_sessions" ADD CONSTRAINT "tool_dev_sessions_tool_id_tools_id_fk" FOREIGN KEY ("tool_id") REFERENCES "public"."tools"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tool_dev_sessions" ADD CONSTRAINT "tool_dev_sessions_model_config_id_model_configs_id_fk" FOREIGN KEY ("model_config_id") REFERENCES "public"."model_configs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tool_instance_api_keys" ADD CONSTRAINT "tool_instance_api_keys_instance_id_tool_instances_id_fk" FOREIGN KEY ("instance_id") REFERENCES "public"."tool_instances"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "tiak_instance_id_idx" ON "tool_instance_api_keys" USING btree ("instance_id");--> statement-breakpoint
+CREATE INDEX "tiak_hashed_key_idx" ON "tool_instance_api_keys" USING btree ("hashed_key");--> statement-breakpoint
+CREATE INDEX "tool_dev_messages_session_idx" ON "tool_dev_messages" USING btree ("session_id","sequence");--> statement-breakpoint
+CREATE INDEX "tool_dev_pending_actions_session_idx" ON "tool_dev_pending_actions" USING btree ("session_id","status");--> statement-breakpoint
+CREATE UNIQUE INDEX "tool_dev_pending_actions_session_askid_uidx" ON "tool_dev_pending_actions" USING btree ("session_id","ask_id");--> statement-breakpoint
+CREATE INDEX "tool_dev_sessions_user_idx" ON "tool_dev_sessions" USING btree ("user_id","status","last_active_at" DESC NULLS LAST);--> statement-breakpoint
+CREATE UNIQUE INDEX "tool_dev_sessions_user_running_uidx" ON "tool_dev_sessions" USING btree ("user_id") WHERE container_status = 'running';
 -- ============================================================
 -- Seed: RBAC reference data (platform_permission_defs + platform_role_permissions)
 -- Source: pg_dump --data-only from the dev/prod DB.
@@ -878,6 +957,11 @@ INSERT INTO public.platform_permission_defs (code, name, description, category, 
 INSERT INTO public.platform_permission_defs (code, name, description, category, sort_order, created_at) VALUES ('sop:create', '创建SOP', '新建SOP流程', 'sop', 1210, '2026-04-07 11:05:42.446482+00') ON CONFLICT (code) DO NOTHING;
 INSERT INTO public.platform_permission_defs (code, name, description, category, sort_order, created_at) VALUES ('sop:edit', '编辑SOP', '修改SOP流程', 'sop', 1220, '2026-04-07 11:05:42.446482+00') ON CONFLICT (code) DO NOTHING;
 INSERT INTO public.platform_permission_defs (code, name, description, category, sort_order, created_at) VALUES ('sop:delete', '删除SOP', '删除SOP流程', 'sop', 1230, '2026-04-07 11:05:42.446482+00') ON CONFLICT (code) DO NOTHING;
+INSERT INTO public.platform_permission_defs (code, name, description, category, sort_order, created_at) VALUES ('sandbox:view', '查看沙箱设置', '查看沙箱预装库与网络白名单配置', 'sandbox', 1300, NOW()) ON CONFLICT (code) DO NOTHING;
+INSERT INTO public.platform_permission_defs (code, name, description, category, sort_order, created_at) VALUES ('sandbox:edit', '修改沙箱设置', '修改沙箱预装库、网络白名单与出网模式', 'sandbox', 1310, NOW()) ON CONFLICT (code) DO NOTHING;
+INSERT INTO public.platform_role_permissions (id, role, permission_code, created_at, created_by) VALUES ('seed-sandbox-view-super', 'super_admin', 'sandbox:view', NOW(), NULL) ON CONFLICT (role, permission_code) DO NOTHING;
+INSERT INTO public.platform_role_permissions (id, role, permission_code, created_at, created_by) VALUES ('seed-sandbox-edit-super', 'super_admin', 'sandbox:edit', NOW(), NULL) ON CONFLICT (role, permission_code) DO NOTHING;
+INSERT INTO public.platform_role_permissions (id, role, permission_code, created_at, created_by) VALUES ('seed-sandbox-view-admin', 'admin', 'sandbox:view', NOW(), NULL) ON CONFLICT (role, permission_code) DO NOTHING;
 INSERT INTO public.platform_role_permissions (id, role, permission_code, created_at, created_by) VALUES ('41a297ac7d56ffcf9412f', 'super_admin', 'user:list', '2026-04-07 11:05:42.446482+00', NULL) ON CONFLICT (role, permission_code) DO NOTHING;
 INSERT INTO public.platform_role_permissions (id, role, permission_code, created_at, created_by) VALUES ('8efbe6980eaaa02b63708', 'super_admin', 'user:role_edit', '2026-04-07 11:05:42.446482+00', NULL) ON CONFLICT (role, permission_code) DO NOTHING;
 INSERT INTO public.platform_role_permissions (id, role, permission_code, created_at, created_by) VALUES ('2485230ff00fe11548dee', 'super_admin', 'user:status_edit', '2026-04-07 11:05:42.446482+00', NULL) ON CONFLICT (role, permission_code) DO NOTHING;
@@ -1023,3 +1107,16 @@ ON CONFLICT (user_id) DO UPDATE SET
   role = EXCLUDED.role,
   is_disabled = false,
   updated_at = NOW();
+
+-- Per-invocation tool execution record. See packages/db/schema/tool-executions.ts.
+CREATE TABLE IF NOT EXISTS tool_executions (
+  id text PRIMARY KEY,
+  user_id text NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+  session_id uuid REFERENCES tool_dev_sessions(id) ON DELETE SET NULL,
+  instance_id text REFERENCES tool_instances(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS tool_executions_user_idx ON tool_executions(user_id, created_at);
+CREATE INDEX IF NOT EXISTS tool_executions_session_idx ON tool_executions(session_id);
+CREATE INDEX IF NOT EXISTS tool_executions_instance_idx ON tool_executions(instance_id);

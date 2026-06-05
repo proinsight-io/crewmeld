@@ -8,6 +8,27 @@ export interface RagflowConfig {
   timeoutMs: number
 }
 
+/**
+ * Subset of RagFlow `parser_config` we care about. RagFlow accepts more keys
+ * (raptor, knowledge_graph, etc.); callers can cast to add them as needed.
+ */
+export interface RagflowParserConfig {
+  /** Layout recognizer to use. v0.23+ expects a string: 'DeepDOC' (visual, default) or 'Plain Text'. */
+  layout_recognize?: 'DeepDOC' | 'Plain Text'
+  /** Auto-extract N keywords per chunk via the configured chat LLM (0-30). Fixes orphan chunks. */
+  auto_keywords?: number
+  /** Auto-generate N Q&A pairs per chunk via LLM (0-10). Improves recall. */
+  auto_questions?: number
+  /** Token budget per chunk (default 256). */
+  chunk_token_num?: number
+  /** Custom split delimiter. */
+  delimiter?: string
+  /** PDF processing batch size. */
+  task_page_size?: number
+  /** Excel-to-HTML mode. */
+  html4excel?: boolean
+}
+
 export interface RagflowApiResponse<T> {
   code: number
   message: string
@@ -24,6 +45,8 @@ export interface RagflowChunk {
   vector_similarity: number
   term_similarity: number
   positions: string[]
+  /** Optional image attached to the chunk (e.g. extracted from PDF). Resolve via getImage / image proxy. */
+  image_id?: string
 }
 
 export interface RagflowRetrievalData {

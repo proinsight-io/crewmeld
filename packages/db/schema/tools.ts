@@ -1,4 +1,4 @@
-import { index, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
+import { boolean, index, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
 
 /**
  * Tool table — globally shared, visible to all users
@@ -39,6 +39,15 @@ export const tools = pgTable(
     apiDoc: text('api_doc'),
     /** Required system connection type JSONB: { type: 'database', dbType?: 'mysql' }; new instances only match same-type connections */
     connectorType: jsonb('connector_type'),
+    /**
+     * Whether this tool needs a per-SOP-execution MinIO workspace mounted
+     * at /workspace. Tools with this flag bypass the warm pool: deploy is
+     * deferred until SOP execution time so the rclone sidecar can scope
+     * its mount to the running execution's prefix.
+     */
+    needsFileMount: boolean('needs_file_mount').notNull().default(false),
+    /** SHA-256 hex digest of the .cmtool zip bytes */
+    packageSha256: text('package_sha256'),
     /** Creator user ID */
     createdBy: text('created_by').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
