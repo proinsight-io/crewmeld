@@ -5,9 +5,9 @@
  */
 
 import { db } from '@crewmeld/db'
-import { digitalEmployees, humanEmployees, toolInstances } from '@crewmeld/db/schema'
+import { digitalEmployees, humanEmployees, toolInstances, tools } from '@crewmeld/db/schema'
 import { createLogger } from '@crewmeld/logger'
-import { inArray } from 'drizzle-orm'
+import { eq, inArray } from 'drizzle-orm'
 import { t } from '@/lib/core/server-i18n'
 import type { SopNode, SopSerializedEdge } from '@/types/sop'
 
@@ -126,7 +126,9 @@ export async function validateSopForExecution(
           const ti = tiMap.get(tid)
           if (!ti) {
             unavailableTools.push(tid)
-          } else if (ti.deployStatus !== 'deployed') {
+          } else if (ti.deployStatus !== 'deployed' && !ti.needsFileMount) {
+            // Skip the deploy check for mounted tools: they are deployed
+            // per-execution at SOP runtime, not pre-deployed.
             unavailableTools.push(ti.name)
           }
         }
@@ -251,6 +253,12 @@ interface ToolInstanceInfo {
   id: string
   name: string
   deployStatus: string
+  /**
+   * Mirrors `tools.needs_file_mount` of the template. Mounted tools are
+   * deployed per-execution at SOP runtime, so they intentionally have no
+   * pre-deployed endpoint — the validator must not flag them as missing.
+   */
+  needsFileMount: boolean
 }
 
 async function queryToolInstances(ids: string[]): Promise<Map<string, ToolInstanceInfo>> {
@@ -260,8 +268,10 @@ async function queryToolInstances(ids: string[]): Promise<Map<string, ToolInstan
       id: toolInstances.id,
       name: toolInstances.name,
       deploy: toolInstances.deploy,
+      needsFileMount: tools.needsFileMount,
     })
     .from(toolInstances)
+    .leftJoin(tools, eq(tools.id, toolInstances.templateId))
     .where(inArray(toolInstances.id, ids))
   return new Map(
     rows.map((r) => {
@@ -272,6 +282,7 @@ async function queryToolInstances(ids: string[]): Promise<Map<string, ToolInstan
           id: r.id,
           name: r.name,
           deployStatus: deploy?.status ?? 'unknown',
+          needsFileMount: r.needsFileMount === true,
         },
       ]
     })

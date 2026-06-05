@@ -6,7 +6,12 @@ import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
-import type { ConnectionTestResult, ConnectionType, DatabaseSubtype } from '@/lib/connectors/types'
+import type {
+  ConnectionTestResult,
+  ConnectionType,
+  DatabaseSubtype,
+  OpenclawEndpoint,
+} from '@/lib/connectors/types'
 import {
   CONNECTION_CONFIG_FIELDS,
   CONNECTION_TYPE_I18N_KEYS,
@@ -28,6 +33,7 @@ import {
   getDefaultCustomApiConfig,
   type TestResponse,
 } from './custom-api-editor'
+import { newEmptyEndpoint, OpenclawEndpointsEditor } from './openclaw-endpoints-editor'
 
 /** Connection types that only allow one connection (singleton types) */
 const SINGLETON_TYPES: ReadonlySet<ConnectionType> = new Set<ConnectionType>(['ragflow'])
@@ -89,7 +95,13 @@ export function AddConnectionWizard({
   )
   const [customApiResponse, setCustomApiResponse] = useState<TestResponse | null>(null)
 
+  // OpenClaw specific state — pool of {label, url, token}.
+  const [openclawEndpoints, setOpenclawEndpoints] = useState<OpenclawEndpoint[]>([
+    newEmptyEndpoint(),
+  ])
+
   const isCustomApi = selectedType === 'custom_api'
+  const isOpenclaw = selectedType === 'openclaw'
 
   const reset = useCallback(() => {
     setStep(1)
@@ -100,6 +112,7 @@ export function AddConnectionWizard({
     setConfig({})
     setCustomApiConfig(getDefaultCustomApiConfig())
     setCustomApiResponse(null)
+    setOpenclawEndpoints([newEmptyEndpoint()])
     setTestResult(null)
     setIsTesting(false)
     setIsSaving(false)
@@ -118,6 +131,22 @@ export function AddConnectionWizard({
     onOpenChange(false)
   }, [reset, onOpenChange])
 
+  const buildSaveConfig = useCallback((): Record<string, unknown> => {
+    if (isCustomApi) return customApiConfigToFlat(customApiConfig)
+    if (isOpenclaw) {
+      return {
+        endpoints: openclawEndpoints
+          .map((ep) => ({
+            label: ep.label.trim(),
+            url: ep.url.trim(),
+            token: ep.token,
+          }))
+          .filter((ep) => ep.label && ep.url && ep.token),
+      }
+    }
+    return config
+  }, [isCustomApi, customApiConfig, isOpenclaw, openclawEndpoints, config])
+
   const handleTestConnection = useCallback(async () => {
     if (!selectedType) return
     setIsTesting(true)
@@ -125,7 +154,7 @@ export function AddConnectionWizard({
     setCustomApiResponse(null)
     setError(null)
     try {
-      const testConfig = isCustomApi ? customApiConfigToFlat(customApiConfig) : config
+      const testConfig = buildSaveConfig()
       const res = await fetch('/api/employee/connectors/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -179,14 +208,14 @@ export function AddConnectionWizard({
     } finally {
       setIsTesting(false)
     }
-  }, [selectedType, config, isCustomApi, customApiConfig])
+  }, [selectedType, buildSaveConfig, isCustomApi, t, tMessage])
 
   const handleSave = useCallback(async () => {
     if (!selectedType || !name.trim()) return
     setIsSaving(true)
     setError(null)
     try {
-      const saveConfig = isCustomApi ? customApiConfigToFlat(customApiConfig) : config
+      const saveConfig = buildSaveConfig()
       const res = await fetch('/api/employee/connectors', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -220,17 +249,25 @@ export function AddConnectionWizard({
     selectedType,
     name,
     description,
-    config,
-    isCustomApi,
-    customApiConfig,
+    buildSaveConfig,
     handleClose,
     onCreated,
+    t,
+    tMessage,
   ])
 
   const canGoStep2 = selectedType !== null
+  const isOpenclawEndpointsValid =
+    isOpenclaw &&
+    openclawEndpoints.length > 0 &&
+    openclawEndpoints.every(
+      (ep) => ep.label.trim().length > 0 && ep.url.trim().length > 0 && ep.token.length > 0
+    )
   const canGoStep3 = isCustomApi
     ? name.trim().length > 0 && customApiConfig.apiEndpoint.trim().length > 0
-    : name.trim().length > 0
+    : isOpenclaw
+      ? name.trim().length > 0 && isOpenclawEndpointsValid
+      : name.trim().length > 0
 
   const fields =
     selectedType === 'database' && selectedDbSubtype
@@ -490,6 +527,12 @@ export function AddConnectionWizard({
                     isTesting={isTesting}
                     onSend={handleTestConnection}
                     compact
+                  />
+                ) : isOpenclaw ? (
+                  <OpenclawEndpointsEditor
+                    value={openclawEndpoints}
+                    onChange={setOpenclawEndpoints}
+                    disabled={isSaving || isTesting}
                   />
                 ) : (
                   /* Other types: original field form */

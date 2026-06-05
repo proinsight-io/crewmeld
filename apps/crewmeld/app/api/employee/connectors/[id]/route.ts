@@ -67,7 +67,32 @@ async function _PATCH(request: NextRequest, { params }: { params: Promise<{ id: 
       const sanitizedIncoming = sanitizeConnectionConfig(
         existing.type as ConnectionType,
         config as Record<string, unknown>
-      )
+      ) as Record<string, unknown>
+
+      // OpenClaw endpoints: GET masks `token` (e.g. `abcd****xyz`); if the
+      // editor sends a masked token back unchanged, restore the original from
+      // `existingConfig` so re-saving without retyping tokens does not corrupt
+      // the credential. Match by label first, fall back to index.
+      if (existing.type === 'openclaw' && Array.isArray(sanitizedIncoming.endpoints)) {
+        const incomingEndpoints = sanitizedIncoming.endpoints as Array<{
+          label: string
+          url: string
+          token: string
+        }>
+        const existingEndpoints = Array.isArray(existingConfig.endpoints)
+          ? (existingConfig.endpoints as Array<{ label?: string; token?: string }>)
+          : []
+        sanitizedIncoming.endpoints = incomingEndpoints.map((incoming, idx) => {
+          if (!incoming.token.includes('****')) return incoming
+          const byLabel = existingEndpoints.find((e) => e.label === incoming.label)
+          const original = byLabel ?? existingEndpoints[idx]
+          if (original && typeof original.token === 'string' && original.token.length > 0) {
+            return { ...incoming, token: original.token }
+          }
+          return incoming
+        })
+      }
+
       const mergedConfig = { ...existingConfig, ...sanitizedIncoming }
       updates.configEncrypted = encryptConfig(JSON.stringify(mergedConfig))
     }

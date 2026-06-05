@@ -53,52 +53,28 @@ export function SkillBindingsTab({ employeeId }: SkillBindingsTabProps) {
 
   const fetchAvailable = useCallback(async () => {
     try {
-      // Fetch all installed tool templates
-      const skillsRes = await fetch('/api/employee/skills')
-      if (!skillsRes.ok) return
-      const skillsJson = await skillsRes.json()
-      const skills = (skillsJson.skills ?? []) as Array<{
+      const res = await fetch('/api/employee/skills/bindable')
+      if (!res.ok) return
+      const json = await res.json()
+      const items = (json.instances ?? []) as Array<{
         id: string
+        templateId: string
         name: string
-        code?: string
+        templateName: string
+        endpoint: string | null
       }>
-
-      // Fetch instances for all templates that have code
-      const templateIds = skills.filter((s) => s.code).map((s) => s.id)
-      const allInstances: AvailableInstance[] = []
       const boundInstanceIds = new Set(bindings.map((b) => b.instanceId))
-
-      await Promise.all(
-        templateIds.map(async (templateId) => {
-          try {
-            const res = await fetch(`/api/employee/skills/instances?templateId=${templateId}`)
-            if (!res.ok) return
-            const data = await res.json()
-            const instances = (data.instances ?? []) as Array<{
-              id: string
-              templateId: string
-              name: string
-              deploy?: { status: string; endpoint?: string }
-            }>
-            const templateName = skills.find((s) => s.id === templateId)?.name ?? 'Unknown'
-            for (const inst of instances) {
-              if (inst.deploy?.status === 'deployed' && !boundInstanceIds.has(inst.id)) {
-                allInstances.push({
-                  id: inst.id,
-                  templateId: inst.templateId,
-                  name: inst.name,
-                  templateName,
-                  endpoint: inst.deploy?.endpoint ?? null,
-                })
-              }
-            }
-          } catch {
-            /* ignore */
-          }
-        })
+      setAvailableInstances(
+        items
+          .filter((i) => !boundInstanceIds.has(i.id))
+          .map((i) => ({
+            id: i.id,
+            templateId: i.templateId,
+            name: i.name,
+            templateName: i.templateName,
+            endpoint: i.endpoint,
+          }))
       )
-
-      setAvailableInstances(allInstances)
     } catch {
       /* ignore */
     }

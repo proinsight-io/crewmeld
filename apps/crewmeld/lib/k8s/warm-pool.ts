@@ -293,7 +293,11 @@ const server = createServer(async (req, res) => {
             '--target', cacheDir,
             '--cache-dir', '/cache/pip',
             '-i', 'https://pypi.tuna.tsinghua.edu.cn/simple',
+            '--extra-index-url', 'https://mirrors.aliyun.com/pypi/simple',
             '--trusted-host', 'pypi.tuna.tsinghua.edu.cn',
+            '--trusted-host', 'mirrors.aliyun.com',
+            '--default-timeout', '120',
+            '--retries', '5',
             ...deps], { cwd: '/app' });
         }
         // Set PYTHONPATH so subsequent code can find installed packages
@@ -385,11 +389,25 @@ const server = createServer(async (req, res) => {
         ].join('\\n');
         writeFileSync('/app/tool.py', script);
         currentHandler = async (params) => {
+          // Provide harmless defaults for SOP_* env so tools written
+          // against the mounted-workspace contract (needsFileMount=true)
+          // don't KeyError on os.environ['SOP_INPUT_DIR'] when run in
+          // the test sandbox where no real mount exists.
+          const sandboxSopEnv = {
+            // Flat layout: SOP_WORKDIR is the single working dir; the older
+            // SOP_INPUT_DIR / SOP_OUTPUT_DIR aliases point to the same place.
+            SOP_WORKDIR: '/app/sandbox-workspace',
+            SOP_INPUT_DIR: '/app/sandbox-workspace',
+            SOP_OUTPUT_DIR: '/app/sandbox-workspace',
+            SOP_EXECUTION_ID: 'sandbox-test',
+            SOP_FILE_URL_PREFIX: '',
+            SOP_WORKSPACE: '/app',
+          };
           const output = exec('python3', ['/app/tool.py'], {
             cwd: '/app',
             timeout: 30000,
             // Merge PYTHONPATH: prioritize /_deps cached dir, append /app/pylibs (/_load tarball path)
-            env: { ...process.env, ...toolEnvVars, __TOOL_PARAMS__: JSON.stringify(params), PYTHONPATH: (process.env.PYTHONPATH ? process.env.PYTHONPATH + ':' : '') + '/app/pylibs' },
+            env: { ...process.env, ...sandboxSopEnv, ...toolEnvVars, __TOOL_PARAMS__: JSON.stringify(params), PYTHONPATH: (process.env.PYTHONPATH ? process.env.PYTHONPATH + ':' : '') + '/app/pylibs' },
           });
           const parsed = JSON.parse(output.trim() || '{}');
           if (parsed.__error__) throw new Error(parsed.__error__);
@@ -433,10 +451,23 @@ const server = createServer(async (req, res) => {
         ].join('\\n');
         writeFileSync('/app/tool' + ext, wrapperCode);
         currentHandler = async (params) => {
+          // Same rationale as the Python branch: provide test-sandbox
+          // defaults for SOP_* env so mount-mode tools don't crash on
+          // process.env.SOP_INPUT_DIR access in test mode.
+          const sandboxSopEnv = {
+            // Flat layout: SOP_WORKDIR is the single working dir; the older
+            // SOP_INPUT_DIR / SOP_OUTPUT_DIR aliases point to the same place.
+            SOP_WORKDIR: '/app/sandbox-workspace',
+            SOP_INPUT_DIR: '/app/sandbox-workspace',
+            SOP_OUTPUT_DIR: '/app/sandbox-workspace',
+            SOP_EXECUTION_ID: 'sandbox-test',
+            SOP_FILE_URL_PREFIX: '',
+            SOP_WORKSPACE: '/app',
+          };
           const output = exec('node', ['/app/tool' + ext], {
             cwd: '/app',
             timeout: 30000,
-            env: { ...process.env, ...toolEnvVars, __TOOL_PARAMS__: JSON.stringify(params) },
+            env: { ...process.env, ...sandboxSopEnv, ...toolEnvVars, __TOOL_PARAMS__: JSON.stringify(params) },
           });
           const parsed = JSON.parse(output.trim() || '{}');
           if (parsed.__error__) throw new Error(parsed.__error__);

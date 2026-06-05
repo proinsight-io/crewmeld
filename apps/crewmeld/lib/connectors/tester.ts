@@ -31,6 +31,8 @@ export async function testConnection(
         return await testCustomApi(config, startTime)
       case 'n8n':
         return await testN8n(config, startTime)
+      case 'openclaw':
+        return await testOpenclaw(config, startTime)
       case 'email':
         return await testEmail(config, startTime)
       case 'telegram':
@@ -553,6 +555,52 @@ async function testN8n(config: ConnectionConfig, startTime: number): Promise<Con
     const msg = error instanceof Error ? error.message : '__gateway_unreachable__'
     return fail('connTestFailed', { name: 'n8n', error: msg }, startTime)
   }
+}
+
+async function testOpenclaw(
+  config: ConnectionConfig,
+  startTime: number
+): Promise<ConnectionTestResult> {
+  const endpoints = config.endpoints ?? []
+  if (endpoints.length === 0) {
+    return required('endpoints', startTime)
+  }
+
+  const perEndpointTimeout = config.timeout ?? 10_000
+
+  // Probe every endpoint in parallel so the user sees the full pool status
+  // in one shot. Overall success requires every endpoint to come back ok.
+  const results = await Promise.all(
+    endpoints.map(async (ep) => {
+      const httpUrl = ep.url
+        .replace(/^ws:\/\//, 'http://')
+        .replace(/^wss:\/\//, 'https://')
+        .replace(/\/+$/, '')
+      try {
+        const res = await fetch(httpUrl, {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${ep.token}` },
+          signal: AbortSignal.timeout(perEndpointTimeout),
+        })
+        return { label: ep.label, ok: true, detail: String(res.status) }
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : '__gateway_unreachable__'
+        return { label: ep.label, ok: false, detail: msg }
+      }
+    })
+  )
+
+  const details: Record<string, string> = {}
+  for (const r of results) {
+    details[r.label] = r.ok ? `OK ${r.detail}` : `FAIL ${r.detail}`
+  }
+
+  const failed = results.filter((r) => !r.ok)
+  if (failed.length === 0) {
+    return ok('connTestSucceeded', { name: 'OpenClaw' }, startTime, details)
+  }
+  const errSummary = failed.map((r) => `${r.label}: ${r.detail}`).join('; ')
+  return fail('connTestFailed', { name: 'OpenClaw', error: errSummary }, startTime, details)
 }
 
 async function testTelegram(

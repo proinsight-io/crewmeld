@@ -68,11 +68,20 @@ async function _DELETE(_request: NextRequest, { params }: { params: Promise<{ id
   const deploy = existing.deploy as DeployInfo | null
   if (deploy?.status === 'deployed') {
     try {
-      await undeploySkill(id)
-      logger.info('Auto-unpublishing instance before delete', { id })
+      if (deploy.deployType === 'opensandbox-script') {
+        // Script-type dev-studio tool: no persistent sandbox to tear down.
+        // Code stays on NFS until the tool itself is deleted.
+      } else if (deploy.deployType === 'opensandbox' && deploy.sandboxId) {
+        const { getOpenSandboxClient } = await import('@/lib/dev-studio/opensandbox-client')
+        const client = getOpenSandboxClient()
+        await client.destroy(deploy.sandboxId)
+      } else {
+        await undeploySkill(id)
+      }
+      logger.info('Auto-undeployed instance before delete', { id, deployType: deploy.deployType })
     } catch (err) {
       logger.warn(
-        `Unpublish before delete failed, proceeding: ${err instanceof Error ? err.message : String(err)}`
+        `Undeploy before delete failed, proceeding: ${err instanceof Error ? err.message : String(err)}`
       )
     }
   }

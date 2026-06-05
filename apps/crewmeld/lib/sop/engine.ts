@@ -663,7 +663,11 @@ export async function executeSop(executionId: string): Promise<void> {
 
       await persistSnapshot(executionId, snapshot)
 
-      if (!exitResult || exitResult.targetNodeId === null) {
+      // Treat any falsy targetNodeId (null / undefined / '') as "SOP endpoint"
+      // — hand-built or UI-built SOPs whose terminal exit just omits the
+      // field end up as `undefined`, not `null`, so a strict `=== null`
+      // check leaves the SOP stuck in `running` forever.
+      if (!exitResult || !exitResult.targetNodeId) {
         await transitionStatus(executionId, 'running', 'completed', {
           completedAt: new Date(),
         })

@@ -24,8 +24,8 @@ interface ToolConfigResult {
   tools: OpenAITool[]
   workflowMap: Map<string, string>
   sopMap: Map<string, string>
-  /** skillToolName → { skillId, endpoint } */
-  skillMap: Map<string, { skillId: string; endpoint: string }>
+  /** skillToolName → { skillId, endpoint, openclawConnectionId? } */
+  skillMap: Map<string, { skillId: string; endpoint: string; openclawConnectionId?: string }>
   sopInfos: SopInfo[]
 }
 
@@ -39,7 +39,10 @@ export async function buildWorkflowToolConfigs(employeeId: string): Promise<Tool
   const tools: OpenAITool[] = []
   const workflowMap = new Map<string, string>() // Reserved interface, always empty
   const sopMap = new Map<string, string>()
-  const skillMap = new Map<string, { skillId: string; endpoint: string }>()
+  const skillMap = new Map<
+    string,
+    { skillId: string; endpoint: string; openclawConnectionId?: string }
+  >()
 
   // 1. Query active SOPs assigned to this employee
   const sopInfos = await querySopsByEmployee(employeeId)
@@ -350,7 +353,10 @@ interface ToolParameters {
 async function buildSkillTools(
   employeeId: string,
   tools: OpenAITool[],
-  skillMap: Map<string, { skillId: string; endpoint: string }>
+  skillMap: Map<
+    string,
+    { skillId: string; endpoint: string; openclawConnectionId?: string }
+  >
 ): Promise<void> {
   const rows = await db
     .select({
@@ -360,6 +366,8 @@ async function buildSkillTools(
       skillParameters: toolsTable.parameters,
       instanceDeploy: toolInstances.deploy,
       apiDoc: toolsTable.apiDoc,
+      instanceConnectionId: toolInstances.connectionId,
+      templateConnectorType: toolsTable.connectorType,
     })
     .from(employeeSkillBindings)
     .innerJoin(toolInstances, eq(employeeSkillBindings.instanceId, toolInstances.id))
@@ -373,8 +381,17 @@ async function buildSkillTools(
     const deploy = row.instanceDeploy as { status?: string; endpoint?: string } | null
     if (deploy?.status !== 'deployed' || !deploy.endpoint) continue
 
+    const ct = row.templateConnectorType as { type?: string } | null
+    const isOpenclaw = ct?.type === 'openclaw'
+
     const toolName = `skill_${row.instanceId}`
-    skillMap.set(toolName, { skillId: row.instanceId, endpoint: deploy.endpoint })
+    skillMap.set(toolName, {
+      skillId: row.instanceId,
+      endpoint: deploy.endpoint,
+      ...(isOpenclaw && typeof row.instanceConnectionId === 'string'
+        ? { openclawConnectionId: row.instanceConnectionId }
+        : {}),
+    })
 
     const skillParams = row.skillParameters as ToolParameters | null
 

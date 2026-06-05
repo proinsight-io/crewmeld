@@ -6,7 +6,7 @@ import { db, digitalEmployees } from '@crewmeld/db'
 import { createLogger } from '@crewmeld/logger'
 import { eq } from 'drizzle-orm'
 import { t } from '@/lib/core/server-i18n'
-import { loadRagflowConfig, RagflowClientError, retrieval } from '@/lib/ragflow'
+import { buildImageProxyUrl, loadRagflowConfig, RagflowClientError, retrieval } from '@/lib/ragflow'
 import type { KnowledgeChunkReference } from './types'
 
 const logger = createLogger('ConversationKnowledgeQuery')
@@ -58,7 +58,7 @@ export async function getEmployeeKnowledgeBaseIds(employeeId: string): Promise<s
 export async function queryEmployeeKnowledge(
   employeeId: string,
   query: string,
-  topK = 5
+  topK = 8
 ): Promise<KnowledgeQueryResult> {
   const emptyResult: KnowledgeQueryResult = {
     success: false,
@@ -99,7 +99,7 @@ async function queryRagflowKnowledge(
       datasetIds,
       query,
       topK,
-      similarityThreshold: 0.2,
+      similarityThreshold: 0.3,
     })
 
     const chunks = data.chunks ?? []
@@ -133,16 +133,22 @@ async function queryRagflowKnowledge(
       }
     }
 
-    const contents = chunks.map((c) => c.content)
+    // Append a markdown image to chunk content when RagFlow attached one (e.g.
+    // figures extracted from a PDF). The chat UI renders the image inline via
+    // the same-origin proxy route.
+    const renderChunkContent = (c: (typeof chunks)[number]): string =>
+      c.image_id ? `${c.content}\n\n![](${buildImageProxyUrl(c.image_id)})` : c.content
+
+    const contents = chunks.map(renderChunkContent)
     const referenceText = chunks
-      .map((c, i) => `[${t('convKnowledgeReference')}${i + 1}] ${c.content}`)
+      .map((c, i) => `[${t('convKnowledgeReference')}${i + 1}] ${renderChunkContent(c)}`)
       .join('\n\n')
     const references: KnowledgeChunkReference[] = chunks.map((c) => ({
       chunkId: c.id,
       documentId: c.document_id,
       documentName: c.document_name || docNameMap[c.document_id] || c.document_id,
       similarity: c.similarity ?? 0,
-      content: c.content,
+      content: renderChunkContent(c),
     }))
 
     logger.info('Knowledge base search completed', {

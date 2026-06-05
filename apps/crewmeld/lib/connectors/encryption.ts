@@ -80,7 +80,6 @@ export function maskSensitiveFields(config: Record<string, unknown>): Record<str
     'appKey',
     'apiKey',
     'password',
-    'gatewayToken',
     'difyAppApiKey',
     'accessKeySecret',
     'secretKey',
@@ -102,6 +101,19 @@ export function maskSensitiveFields(config: Record<string, unknown>): Record<str
         masked[key] = `${value.slice(0, 4)}****${value.slice(-4)}`
       }
     }
+  }
+
+  // OpenClaw endpoints array: mask the per-entry `token` field.
+  if (Array.isArray(masked.endpoints)) {
+    masked.endpoints = (masked.endpoints as unknown[]).map((entry) => {
+      if (!entry || typeof entry !== 'object') return entry
+      const e = { ...(entry as Record<string, unknown>) }
+      if (typeof e.token === 'string' && (e.token as string).length > 0) {
+        const v = e.token as string
+        e.token = v.length <= 8 ? '****' : `${v.slice(0, 4)}****${v.slice(-4)}`
+      }
+      return e
+    })
   }
 
   return masked

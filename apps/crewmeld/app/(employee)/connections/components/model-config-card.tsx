@@ -74,7 +74,14 @@ export function ModelConfigCard({
             </div>
           )}
           <div>
-            <h3 className='font-semibold text-gray-900 text-sm'>{config.displayName}</h3>
+            <div className='flex items-center gap-1.5'>
+              <h3 className='font-semibold text-gray-900 text-sm'>{config.displayName}</h3>
+              {PROVIDER_DEFINITIONS[config.providerId]?.category === 'coding' && (
+                <span className='inline-flex items-center rounded bg-violet-100 px-1.5 py-0.5 font-medium text-violet-700 text-[10px]'>
+                  {t('connections.codingBadge')}
+                </span>
+              )}
+            </div>
             <p className='text-gray-500 text-xs'>{providerName}</p>
           </div>
         </div>

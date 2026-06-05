@@ -58,9 +58,23 @@ export const CHANNEL_TYPE_LIST: ConnectionType[] = [
 /** Pure system connection types (excluding channels) */
 export const SYSTEM_CONNECTION_TYPE_LIST: ConnectionType[] = [
   /* 'crm', */ 'database',
-  /* 'openclaw', */ /* 'dify', 'n8n', */ 'ragflow',
+  'openclaw', /* 'dify', */ 'n8n',
+  'ragflow',
   'custom_api',
 ]
+
+/** Single OpenClaw gateway entry in the pool. */
+export interface OpenclawEndpoint {
+  /** Operator-facing alias (e.g. "primary", "shanghai-backup"); surfaced in error messages. */
+  label: string
+  /** Gateway base URL, e.g. `http://openclaw:18789`. */
+  url: string
+  /** Bearer token for this gateway. */
+  token: string
+}
+
+/** Hard cap on endpoints per connection — keeps UI and error messages bounded. */
+export const OPENCLAW_ENDPOINTS_MAX = 10
 
 export interface ConnectionConfig {
   /** WeCom */
@@ -97,9 +111,16 @@ export interface ConnectionConfig {
   ssl?: boolean
   /** MongoDB connection string mode */
   connectionString?: string
-  /** OpenClaw Gateway */
-  gatewayUrl?: string
-  gatewayToken?: string
+  /** OpenClaw Gateway pool — multiple endpoints with random pick + automatic failover. */
+  endpoints?: OpenclawEndpoint[]
+  /**
+   * OpenClaw `model` to pass in `/v1/chat/completions` request body. Maps to
+   * a specific OpenClaw agent. Defaults to `"openclaw"` (gateway's configured
+   * default agent). Accepted values per OpenClaw docs:
+   *   - `"openclaw"` / `"openclaw/default"` — default agent
+   *   - `"openclaw/<agentId>"` — specific agent
+   */
+  openclawModel?: string
   /** n8n */
   n8nBaseUrl?: string
   n8nApiKey?: string
@@ -172,24 +193,6 @@ export interface UpdateConnectionPayload {
   name?: string
   description?: string
   config?: Partial<ConnectionConfig>
-}
-
-/** @deprecated Use CONNECTION_TYPE_I18N_KEYS + t() instead of direct rendering */
-export const CONNECTION_TYPE_LABELS: Record<ConnectionType, string> = {
-  wecom: '企业微信',
-  dingtalk: '钉钉',
-  feishu: '飞书',
-  discord: 'Discord',
-  crm: 'CRM 系统',
-  database: '数据库',
-  custom_api: '自定义 API',
-  openclaw: 'OpenClaw',
-  dify: 'Dify',
-  n8n: 'n8n',
-  email: '邮件',
-  telegram: 'Telegram',
-  ragflow: '知识库',
-  wxoa: '微信公众号',
 }
 
 /** Connection type -> i18n key mapping, use t(CONNECTION_TYPE_I18N_KEYS[type]) in components */
@@ -440,22 +443,9 @@ export const CONNECTION_CONFIG_FIELDS: Record<
       placeholder: 'connFields.customApiKeyHint',
     },
   ],
-  openclaw: [
-    {
-      key: 'gatewayUrl',
-      label: 'connFields.openclawGatewayUrl',
-      type: 'text',
-      required: true,
-      placeholder: 'http://openclaw:18789',
-    },
-    {
-      key: 'gatewayToken',
-      label: 'connFields.openclawGatewayToken',
-      type: 'password',
-      required: true,
-      placeholder: 'Bearer Token',
-    },
-  ],
+  // OpenClaw uses a dedicated multi-endpoint editor (OpenclawEndpointsEditor),
+  // not the generic field renderer. Keep the entry but leave it empty.
+  openclaw: [],
   dify: [
     {
       key: 'difyBaseUrl',

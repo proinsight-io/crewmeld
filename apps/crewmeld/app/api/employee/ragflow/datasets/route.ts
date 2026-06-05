@@ -5,6 +5,7 @@ import { withAudit } from '@/lib/audit/with-audit'
 import { requirePermission } from '@/lib/auth/rbac/check-permission'
 import {
   createDataset,
+  DEFAULT_PARSER_CONFIG,
   deleteDataset,
   listDatasets,
   loadRagflowConfig,
@@ -64,9 +65,13 @@ async function _POST(request: NextRequest) {
     }
 
     const config = await loadRagflowConfig()
+    // Apply the project-wide default parser_config (auto_keywords +
+    // auto_questions + layout_recognize) so every new dataset benefits from
+    // LLM-assisted chunk tagging at ingestion time.
     const dataset = await createDataset(config, {
       name: body.name.trim(),
       description: body.description?.trim(),
+      parser_config: DEFAULT_PARSER_CONFIG,
     })
 
     return apiOk(dataset, { status: 201 })

@@ -104,9 +104,9 @@ export function MiniTrendChart({ data, height = 80, color = '#2563eb' }: MiniTre
             onMouseEnter={() => setTooltip({ x: p.x, y: p.y, date: p.date, value: p.value })}
             onMouseLeave={() => setTooltip(null)}
           >
-            {/* 透明扩大命中区域 */}
+            {/* Transparent enlarged hit area */}
             <circle cx={p.x} cy={p.y} r='12' fill='transparent' />
-            {/* 可见圆点 */}
+            {/* Visible dot */}
             <circle cx={p.x} cy={p.y} r='3.5' fill={color} />
           </g>
         ))}

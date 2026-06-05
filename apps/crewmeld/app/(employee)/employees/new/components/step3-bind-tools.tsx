@@ -42,45 +42,27 @@ export function Step3BindTools({ selectedInstanceIds, onSelectionChange }: Step3
 
   const fetchInstances = useCallback(async () => {
     try {
-      const skillsRes = await fetch('/api/employee/skills')
-      if (!skillsRes.ok) return
-      const skillsJson = await skillsRes.json()
-      const skills = (skillsJson.skills ?? []) as Array<{
+      const res = await fetch('/api/employee/skills/bindable')
+      if (!res.ok) return
+      const json = await res.json()
+      const items = (json.instances ?? []) as Array<{
         id: string
         name: string
-        description?: string
-        code?: string
+        templateName: string
+        description: string | null
       }>
-      const templateIds = skills.filter((s) => s.code).map((s) => s.id)
-
-      const all: ToolInstance[] = []
-      await Promise.all(
-        templateIds.map(async (templateId) => {
-          try {
-            const res = await fetch(`/api/employee/skills/instances?templateId=${templateId}`)
-            if (!res.ok) return
-            const data = await res.json()
-            const skill = skills.find((s) => s.id === templateId)
-            for (const inst of data.instances ?? []) {
-              if (inst.deploy?.status === 'deployed') {
-                all.push({
-                  id: inst.id,
-                  name: inst.name,
-                  templateName: skill?.name ?? t('employees.unknownTool'),
-                  description: skill?.description ?? null,
-                })
-              }
-            }
-          } catch {
-            /* ignore */
-          }
-        })
+      setInstances(
+        items.map((i) => ({
+          id: i.id,
+          name: i.name,
+          templateName: i.templateName || t('employees.unknownTool'),
+          description: i.description,
+        }))
       )
-      setInstances(all)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     fetchInstances()

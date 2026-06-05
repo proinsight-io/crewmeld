@@ -47,6 +47,11 @@ export const providers: Record<ProviderId, ProviderMetadata> = {
   zhipu: buildProviderMetadata('zhipu'),
   doubao: buildProviderMetadata('doubao'),
   minimax: buildProviderMetadata('minimax'),
+  // Coding-specialized providers (dev-studio model selector / category=coding).
+  'claude-coding': buildProviderMetadata('claude-coding'),
+  'kimi-coding': buildProviderMetadata('kimi-coding'),
+  'qianfan-coding': buildProviderMetadata('qianfan-coding'),
+  'qwen-coding': buildProviderMetadata('qwen-coding'),
 }
 
 export function updateOllamaProviderModels(models: string[]): void {

@@ -1,4 +1,4 @@
-import { index, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
+import { boolean, index, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
 import { systemConnections } from './system-connections'
 import { tools } from './tools'
 
@@ -28,6 +28,8 @@ export const toolInstances = pgTable(
     envVars: jsonb('env_vars'),
     /** K8S deployment info JSONB: { status, endpoint, nodePort, deployedAt, errorMessage } */
     deploy: jsonb('deploy'),
+    /** Whether this instance is published as an external API endpoint */
+    publishedAsApi: boolean('published_as_api').notNull().default(false),
     /** Creator user ID */
     createdBy: text('created_by').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
