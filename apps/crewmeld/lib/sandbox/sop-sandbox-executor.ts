@@ -11,7 +11,7 @@ import { db } from '@crewmeld/db'
 import { sandboxRuns, sopDefinitions, sopExecutions, sopNodeExecutions } from '@crewmeld/db/schema'
 import { createLogger } from '@crewmeld/logger'
 import { eq } from 'drizzle-orm'
-import { nanoid } from 'nanoid'
+import { generateExecutionId } from '@/lib/core/execution-id'
 import { t } from '@/lib/core/server-i18n'
 import { executeSop, transitionStatus } from '@/lib/sop/engine'
 import { getSopTimeoutQueue } from '@/lib/sop/queue'
@@ -68,7 +68,7 @@ export async function executeSopSandbox(params: SopSandboxParams): Promise<void>
     return
   }
 
-  const executionId = `sopexec_sbx_${nanoid(16)}`
+  const executionId = generateExecutionId('sopsbx')
 
   await db.insert(sopExecutions).values({
     id: executionId,

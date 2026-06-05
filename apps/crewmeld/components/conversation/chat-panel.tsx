@@ -190,7 +190,7 @@ export function ChatPanel({ conversationId, employeeId }: ChatPanelProps) {
 
           {/* Active tool executions */}
           {activeToolExecutions.map((te) => {
-            // 优先使用后端推送的 displayMessage（跟随用户输入语言）
+            // Prefer the displayMessage pushed by the backend (follows the user's input language)
             const fallbackName = te.toolName.startsWith('sop_')
               ? t('conversation.sopTypeLabel')
               : te.toolName

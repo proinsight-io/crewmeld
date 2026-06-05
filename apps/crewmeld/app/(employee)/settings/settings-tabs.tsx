@@ -29,6 +29,11 @@ export function SettingsTabs() {
       permissions: ['registration:view', 'registration:edit'],
     },
     {
+      path: '/settings/sandbox',
+      name: t('settings.tabSandbox'),
+      permissions: ['sandbox:view', 'sandbox:edit'],
+    },
+    {
       path: '/settings/system',
       name: t('settings.tabSystemInfo'),
       permissions: ['system:view', 'system:health_check', 'license:view', 'license:upload'],

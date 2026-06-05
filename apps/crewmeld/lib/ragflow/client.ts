@@ -15,6 +15,7 @@ import type {
   RagflowDocumentChunksData,
   RagflowDocumentInfo,
   RagflowDocumentList,
+  RagflowParserConfig,
   RagflowRetrievalData,
 } from './types'
 
@@ -217,15 +218,25 @@ export async function retrieval(
  */
 export async function createDataset(
   config: RagflowConfig,
-  params: { name: string; description?: string }
+  params: {
+    name: string
+    description?: string
+    /** RagFlow chunk strategy: naive (default), manual, paper, book, qa, table, etc. */
+    chunk_method?: string
+    /** layout_recognize / auto_keywords / auto_questions etc. */
+    parser_config?: RagflowParserConfig
+  }
 ): Promise<RagflowDataset> {
+  const body: Record<string, unknown> = {
+    name: params.name,
+    description: params.description ?? '',
+  }
+  if (params.chunk_method) body.chunk_method = params.chunk_method
+  if (params.parser_config) body.parser_config = params.parser_config
   return ragflowRequest<RagflowDataset>(config, '/api/v1/datasets', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      name: params.name,
-      description: params.description ?? '',
-    }),
+    body: JSON.stringify(body),
   })
 }
 
@@ -235,11 +246,18 @@ export async function createDataset(
 export async function updateDataset(
   config: RagflowConfig,
   datasetId: string,
-  params: { name?: string; description?: string }
+  params: {
+    name?: string
+    description?: string
+    chunk_method?: string
+    parser_config?: RagflowParserConfig
+  }
 ): Promise<void> {
-  const body: Record<string, string> = {}
+  const body: Record<string, unknown> = {}
   if (params.name !== undefined) body.name = params.name
   if (params.description !== undefined) body.description = params.description
+  if (params.chunk_method !== undefined) body.chunk_method = params.chunk_method
+  if (params.parser_config !== undefined) body.parser_config = params.parser_config
   await ragflowRequest<Record<string, never>>(
     config,
     `/api/v1/datasets/${encodeURIComponent(datasetId)}`,
@@ -492,6 +510,54 @@ export async function downloadDocument(
       }
     )
     return response
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Default parser_config applied to every dataset CrewMeld creates. The
+ * `auto_keywords` setting is the key fix for "anonymous parameter table"
+ * chunks — RagFlow uses the configured chat LLM to tag each chunk with
+ * topical keywords during ingestion so future product-name queries hit them.
+ */
+export const DEFAULT_PARSER_CONFIG: RagflowParserConfig = {
+  layout_recognize: 'DeepDOC',
+  auto_keywords: 5,
+  auto_questions: 2,
+}
+
+/**
+ * Build same-origin proxy URL for a chunk image_id. Markdown images embedded
+ * in LLM prompts (`![](url)`) point here so the chat UI can render KB images
+ * without exposing the RagFlow API key.
+ */
+export function buildImageProxyUrl(imageId: string): string {
+  return `/api/employee/ragflow/images/${encodeURIComponent(imageId)}`
+}
+
+/**
+ * GET /v1/document/image/{imageId} - fetch chunk image bytes.
+ *
+ * RagFlow exposes parsed-document images under the legacy `/v1/document/image`
+ * path (not the openapi-style `/api/v1/...`). Returns the raw upstream Response
+ * so callers can stream bytes back to the browser.
+ */
+export async function getImage(config: RagflowConfig, imageId: string): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), config.timeoutMs)
+  try {
+    const fetchOptions: RequestInit & { dispatcher?: unknown } = {
+      signal: controller.signal,
+      headers: { Authorization: `Bearer ${config.apiKey}` },
+    }
+    if (process.env.E2E_MOCK_SERVER !== '1') {
+      fetchOptions.dispatcher = directAgent
+    }
+    return await fetch(
+      `${config.endpoint}/v1/document/image/${encodeURIComponent(imageId)}`,
+      fetchOptions
+    )
   } finally {
     clearTimeout(timer)
   }

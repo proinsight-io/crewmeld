@@ -61,7 +61,7 @@ export function ModelChatDialog({ open, onOpenChange, config }: ModelChatDialogP
 
       if (!res.ok || !body.success) {
         setError(tMessage(body) || t('connections.chatRequestFailed'))
-        setMessages(nextMessages) // 保留用户消息
+        setMessages(nextMessages) // keep the user's message in the thread
         return
       }
 

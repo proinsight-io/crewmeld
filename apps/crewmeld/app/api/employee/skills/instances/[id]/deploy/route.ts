@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm'
 import { apiAuthErr, apiErr, apiOk } from '@/lib/api/response'
 import { withAudit } from '@/lib/audit/with-audit'
 import { requirePermission } from '@/lib/auth/rbac/check-permission'
+import { resolveConnectionEnvVars } from '@/lib/connectors/resolve-conn-env'
 import {
   deploySkill,
   getDeployStatus,
@@ -40,10 +41,6 @@ async function _POST(req: Request, { params }: { params: Promise<{ id: string }>
 
     await ensureWarmPool()
 
-    if (!isK8sConfigured()) {
-      return apiErr('api.skill.k8sNotConfigured', { status: 503 })
-    }
-
     const { id } = await params
 
     const [instance] = await db
@@ -64,13 +61,47 @@ async function _POST(req: Request, { params }: { params: Promise<{ id: string }>
         language: tools.language,
         parameters: tools.parameters,
         envVars: tools.envVars,
+        needsFileMount: tools.needsFileMount,
+        packageSha256: tools.packageSha256,
+        source: tools.source,
       })
       .from(tools)
       .where(eq(tools.id, instance.templateId))
       .limit(1)
 
-    if (!template?.code) {
+    // dev-studio tools live on NFS; manual tools use inline code + K8s
+    const isCmtool = template?.source === 'dev-studio'
+
+    if (!isCmtool && !isK8sConfigured()) {
+      return apiErr('api.skill.k8sNotConfigured', { status: 503 })
+    }
+
+    if (!isCmtool && !template?.code) {
       return apiErr('api.skill.templateCodeMissing', { status: 400 })
+    }
+
+    const baseEnvVars =
+      (instance.envVars as Array<{ name: string; value: string }> | undefined) ??
+      (template.envVars as Array<{ name: string; value: string }> | undefined) ??
+      []
+
+    // Merge env vars from the bound system connection (e.g. CONN_N8N_BASE_URL).
+    // Instance/template env vars win on collision so operators can override per deployment.
+    let mergedEnvVars = baseEnvVars
+    if (instance.connectionId) {
+      try {
+        const connEnv = await resolveConnectionEnvVars(instance.connectionId)
+        const seen = new Set(baseEnvVars.map((e) => e.name))
+        const fromConn = Object.entries(connEnv)
+          .filter(([k]) => !seen.has(k))
+          .map(([name, value]) => ({ name, value }))
+        mergedEnvVars = [...baseEnvVars, ...fromConn]
+      } catch (err) {
+        logger.warn(`Failed to resolve connection env vars for instance ${id}`, {
+          connectionId: instance.connectionId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      }
     }
 
     const skill = {
@@ -80,20 +111,51 @@ async function _POST(req: Request, { params }: { params: Promise<{ id: string }>
       language: template.language,
       parameters: template.parameters,
       presetParams: instance.presetParams,
-      envVars:
-        (instance.envVars as Array<{ name: string; value: string }> | undefined) ??
-        (template.envVars as Array<{ name: string; value: string }> | undefined),
+      envVars: mergedEnvVars,
+      needsFileMount: template.needsFileMount === true,
+      // dev-studio code lives on NFS under the template id, not the instance id.
+      // Pass templateId so deploy-skill can find it via paths.toolCode.forBff(templateId).
+      ...(isCmtool
+        ? {
+            templateId: instance.templateId,
+            packageSha256: template.packageSha256,
+            source: template.source,
+          }
+        : {}),
     }
 
     logger.info('Start instance deployment', { instanceId: id, templateId: instance.templateId })
 
-    const { endpoint, nodePort } = await deploySkill(skill as Parameters<typeof deploySkill>[0])
+    const result = await deploySkill(skill as Parameters<typeof deploySkill>[0])
 
-    const deploy: DeployInfo = {
-      status: 'deployed',
-      endpoint,
-      nodePort,
-      deployedAt: new Date().toISOString(),
+    let deploy: DeployInfo
+    if (result.deployType === 'opensandbox-script') {
+      // Script-type dev-studio tool: no persistent sandbox, no snapshot — code
+      // lives on NFS, each invoke creates an ephemeral sandbox. Path derived
+      // from template id via paths.toolCode.forSandbox(toolId).
+      deploy = {
+        status: 'deployed',
+        deployType: 'opensandbox-script',
+        deployedAt: new Date().toISOString(),
+      }
+    } else if (result.deployType === 'opensandbox') {
+      deploy = {
+        status: 'deployed',
+        deployType: 'opensandbox',
+        endpoint: result.endpoint,
+        nodePort: result.nodePort,
+        sandboxId: result.sandboxId,
+        useProxy: result.useProxy,
+        deployedAt: new Date().toISOString(),
+      }
+    } else {
+      deploy = {
+        status: 'deployed',
+        deployType: 'k8s',
+        endpoint: result.endpoint,
+        nodePort: result.nodePort,
+        deployedAt: new Date().toISOString(),
+      }
     }
 
     await db
@@ -101,7 +163,7 @@ async function _POST(req: Request, { params }: { params: Promise<{ id: string }>
       .set({ deploy, updatedAt: new Date() })
       .where(eq(toolInstances.id, id))
 
-    logger.info('Instance deployed successfully', { instanceId: id, endpoint })
+    logger.info('Instance deployed successfully', { instanceId: id, deployType: deploy.deployType })
     return apiOk(null, { extra: { deploy } })
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error)
@@ -120,7 +182,29 @@ async function _DELETE(_req: Request, { params }: { params: Promise<{ id: string
     const { id } = await params
     logger.info('Start instance undeployment', { id })
 
-    await undeploySkill(id)
+    // Read current deploy info to determine undeploy strategy
+    const [instance] = await db
+      .select({ deploy: toolInstances.deploy })
+      .from(toolInstances)
+      .where(eq(toolInstances.id, id))
+      .limit(1)
+
+    const currentDeploy = instance?.deploy as DeployInfo | null
+    if (currentDeploy?.deployType === 'opensandbox-script') {
+      // Script-type dev-studio tool: nothing to tear down — no persistent
+      // sandbox, no snapshot. Code stays on NFS until the tool itself is
+      // deleted. Just mark the deploy state cleared (handled below).
+    } else if (currentDeploy?.deployType === 'opensandbox' && currentDeploy.sandboxId) {
+      // Service-type .cmtool: destroy the OpenSandbox container
+      const { getOpenSandboxClient } = await import('@/lib/dev-studio/opensandbox-client')
+      const client = getOpenSandboxClient()
+      await client.destroy(currentDeploy.sandboxId).catch((err) => {
+        logger.warn('Sandbox destroy failed during undeploy (non-fatal)', { sandboxId: currentDeploy.sandboxId, error: err })
+      })
+    } else {
+      // Inline-code tool: undeploy via K8s
+      await undeploySkill(id)
+    }
 
     const deploy: DeployInfo = { status: 'not_deployed' }
     await db

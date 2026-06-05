@@ -6,7 +6,7 @@ import type { NextRequest } from 'next/server'
 import { apiAuthErr, apiErr, apiOk } from '@/lib/api/response'
 import { withAudit } from '@/lib/audit/with-audit'
 import { requirePermission } from '@/lib/auth/rbac/check-permission'
-import type { ToolInstance } from '@/app/(employee)/skills/types'
+import type { DeployInfo, ToolInstance } from '@/app/(employee)/skills/types'
 
 function rowToInstance(
   row: typeof toolInstances.$inferSelect,
@@ -21,6 +21,7 @@ function rowToInstance(
     presetParams: row.presetParams as ToolInstance['presetParams'],
     envVars: row.envVars as ToolInstance['envVars'],
     deploy: row.deploy as ToolInstance['deploy'],
+    publishedAsApi: row.publishedAsApi,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   }
@@ -97,7 +98,7 @@ async function _POST(request: NextRequest) {
   }
 
   const [template] = await db
-    .select({ id: tools.id, name: tools.name })
+    .select({ id: tools.id, name: tools.name, connectorType: tools.connectorType })
     .from(tools)
     .where(eq(tools.id, templateId))
     .limit(1)
@@ -117,6 +118,18 @@ async function _POST(request: NextRequest) {
   const now = new Date()
   const instanceId = `inst-${randomUUID()}`
 
+  /** Auto-mark OpenClaw instances as deployed with a sentinel endpoint. */
+  const ct = template.connectorType as { type?: string } | null
+  const isOpenclaw = ct?.type === 'openclaw'
+
+  const deployField: DeployInfo | null = isOpenclaw
+    ? {
+        status: 'deployed',
+        endpoint: 'openclaw://internal',
+        deployedAt: now.toISOString(),
+      }
+    : null
+
   await db.insert(toolInstances).values({
     id: instanceId,
     templateId,
@@ -124,6 +137,7 @@ async function _POST(request: NextRequest) {
     connectionId: connectionId ?? null,
     presetParams: presetParams ?? null,
     envVars: envVars ?? null,
+    deploy: deployField,
     createdBy: auth.userId!,
     createdAt: now,
     updatedAt: now,
@@ -139,7 +153,7 @@ async function _POST(request: NextRequest) {
         connectionId: connectionId ?? null,
         presetParams: presetParams ?? undefined,
         envVars: envVars ?? undefined,
-        deploy: undefined,
+        deploy: deployField ?? undefined,
         createdAt: now.toISOString(),
         updatedAt: now.toISOString(),
       } satisfies ToolInstance,

@@ -5,6 +5,8 @@
  * Access: /api/employee/conversations/files/{key} (proxy endpoint, login auth, never expires)
  */
 
+import fs from 'node:fs/promises'
+import nodePath from 'node:path'
 import { createHmac, randomUUID } from 'node:crypto'
 import { extname } from 'node:path'
 import {
@@ -12,22 +14,20 @@ import {
   GetObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
-  S3Client,
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
+import { conversations, db } from '@crewmeld/db'
 import { createLogger } from '@crewmeld/logger'
+import { eq } from 'drizzle-orm'
+import { paths } from '@/lib/dev-studio/paths'
+import {
+  getExternalMinioClient,
+  getMinioClient,
+  MINIO_BUCKET,
+  TOOL_POD_ENDPOINT,
+} from '@/lib/storage/minio-client'
 
 const logger = createLogger('ConversationFileStorage')
-
-const MINIO_ENDPOINT = (process.env.MINIO_ENDPOINT ?? '').trim()
-const MINIO_ACCESS_KEY = (process.env.MINIO_ACCESS_KEY ?? '').trim()
-const MINIO_SECRET_KEY = (process.env.MINIO_SECRET_KEY ?? '').trim()
-const MINIO_BUCKET = (process.env.MINIO_BUCKET ?? 'tool-files').trim()
-/**
- * MinIO address accessible by tool Pods (for generating presigned URLs)
- * Falls back to MINIO_ENDPOINT if not configured — requires CrewMeld and tool Pods to use same MinIO address
- */
-const MINIO_EXTERNAL_ENDPOINT = (process.env.MINIO_EXTERNAL_ENDPOINT ?? '').trim()
 
 /** File attachment metadata (stored in conversationMessages.metadata.files) */
 export interface FileAttachment {
@@ -37,24 +37,24 @@ export interface FileAttachment {
   mimeType: string // MIME type
 }
 
-let _client: S3Client | null = null
-
-function getClient(): S3Client {
-  if (_client) return _client
-  _client = new S3Client({
-    endpoint: MINIO_ENDPOINT,
-    region: 'us-east-1',
-    forcePathStyle: true,
-    credentials: {
-      accessKeyId: MINIO_ACCESS_KEY,
-      secretAccessKey: MINIO_SECRET_KEY,
-    },
-  })
-  return _client
-}
+const getClient = getMinioClient
 
 /**
- * Upload file to MinIO
+ * Upload file to MinIO and, when the conversationId belongs to a real
+ * conversation row, dual-write the same bytes into the NFS conv-io staging
+ * directory.
+ *
+ * Dual-write rationale: the unified file IO contract (spec 2026-06-01) has
+ * dev-studio tools mount NFS sop-files and tools read files at
+ * `/root/io/<sopExecId>/...`. At SOP start, sop-bridge copies conv-io files
+ * into sop-files. Going via NFS at write time avoids a MinIO download during
+ * SOP startup. The MinIO put still runs unconditionally so the existing
+ * chat-history file viewer and the legacy K8s rclone pipeline are
+ * unaffected.
+ *
+ * NFS write is best-effort: a failure logs a warning but does not fail the
+ * upload \u2014 MinIO is the source of truth, and the SOP bridge's MinIO seed
+ * (`copyConversationFilesToSopInputs`) still serves K8s tools.
  *
  * @returns FileAttachment metadata (for storing in metadata.files)
  */
@@ -76,7 +76,47 @@ export async function uploadConversationFile(
     })
   )
 
-  logger.info('Conversation file uploaded', { conversationId, key, size: buffer.length, mimeType })
+  logger.info('Conversation file uploaded to MinIO', {
+    conversationId,
+    key,
+    size: buffer.length,
+    mimeType,
+  })
+
+  // Dual-write to NFS for the dev-studio tool path.
+  // Skip when conversationId is the synthetic "user-<userId>" prefix used by
+  // the upload route before a conversation row exists \u2014 there's nothing to
+  // look up createdAt against and no SOP can reference a file via that
+  // ephemeral key anyway.
+  if (!conversationId.startsWith('user-')) {
+    try {
+      const [convRow] = await db
+        .select({ createdAt: conversations.createdAt })
+        .from(conversations)
+        .where(eq(conversations.id, conversationId))
+        .limit(1)
+      if (convRow) {
+        const dir = paths.conversationIo.forBff(conversationId, convRow.createdAt)
+        await fs.mkdir(dir, { recursive: true })
+        // Use the user-facing filename here \u2014 sop-bridge will copy this
+        // same name into sop-files, and dev-studio tools open it by name
+        // (`/root/io/<sopExecId>/<filename>`). Sanitize to match what the
+        // safeFileName above does so the conv-io filename is reachable.
+        await fs.writeFile(nodePath.join(dir, safeFileName), buffer)
+        logger.info('Conversation file dual-written to NFS', {
+          conversationId,
+          name: safeFileName,
+          dir,
+        })
+      }
+    } catch (err) {
+      logger.warn('NFS dual-write failed (MinIO upload still succeeded)', {
+        conversationId,
+        fileName,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
 
   return {
     key,
@@ -145,27 +185,7 @@ export async function getConversationFilePresignedUrl(
  * 3. If MINIO_EXTERNAL_ENDPOINT is configured, replace host address in URL
  *    Ensure tool Pods can access MinIO via external network
  */
-/**
- * Get S3 client for generating tool presigned URLs
- * If MINIO_EXTERNAL_ENDPOINT is configured, use it (ensure signature and host match)
- */
-let _externalClient: S3Client | null = null
-function getExternalClient(): S3Client {
-  if (!MINIO_EXTERNAL_ENDPOINT || MINIO_EXTERNAL_ENDPOINT === MINIO_ENDPOINT) {
-    return getClient()
-  }
-  if (_externalClient) return _externalClient
-  _externalClient = new S3Client({
-    endpoint: MINIO_EXTERNAL_ENDPOINT,
-    region: 'us-east-1',
-    forcePathStyle: true,
-    credentials: {
-      accessKeyId: MINIO_ACCESS_KEY,
-      secretAccessKey: MINIO_SECRET_KEY,
-    },
-  })
-  return _externalClient
-}
+const getExternalClient = getExternalMinioClient
 
 export async function createToolAccessibleUrl(
   key: string,
@@ -213,7 +233,7 @@ export async function createToolAccessibleUrl(
   logger.info('Tool temp file URL generated', {
     tempKey,
     expiresIn,
-    urlHost: MINIO_EXTERNAL_ENDPOINT || MINIO_ENDPOINT,
+    urlHost: TOOL_POD_ENDPOINT,
   })
   return url
 }

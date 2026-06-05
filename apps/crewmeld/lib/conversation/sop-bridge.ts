@@ -7,13 +7,29 @@
  * - If paused for human confirmation or not completed -> return "started" + executionId
  */
 
-import { conversations, db, sopDefinitions, sopExecutions, user } from '@crewmeld/db'
+import {
+  conversationMessages,
+  conversations,
+  db,
+  sopDefinitions,
+  sopExecutions,
+  user,
+} from '@crewmeld/db'
 import { createLogger } from '@crewmeld/logger'
-import { and, eq } from 'drizzle-orm'
-import { v4 as uuidv4 } from 'uuid'
+import { and, desc, eq } from 'drizzle-orm'
+import { generateExecutionId } from '@/lib/core/execution-id'
 import { t } from '@/lib/core/server-i18n'
 import { getBaseUrl } from '@/lib/core/utils/urls'
 import { executeSop, transitionStatus } from '@/lib/sop/engine'
+import { processDeliverables } from '@/lib/sop/deliverables'
+import {
+  type ConversationAttachment,
+  copyConversationFilesToSopInputs,
+} from '@/lib/sop/file-workspace'
+import {
+  allocateSopFiles,
+  seedFromConversationIoToSopFiles,
+} from '@/lib/sop/sop-files-workspace'
 import { getSopTimeoutQueue } from '@/lib/sop/queue'
 import { validateSopForExecution } from '@/lib/sop/validator'
 import type { SopNode, SopSerializedEdge, SopStateSnapshot } from '@/types/sop'
@@ -37,6 +53,13 @@ export interface SopBridgeResult {
   output?: string
   /** Attachments produced during execution (from tool-returned files field) */
   files?: Array<{ name: string; mimeType: string; base64: string }>
+  /**
+   * Attachments produced by mounted (needsFileMount) tools and copied
+   * from sop/{execId}/outputs/ into the conversation's persistent
+   * prefix. The keys here are conversation-scoped (long-lived), suitable
+   * for storing in conversationMessages.metadata.files.
+   */
+  workspaceFiles?: ConversationAttachment[]
   errorMessage?: string
 }
 
@@ -58,7 +81,7 @@ export async function executeSopFromConversation(
   onProgress?: (message: string) => void,
   isZh = true
 ): Promise<SopBridgeResult> {
-  const executionId = uuidv4()
+  const executionId = generateExecutionId('sop')
 
   // 1. Query SOP definition (with nodes/edges, for checking collaborator nodes + pre-execution validation)
   const [sopDef] = await db
@@ -159,6 +182,71 @@ export async function executeSopFromConversation(
       },
     })
 
+    // Pre-create the NFS sop-files dir unconditionally — tools may write
+    // outputs even when no input file was uploaded (e.g. report generators
+    // that take JSON params, produce a PDF). Failure here is non-fatal and
+    // gets logged below in the same catch block as the seed.
+    try {
+      await allocateSopFiles(executionId)
+    } catch (err) {
+      logger.warn('Failed to allocate sop-files dir', {
+        executionId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+
+    // Copy attachments from the most recent user message into the SOP
+    // workspace so mounted tools see them at /workspace/inputs/{name}.
+    // Best-effort: a copy failure logs a warning but does not block
+    // execution — tools that don't read attachments are unaffected.
+    try {
+      const [lastUserMsg] = await db
+        .select({ metadata: conversationMessages.metadata })
+        .from(conversationMessages)
+        .where(
+          and(
+            eq(conversationMessages.conversationId, conversationId),
+            eq(conversationMessages.role, 'user')
+          )
+        )
+        .orderBy(desc(conversationMessages.createdAt))
+        .limit(1)
+      const meta = lastUserMsg?.metadata as Record<string, unknown> | undefined
+      const files = meta?.files as
+        | Array<{ key: string; name: string; size: number; mimeType: string }>
+        | undefined
+      if (files && files.length > 0) {
+        // Legacy MinIO seed — feeds the rclone sidecar attached to K8s
+        // tools with needsFileMount=true (lib/k8s/deploy-skill.ts buildDeployment).
+        await copyConversationFilesToSopInputs(conversationId, files, executionId)
+      }
+      // NFS conv-io → NFS sop-files seed for dev-studio tools (kind=service
+      // deploy or kind=script ephemeral). Runs unconditionally — even when
+      // the most recent user message has no attachments, the conversation
+      // may still have files staged via the direct conv-io upload route or
+      // earlier chat dual-writes. The function no-ops if the source dir is
+      // empty. Mirrors the dev-studio test flow's session-io → sop-files
+      // copy in lib/dev-studio/io-sync.ts.
+      const [convRow] = await db
+        .select({ createdAt: conversations.createdAt })
+        .from(conversations)
+        .where(eq(conversations.id, conversationId))
+        .limit(1)
+      if (convRow) {
+        await seedFromConversationIoToSopFiles(
+          conversationId,
+          convRow.createdAt,
+          executionId
+        )
+      }
+    } catch (copyErr) {
+      logger.warn('Failed to seed SOP inputs from conversation', {
+        conversationId,
+        executionId,
+        error: copyErr instanceof Error ? copyErr.message : String(copyErr),
+      })
+    }
+
     // 2b. Register SOP-level timeout job (non-blocking, must not prevent execution)
     try {
       const timeoutQueue = getSopTimeoutQueue()
@@ -222,13 +310,43 @@ export async function executeSopFromConversation(
 
     if (result.completed) {
       logger.info(`SOP completed synchronously: execution=${executionId}, status=${result.status}`)
+
+      // End-of-SOP deliverables flow (success path only):
+      // Extract any /api/sop/{execId}/files/... URLs the LLM included in
+      // the final message, copy those files into conversations/{convId}/,
+      // and rewrite the URLs to point at the long-lived conversation proxy.
+      // Pure MinIO operation — the tool pods already pushed their outputs
+      // to MinIO sop/{execId}/ in the per-call sync. BFF never touches PVC.
+      let workspaceFiles: ConversationAttachment[] | undefined
+      let finalOutput = result.output
+      if (result.status === 'completed') {
+        try {
+          const deliverables = await processDeliverables({
+            sopExecutionId: executionId,
+            conversationId,
+            finalMessage: result.output ?? '',
+          })
+          if (deliverables.attachments.length > 0) {
+            workspaceFiles = deliverables.attachments
+          }
+          finalOutput = deliverables.message
+        } catch (err) {
+          logger.warn('SOP deliverables processing failed', {
+            executionId,
+            conversationId,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+
       return {
         success: result.status === 'completed',
         executionId,
         sopName: sopDef.name,
         completed: true,
-        output: result.output,
+        output: finalOutput,
         files: result.files,
+        workspaceFiles,
         errorMessage: result.status !== 'completed' ? result.errorMessage : undefined,
       }
     }
@@ -243,12 +361,38 @@ export async function executeSopFromConversation(
       .then(async () => {
         const finalResult = await queryExecutionResult(executionId)
         if (finalResult.completed) {
+          // Mirror the sync path's deliverables flow so the notifier sees
+          // long-lived URLs. Tool pods already pushed outputs to MinIO via
+          // their per-call sync; BFF only does the MinIO CopyObject step.
+          let workspaceFiles: ConversationAttachment[] | undefined
+          let notifyOutput = finalResult.output
+          if (finalResult.status === 'completed') {
+            try {
+              const deliverables = await processDeliverables({
+                sopExecutionId: executionId,
+                conversationId,
+                finalMessage: finalResult.output ?? '',
+              })
+              if (deliverables.attachments.length > 0) {
+                workspaceFiles = deliverables.attachments
+              }
+              notifyOutput = deliverables.message
+            } catch (err) {
+              logger.warn('SOP deliverables processing failed (async)', {
+                executionId,
+                conversationId,
+                error: err instanceof Error ? err.message : String(err),
+              })
+            }
+          }
+
           await notifyChannelOnSopCompletion({
             conversationId,
             sopName: sopDef.name,
             executionId,
-            output: finalResult.output,
+            output: notifyOutput,
             files: finalResult.files,
+            workspaceFiles,
             errorMessage: finalResult.errorMessage,
             status: finalResult.status as 'completed' | 'failed' | 'error',
           })

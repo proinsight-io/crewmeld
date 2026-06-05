@@ -88,7 +88,7 @@ const CONFIG_WHITELIST: Record<ConnectionType, readonly string[]> = {
     'headers',
     'timeout',
   ],
-  openclaw: ['gatewayUrl', 'gatewayToken', 'timeout'],
+  openclaw: ['endpoints', 'timeout'],
   dify: ['difyBaseUrl', 'difyAppApiKey', 'difyAppType', 'timeout'],
   n8n: ['n8nBaseUrl', 'n8nApiKey', 'n8nWorkflowId', 'timeout'],
   ragflow: ['ragflowEndpoint', 'apiKey', 'ragflowTimeoutMs', 'timeout'],
@@ -113,6 +113,23 @@ export function sanitizeConnectionConfig<T extends Record<string, unknown>>(
       out[key] = (config as Record<string, unknown>)[key]
     }
   }
+
+  // OpenClaw `endpoints` is an array of structured entries; whitelist their
+  // inner shape too so callers cannot smuggle extra keys past the top-level filter.
+  if (type === 'openclaw' && Array.isArray(out.endpoints)) {
+    out.endpoints = (out.endpoints as unknown[])
+      .map((entry) => {
+        if (!entry || typeof entry !== 'object') return null
+        const e = entry as Record<string, unknown>
+        const label = typeof e.label === 'string' ? e.label.trim() : ''
+        const url = typeof e.url === 'string' ? e.url.trim() : ''
+        const token = typeof e.token === 'string' ? e.token : ''
+        if (!label || !url || !token) return null
+        return { label, url, token }
+      })
+      .filter((x): x is { label: string; url: string; token: string } => x !== null)
+  }
+
   return out as Partial<T>
 }
 

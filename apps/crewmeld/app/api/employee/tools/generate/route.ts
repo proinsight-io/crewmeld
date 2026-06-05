@@ -175,6 +175,13 @@ function parseModelOutput(raw: string): {
   code: string
   language?: 'javascript' | 'python'
   fixExplanation?: string
+  /**
+   * File handling mode flag declared by the LLM in the JSON output.
+   * true → SOP workspace mount mode (reads /workspace/inputs, writes
+   * /workspace/outputs). Defaults to false on the consumer side, so
+   * omitting the field keeps legacy boto3 behavior.
+   */
+  needsFileMount?: boolean
 } {
   let cleaned = raw.trim()
   // Strip markdown code fences if present
