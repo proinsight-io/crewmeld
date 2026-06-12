@@ -14,6 +14,7 @@ import { db } from '@crewmeld/db'
 import { modelConfigs } from '@crewmeld/db/schema'
 import { eq } from 'drizzle-orm'
 import { decryptConfig } from '@/lib/connectors/encryption'
+import type { ModelDefaultParams } from '@/lib/models/types'
 import { getProviderDefaultModel, PROVIDER_DEFINITIONS } from '@/providers/models'
 import { getDevStudioEnv } from './env'
 
@@ -22,10 +23,27 @@ import { getDevStudioEnv } from './env'
  * claude-code-webui reads on startup, plus a human-readable label for the UI.
  */
 export interface ResolvedModelEnv {
+  /**
+   * The model_configs id this resolution actually landed on, or null when the
+   * global `ANTHROPIC_*` env was used (no row backs it). This is the EFFECTIVE
+   * id — when a null input falls back to an auto-picked coding config, this is
+   * the picked config's id, NOT the null input. Callers persist this on the
+   * session row so the header model selector can display the real model.
+   */
+  modelConfigId: string | null
   ANTHROPIC_AUTH_TOKEN: string
   ANTHROPIC_BASE_URL: string
   ANTHROPIC_MODEL: string
   ANTHROPIC_SMALL_FAST_MODEL: string
+  /**
+   * Optional Claude tier overrides sourced from a pinned model_config's
+   * defaultParams. Undefined → the caller omits the env var entirely so the
+   * sandbox image's Dockerfile default applies. `codingFastModel` drives both
+   * SMALL_FAST (above) and HAIKU.
+   */
+  ANTHROPIC_DEFAULT_HAIKU_MODEL?: string
+  ANTHROPIC_DEFAULT_SONNET_MODEL?: string
+  ANTHROPIC_DEFAULT_OPUS_MODEL?: string
   /** Display name for the header / session list (e.g. "Claude 编程 / claude-4-sonnet"). */
   displayLabel: string
 }
@@ -35,16 +53,70 @@ export interface ResolvedModelEnv {
 const DEFAULT_BASE_URL = 'https://qianfan.baidubce.com/anthropic/coding'
 const DEFAULT_MODEL = 'qianfan-code-latest'
 
+type ModelConfigRow = typeof modelConfigs.$inferSelect
+
+/**
+ * Build the container env from a `model_configs` row. The row MUST have a
+ * non-null `apiKeyEncrypted` (callers check this so they can emit a precise
+ * error first).
+ */
+function buildEnvFromConfig(config: ModelConfigRow): ResolvedModelEnv {
+  if (!config.apiKeyEncrypted) {
+    throw new Error(`Model config has no API key: ${config.id}`)
+  }
+  const apiKey = decryptConfig(config.apiKeyEncrypted)
+  const baseUrl = config.apiEndpoint || DEFAULT_BASE_URL
+  const model = config.modelName || getProviderDefaultModel(config.providerId) || DEFAULT_MODEL
+  const providerName = PROVIDER_DEFINITIONS[config.providerId]?.name ?? config.providerId
+
+  // Optional Claude tier overrides. `codingFastModel` (UI "快速模型") sets both
+  // SMALL_FAST and HAIKU; SONNET/OPUS map 1:1. Empty/undefined → the env var
+  // is omitted so the sandbox image default applies. SMALL_FAST keeps its
+  // legacy fallback to the main model when no override is supplied.
+  const params = (config.defaultParams ?? {}) as ModelDefaultParams
+  const fastModel = params.codingFastModel?.trim() || undefined
+  const sonnetModel = params.codingSonnetModel?.trim() || undefined
+  const opusModel = params.codingOpusModel?.trim() || undefined
+
+  return {
+    modelConfigId: config.id,
+    ANTHROPIC_AUTH_TOKEN: apiKey,
+    ANTHROPIC_BASE_URL: baseUrl,
+    ANTHROPIC_MODEL: model,
+    ANTHROPIC_SMALL_FAST_MODEL: fastModel ?? model,
+    ...(fastModel ? { ANTHROPIC_DEFAULT_HAIKU_MODEL: fastModel } : {}),
+    ...(sonnetModel ? { ANTHROPIC_DEFAULT_SONNET_MODEL: sonnetModel } : {}),
+    ...(opusModel ? { ANTHROPIC_DEFAULT_OPUS_MODEL: opusModel } : {}),
+    displayLabel: `${providerName} / ${model}`,
+  }
+}
+
+/**
+ * Pick the most recently-updated active coding model_config that has a key.
+ * Used as the last-resort fallback when a session has no pinned model and the
+ * deployment has no global `ANTHROPIC_AUTH_TOKEN` (the common state now that
+ * the .env model is deprecated in favor of configured coding models).
+ */
+async function pickFallbackCodingConfig(): Promise<ModelConfigRow | null> {
+  const rows = await db.select().from(modelConfigs).where(eq(modelConfigs.isActive, true))
+  const coding = rows
+    .filter((r) => r.apiKeyEncrypted && PROVIDER_DEFINITIONS[r.providerId]?.category === 'coding')
+    .sort((a, b) => (b.updatedAt?.getTime() ?? 0) - (a.updatedAt?.getTime() ?? 0))
+  return coding[0] ?? null
+}
+
 /**
  * Resolve the container env for a session's selected model.
  *
  * Priority:
  *  1. `modelConfigId` set → decrypt the matching `model_configs` row.
- *  2. `modelConfigId` null → global `ANTHROPIC_*` env fallback.
- *  3. Neither yields a token → throw.
+ *  2. `modelConfigId` null + global `ANTHROPIC_AUTH_TOKEN` set → global env.
+ *  3. `modelConfigId` null + no global token → auto-pick a recent active coding
+ *     model_config (so removing the .env model still works).
+ *  4. None of the above → throw.
  *
- * @throws when the config is missing/disabled/keyless, or when the fallback
- *   path has no `ANTHROPIC_AUTH_TOKEN` configured.
+ * @throws when the config is missing/disabled/keyless, or when neither a global
+ *   token nor any active coding model is available.
  */
 export async function resolveModelEnv(modelConfigId: string | null): Promise<ResolvedModelEnv> {
   if (modelConfigId) {
@@ -59,36 +131,32 @@ export async function resolveModelEnv(modelConfigId: string | null): Promise<Res
     if (!config.apiKeyEncrypted) {
       throw new Error(`Model config has no API key: ${modelConfigId}`)
     }
+    return buildEnvFromConfig(config)
+  }
 
-    const apiKey = decryptConfig(config.apiKeyEncrypted)
-    const baseUrl = config.apiEndpoint || DEFAULT_BASE_URL
-    const model = config.modelName || getProviderDefaultModel(config.providerId) || DEFAULT_MODEL
-    const providerName = PROVIDER_DEFINITIONS[config.providerId]?.name ?? config.providerId
-
+  // No pinned model. Prefer the global env when a token is configured (keeps
+  // .env-based deployments working, D2). ANTHROPIC_AUTH_TOKEN is optional in
+  // env.ts, so it may be absent.
+  const env = getDevStudioEnv()
+  if (env.ANTHROPIC_AUTH_TOKEN) {
     return {
-      ANTHROPIC_AUTH_TOKEN: apiKey,
-      ANTHROPIC_BASE_URL: baseUrl,
-      ANTHROPIC_MODEL: model,
-      ANTHROPIC_SMALL_FAST_MODEL: model,
-      displayLabel: `${providerName} / ${model}`,
+      modelConfigId: null,
+      ANTHROPIC_AUTH_TOKEN: env.ANTHROPIC_AUTH_TOKEN,
+      ANTHROPIC_BASE_URL: env.ANTHROPIC_BASE_URL,
+      ANTHROPIC_MODEL: env.ANTHROPIC_MODEL,
+      ANTHROPIC_SMALL_FAST_MODEL: env.ANTHROPIC_SMALL_FAST_MODEL ?? env.ANTHROPIC_MODEL,
+      displayLabel: '系统默认',
     }
   }
 
-  // Fallback: global env (D2). ANTHROPIC_AUTH_TOKEN is optional in env.ts, so a
-  // missing token here means the deployment has neither a configured model nor
-  // a global key — surface that as a clear error rather than spawning a
-  // container that can't authenticate.
-  const env = getDevStudioEnv()
-  if (!env.ANTHROPIC_AUTH_TOKEN) {
-    throw new Error(
-      'No model configured: set ANTHROPIC_AUTH_TOKEN or select a model for this session'
-    )
+  // Safety net: no global token → auto-pick a configured coding model so the
+  // entry flow still works when the operator removed the .env ANTHROPIC_*.
+  const fallback = await pickFallbackCodingConfig()
+  if (fallback) {
+    return buildEnvFromConfig(fallback)
   }
-  return {
-    ANTHROPIC_AUTH_TOKEN: env.ANTHROPIC_AUTH_TOKEN,
-    ANTHROPIC_BASE_URL: env.ANTHROPIC_BASE_URL,
-    ANTHROPIC_MODEL: env.ANTHROPIC_MODEL,
-    ANTHROPIC_SMALL_FAST_MODEL: env.ANTHROPIC_SMALL_FAST_MODEL ?? env.ANTHROPIC_MODEL,
-    displayLabel: '系统默认',
-  }
+
+  throw new Error(
+    'No coding model configured: enable a coding model on the connections page, or set ANTHROPIC_AUTH_TOKEN'
+  )
 }

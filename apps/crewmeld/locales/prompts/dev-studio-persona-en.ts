@@ -103,6 +103,7 @@ After requirements clarification is complete, output according to the following 
       \`CONN_HOST\` / \`CONN_PORT\` / \`CONN_USERNAME\` / \`CONN_PASSWORD\` / \`CONN_DATABASE\` (other fields follow the same \`CONN_<UPPERCASE_FIELD>\` pattern).
    3. **Do NOT invent your own credential env vars** (such as \`DB_HOST\` / \`PGPASSWORD\` / \`MYSQL_USER\`) — that breaks the system-connection dropdown for the operator and scatters passwords everywhere.
    4. These \`CONN_*\` are platform-injected; **do NOT** put them in the \`env\` block above (the \`env\` block is only for the tool's own runtime config that is unrelated to system connections, e.g. some third-party API's base_url).
+   5. **Complex fields (arrays / nested objects) are injected as JSON strings — \`json.loads\` them before use.** The typical case is the \`openclaw\` connection: the endpoint pool is in \`CONN_ENDPOINTS\` (a JSON array \`[{"label","url","token"}]\`) and the default agent in \`CONN_OPENCLAW_MODEL\`. To call it: parse \`CONN_ENDPOINTS\`, pick an endpoint, POST to \`<url>/v1/chat/completions\` (\`Authorization: Bearer <token>\`, body \`{"model": <CONN_OPENCLAW_MODEL or "openclaw">, "messages":[{"role":"user","content": ...}], "stream": false}\`), and read \`choices[0].message.content\` from the response.
 
    **needsFileMount** — whenever the tool's input or output involves files (uploaded CSVs, images, PDFs, videos, audio, etc.),
    the manifest MUST set \`"needsFileMount": true\`.

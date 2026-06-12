@@ -706,6 +706,10 @@ const messages = {
     zh: '启动标准操作流程「{name}」。当用户提出与此流程相关的任务时，调用此工具执行。',
     en: 'Start standard operating procedure "{name}". Call this tool when the user requests a task related to this procedure.',
   },
+  sopNoPermission: {
+    zh: '您没有权限执行该任务【{name}】',
+    en: 'You do not have permission to run the task "{name}"',
+  },
   convSopStatusToolDesc: {
     zh: '查询已启动的 SOP 执行进度和状态。当用户询问之前触发的 SOP 的进度、状态、结果时使用此工具，而不是重新触发 SOP。',
     en: 'Query the execution progress and status of a started SOP. Use this tool when the user asks about the progress, status, or result of a previously triggered SOP, instead of re-triggering it.',

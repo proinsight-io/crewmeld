@@ -66,7 +66,8 @@ export function buildApprovalCard(options: {
       desc: deadline ? `${t('deadline', lang)}: ${deadline}` : '',
     },
     sub_title_text: nodeName,
-    horizontal_content_list: horizontalContentList,
+    // WeCom caps horizontal_content_list at 6 items; trim defensively.
+    horizontal_content_list: horizontalContentList.slice(0, 6),
     card_action: {
       type: 1,
       url: approvalPageUrl || '',
@@ -106,12 +107,8 @@ export function buildApprovalDoneCard(params: {
   }
   horizontalContentList.push({ keyname: t('sopProcess', lang), value: params.sopName })
   horizontalContentList.push({ keyname: t('approvalNode', lang), value: params.nodeName })
-  if (params.previousResult) {
-    horizontalContentList.push({
-      keyname: t('approvalContent', lang),
-      value: truncate(formatPreviousResult(params.previousResult), 500),
-    })
-  }
+  // The done card omits the (bulky) previous result — the approver already saw
+  // it on the pending card — to stay within WeCom's 6-item horizontal_content_list cap.
   horizontalContentList.push({ keyname: t('result', lang), value: decisionText })
   horizontalContentList.push({ keyname: t('handler', lang), value: params.decidedBy })
   horizontalContentList.push({ keyname: t('handledAt', lang), value: timeStr })
@@ -127,7 +124,8 @@ export function buildApprovalDoneCard(params: {
       desc: decisionText,
     },
     sub_title_text: params.nodeName,
-    horizontal_content_list: horizontalContentList,
+    // WeCom caps horizontal_content_list at 6 items; trim defensively.
+    horizontal_content_list: horizontalContentList.slice(0, 6),
     button_list: [
       { text: decisionText, style: params.decision === 'approved' ? 1 : 2, key: 'done' },
     ],

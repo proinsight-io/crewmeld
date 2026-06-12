@@ -26,6 +26,16 @@ interface MessageBubbleProps {
 }
 
 /**
+ * Rewrite MinIO direct URLs to application proxy paths
+ *
+ * Two strategies:
+ * 1. Path contains conversations/ or chat/ — use [...key] proxy (no signing needed)
+ *    e.g. http://<minio-host>:19000/tool-files/conversations/xxx/img.png
+ *      -> /api/employee/conversations/files/conversations/xxx/img.png
+ *
+ * 2. Other paths (charts/, exports/) or presigned URLs — use generic proxy
+ *    e.g. http://<minio-host>:19000/tool-files/charts/chart.png?X-Amz-...
+ *      -> /api/employee/conversations/files/proxy?url=<base64url>
  */
 function rewriteMinioUrl(src: string): string {
   try {

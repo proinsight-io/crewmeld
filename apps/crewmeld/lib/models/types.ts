@@ -4,6 +4,22 @@ export interface ModelDefaultParams {
   topP?: number
   presencePenalty?: number
   frequencyPenalty?: number
+  /**
+   * Coding-provider only. Fast/lightweight model identifier. Injected as both
+   * `ANTHROPIC_SMALL_FAST_MODEL` and `ANTHROPIC_DEFAULT_HAIKU_MODEL` for the
+   * dev-studio container. Empty/undefined → those env vars are omitted.
+   */
+  codingFastModel?: string
+  /**
+   * Coding-provider only. Standard-tier model identifier. Injected as
+   * `ANTHROPIC_DEFAULT_SONNET_MODEL`. Empty/undefined → env var omitted.
+   */
+  codingSonnetModel?: string
+  /**
+   * Coding-provider only. High-capability model identifier. Injected as
+   * `ANTHROPIC_DEFAULT_OPUS_MODEL`. Empty/undefined → env var omitted.
+   */
+  codingOpusModel?: string
 }
 
 export interface ModelConfigData {

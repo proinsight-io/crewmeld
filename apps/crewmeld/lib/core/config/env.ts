@@ -26,6 +26,7 @@ export const env = createEnv({
 
     // Database & Storage
     REDIS_URL:                             z.string().url().optional(),            // Redis connection string for caching/sessions
+    IDENTITY_CACHE_TTL_SECONDS:            z.string().optional().default('300'),   // Channel identity cache TTL in seconds (L1 in-process + L2 Redis); default 5 minutes
 
     // Payment & Billing
     STRIPE_SECRET_KEY:                     z.string().min(1).optional(),           // Stripe secret key for payment processing

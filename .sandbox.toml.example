@@ -1,0 +1,65 @@
+# OpenSandbox server config — Docker runtime mode. TEMPLATE (committed).
+#
+# The `opensandbox-config` one-shot service renders this at startup, substituting
+# ${CREWMELD_SANDBOX_VOLUME_ROOT} and ${OPENSANDBOX_API_KEY} from .env, and writes
+# the result to /etc/opensandbox/config.toml, which the server loads via
+# `--config` (matching the upstream helm chart).
+# The rendered file lives in a volume, never in git — never commit a filled key.
+# Wired up by docker-compose.yml under `--profile opensandbox-docker`. Reference:
+# https://github.com/alibaba/OpenSandbox/blob/main/server/configuration.md
+
+[server]
+# 0.0.0.0 so the published port (OPENSANDBOX_PORT) is reachable from the
+# crewmeld container at http://opensandbox-server:30080.
+host = "0.0.0.0"
+port = 30080
+max_sandbox_timeout_seconds = 86400
+# Injected from OPENSANDBOX_API_KEY (.env) — the SAME key crewmeld uses to call
+# the server. Generate with `openssl rand -hex 32`. Empty = insecure (server
+# refuses non-interactive start unless OPENSANDBOX_INSECURE_SERVER=YES), so set
+# OPENSANDBOX_API_KEY in .env before starting --profile opensandbox-docker.
+api_key = "${OPENSANDBOX_API_KEY}"
+
+[log]
+level = "INFO"
+
+[runtime]
+type = "docker"
+execd_image = "opensandbox/execd:v1.0.16"
+
+[storage]
+# Allowlist of host path prefixes permitted for bind mounts. The placeholder
+# below is substituted with CREWMELD_SANDBOX_VOLUME_ROOT (.env) at render time.
+# That same host path is bind-mounted into the server at the identical path so
+# the host Docker daemon resolves sandbox bind mounts (docker-out-of-docker).
+allowed_host_paths = ["${CREWMELD_SANDBOX_VOLUME_ROOT}"]
+volume_default_size = "1Gi"
+
+[store]
+type = "sqlite"
+# Persisted via the crewmeld_opensandbox_home volume mounted at /root.
+path = "~/.opensandbox/opensandbox.db"
+
+[docker]
+# OpenSandbox only supports bridge/host/none here (NOT custom network names), so
+# sandboxes run on the legacy `bridge`. The opensandbox-server container is
+# attached to `bridge` separately (opensandbox-net-bridge service runs
+# `docker network connect bridge`) so it can reverse-proxy the sandboxes' execd.
+network_mode = "bridge"
+drop_capabilities = ["AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"]
+no_new_privileges = true
+apparmor_profile = ""
+pids_limit = 4096
+seccomp_profile = ""
+
+[ingress]
+mode = "direct"
+
+[egress]
+image = "opensandbox/egress:v1.0.12"
+mode = "dns"
+
+# [EXPERIMENTAL] Renew-on-access. Off by default.
+[renew_intent]
+enabled = false
+min_interval_seconds = 60

@@ -2,10 +2,12 @@
  * POST /api/employee/skills/instances/:id/test-run
  *
  * Test-run a dev-studio tool instance with user-provided env vars and input.
- * Code is read from NFS (paths.toolCode.forBff(templateId)). Delegates to the
- * shared script-invoker so the lifecycle (manifest read → sandbox → NFS volume
- * mounts → exec start.sh on stdin → parse stdout → destroy) is identical to
- * /api/tools/:instanceId/invoke. See spec 2026-05-28 §11.
+ * Code is read from NFS (paths.toolCode.forBff(templateId)). Both kinds share
+ * the same ephemeral sandbox lifecycle (manifest read → sandbox → NFS volume
+ * mounts → … → destroy); only the invoke step differs by manifest kind:
+ *   - script:  exec start.sh on stdin → parse stdout (invokeScriptTool)
+ *   - service: background start.sh → wait for port → HTTP call (invokeServiceTool)
+ * See spec 2026-05-28 §11.
  *
  * Request body: { input: Record<string, unknown>, envVars?: Record<string, string> }
  */
@@ -16,6 +18,7 @@ import { requirePermission } from '@/lib/auth/rbac/check-permission'
 import { resolveConnectionEnvVars } from '@/lib/connectors/resolve-conn-env'
 import { readManifestFromTool } from '@/lib/dev-studio/manifest-reader'
 import { invokeScriptTool } from '@/lib/tools/script-invoker'
+import { invokeServiceTool } from '@/lib/tools/service-invoker'
 
 const logger = createLogger('InstanceTestRun')
 
@@ -72,18 +75,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
     )
   }
 
-  if (manifest.kind === 'service') {
-    return Response.json(
-      {
-        success: false,
-        error:
-          'Service-type tools are tested via the deployed endpoint after deploy. ' +
-          'Use the dev-studio run-test panel for pre-deploy validation.',
-      },
-      { status: 400 }
-    )
-  }
-
   // Merge env: manifest defaults < template env < connection env < instance env < user override
   const sandboxEnv: Record<string, string> = {}
   if (manifest.env?.properties) {
@@ -108,11 +99,21 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   Object.assign(sandboxEnv, body.envVars ?? {})
 
   try {
-    const result = await invokeScriptTool({
-      toolId: instance.templateId,
-      input: body.input ?? {},
-      userEnv: sandboxEnv,
-    })
+    // Service tools run a long-lived HTTP server: the invoker background-starts
+    // start.sh, waits for the declared port, then calls the endpoint. Script
+    // tools run one-shot on stdin. Both share the same ephemeral sandbox setup.
+    const result =
+      manifest.kind === 'service'
+        ? await invokeServiceTool({
+            toolId: instance.templateId,
+            input: body.input ?? {},
+            userEnv: sandboxEnv,
+          })
+        : await invokeScriptTool({
+            toolId: instance.templateId,
+            input: body.input ?? {},
+            userEnv: sandboxEnv,
+          })
     return Response.json({
       success: result.success,
       result: result.result,

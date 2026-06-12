@@ -1,0 +1,73 @@
+# OpenSandbox server — Docker runtime config for a HOST-RUN server.
+#
+# Used by serverStart.{ps1,sh,bat}, which launches the server with
+#   uvx opensandbox-server@0.1.14 --config opensandbox-server.docker.toml
+# so crewmeld (in the compose network) can reach it at
+# http://host.docker.internal:30080.
+#
+# Why host-run instead of the containerized server: a containerized server
+# reverse-proxies spawned sandboxes by an address it cannot reach (egress
+# NetworkMode=container -> localhost:hostport), which 502s. A host process
+# shares the host network namespace and reaches the sandbox ports directly.
+#
+# The api_key is intentionally NOT stored here (keeps this file committable).
+# serverStart injects it via the OPENSANDBOX_SERVER_API_KEY env var, sourced
+# from opensandbox-deploy/server-config.toml so it matches the key miniStart
+# writes into crewmeld's .env.
+
+[server]
+# Bind on all interfaces: the server must be reachable from the crewmeld
+# container via host.docker.internal. 127.0.0.1 would only accept host-local
+# connections and the container could not connect.
+host = "0.0.0.0"
+port = 30080
+max_sandbox_timeout_seconds = 86400
+# api_key: injected at runtime via OPENSANDBOX_SERVER_API_KEY (see serverStart).
+# eip = host part the server puts in sandbox endpoints it returns (USE_PROXY=0
+# path). Set to host.docker.internal so the crewmeld CONTAINER reaches each
+# sandbox at its PUBLISHED host port (e.g. host.docker.internal:56742). Required
+# on Windows/macOS Docker Desktop: a host-run server cannot proxy to sandbox
+# bridge IPs, so crewmeld must connect directly via the published port instead.
+eip = "host.docker.internal"
+
+[log]
+level = "INFO"
+
+[runtime]
+type = "docker"
+# Pin to the execd image already present locally (matches OPENSANDBOX_EXECD_IMAGE
+# in .env) so the server does not pull a different tag.
+execd_image = "opensandbox/execd:v1.0.16"
+
+[storage]
+# Allowlist of host path prefixes permitted for sandbox bind mounts. NOTE: in
+# v0.1.14 an EMPTY list denies ALL bind mounts (not "allow all"), so it must
+# list the volume root crewmeld writes session/workspace dirs under — i.e.
+# CREWMELD_SANDBOX_VOLUME_ROOT (default /data/opensandbox-deploy). Keep this in
+# sync if you change that env var.
+allowed_host_paths = ["/data/opensandbox-deploy"]
+volume_default_size = "1Gi"
+
+[store]
+type = "sqlite"
+path = "~/.opensandbox/opensandbox.db"
+
+[docker]
+network_mode = "bridge"
+# Drop dangerous capabilities and block privilege escalation.
+drop_capabilities = ["AUDIT_WRITE", "MKNOD", "NET_ADMIN", "NET_RAW", "SYS_ADMIN", "SYS_MODULE", "SYS_PTRACE", "SYS_TIME", "SYS_TTY_CONFIG"]
+no_new_privileges = true
+apparmor_profile = ""
+pids_limit = 4096
+seccomp_profile = ""
+
+[ingress]
+mode = "direct"
+
+[egress]
+image = "opensandbox/egress:v1.0.12"
+mode = "dns"
+
+[renew_intent]
+enabled = false
+min_interval_seconds = 60

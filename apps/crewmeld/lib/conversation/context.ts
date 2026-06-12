@@ -52,6 +52,26 @@ function estimateMessageTokens(msg: EngineMessage): number {
 }
 
 /**
+ * Strip raw tool-call structure from the history fed to the LLM.
+ *
+ * Keeps user messages and assistant summaries (natural-language replies,
+ * including expired-hint placeholders); drops `tool` result messages and
+ * assistant messages that carry `tool_calls`.
+ *
+ * The summaries have already passed through the engine's 5-minute expiry
+ * transform, so stale tool-derived answers stay neutralised (the model is still
+ * forced to re-invoke a tool when its summary is expired). This step only
+ * removes the structural tool-call payloads — e.g. the `sop_<id>` function name
+ * of a permission-filtered SOP — that would otherwise prime the model to echo a
+ * tool call back to the user as raw JSON text.
+ */
+export function stripToolStructureFromHistory(messages: EngineMessage[]): EngineMessage[] {
+  return messages.filter(
+    (m) => m.role === 'user' || (m.role === 'assistant' && !m.tool_calls)
+  )
+}
+
+/**
  * Build context window — trace back from newest messages, preserve tool_call↔tool_result pair integrity
  */
 export function buildContextWindow(

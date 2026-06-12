@@ -20,6 +20,7 @@ import type { NextRequest } from 'next/server'
 import { generateExecutionId } from '@/lib/core/execution-id'
 import { hashApiKey } from '@/lib/tools/api-key-service'
 import { createLogger } from '@crewmeld/logger'
+import { forwardableHeaders } from '@/lib/tools/forwardable-headers'
 
 const logger = createLogger('API:Tools:Invoke')
 
@@ -95,8 +96,12 @@ export async function POST(
       deploy: toolInstances.deploy,
       envVars: toolInstances.envVars,
       createdBy: toolInstances.createdBy,
+      kind: tools.kind,
+      apiSpec: tools.apiSpec,
+      forwardIdentity: tools.forwardIdentity,
     })
     .from(toolInstances)
+    .innerJoin(tools, eq(tools.id, toolInstances.templateId))
     .where(eq(toolInstances.id, instanceId))
     .limit(1)
 
@@ -112,6 +117,51 @@ export async function POST(
       { success: false, error: 'Instance not published as API' },
       { status: 403 }
     )
+  }
+
+  // Caller's inbound headers, filtered to the forwardable subset (platform
+  // secrets / hop-by-hop headers removed). Made available to every tool kind:
+  // proxied to web-service backends, injected into script stdin as `_headers`,
+  // and exposed to API tools as `ctx.headers` (+ overlaid on their outbound call).
+  const inboundHeaders = forwardableHeaders(request.headers)
+
+  // API tools run in-process (no container, no deploy). Short-circuit here.
+  if (instance.kind === 'api') {
+    if (!instance.apiSpec) {
+      return NextResponse.json({ success: false, error: 'API tool spec missing' }, { status: 500 })
+    }
+    let input: unknown
+    try {
+      const body = await request.json()
+      if (body === null || typeof body !== 'object' || !('input' in body)) {
+        return NextResponse.json(
+          { success: false, error: 'Request body must contain an "input" field' },
+          { status: 422 }
+        )
+      }
+      input = (body as Record<string, unknown>)['input']
+    } catch {
+      return NextResponse.json({ success: false, error: 'Invalid JSON body' }, { status: 422 })
+    }
+    const { runApiTool } = await import('@/lib/tools/api-tool-runner')
+    const { buildApiToolDeps } = await import('@/lib/tools/api-tool-deps')
+    // External invoke path has no platform-resolved caller identity: the request
+    // carries only an API key, not an IM channel user id. If this tool declares
+    // forwardIdentity=true the runner will fail-closed (no identity → no call),
+    // which is correct — external callers must not bypass identity enforcement.
+    const forwardIdentity = instance.forwardIdentity === true
+    const r = await runApiTool(
+      instance.apiSpec as import('@/lib/tools/api-tool-types').ApiToolSpec,
+      input,
+      buildApiToolDeps(),
+      { toolId: instance.templateId, forwardIdentity, headers: inboundHeaders }
+    )
+    const executionTime = Date.now() - start
+    return NextResponse.json({
+      success: r.success,
+      ...(r.success ? { result: r.result } : { error: r.error }),
+      executionTime,
+    })
   }
 
   const deploy = instance.deploy as DeployInfo | null
@@ -185,6 +235,7 @@ export async function POST(
       input,
       userEnv,
       execId,
+      headers: inboundHeaders,
     })
     return NextResponse.json({
       success: scriptResult.success,
@@ -197,7 +248,11 @@ export async function POST(
 
   let proxyResponse: Response
   try {
-    const fetchHeaders: Record<string, string> = { 'Content-Type': 'application/json' }
+    // Forward inbound headers (custom headers, downstream auth) to the tool
+    // backend. Platform-controlled headers are applied afterwards so they
+    // always win over any caller-supplied value.
+    const fetchHeaders: Record<string, string> = { ...inboundHeaders }
+    fetchHeaders['Content-Type'] = 'application/json'
     if (deploy.deployType === 'opensandbox') {
       const apiKey = process.env.OPENSANDBOX_API_KEY
       if (apiKey) fetchHeaders['OPEN-SANDBOX-API-KEY'] = apiKey

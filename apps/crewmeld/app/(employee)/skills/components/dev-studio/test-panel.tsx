@@ -3,6 +3,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import type { OnConnectionChange } from '@/lib/dev-studio/connection-context'
 import type { ManifestT } from '@/lib/dev-studio/manifest-reader'
 import type { DoneEvent, PhaseEvent, ResultEvent } from '@/lib/dev-studio/sandbox-loader'
 import { useTranslation } from '@/hooks/use-translation'
@@ -15,8 +16,8 @@ import { IoFilesPanel } from './io-files-panel'
 import { RunControls } from './run-controls'
 import { SandboxLogViewer } from './sandbox-log-viewer'
 import { type JsonSchema, SchemaForm, validateAgainstSchema } from './schema-form'
-import { type RunTestResult, TestResult } from './test-result'
 import { TestProgress } from './test-progress'
+import { type RunTestResult, TestResult } from './test-result'
 import { ToolMetaSummary } from './tool-meta-summary'
 
 interface TestPanelProps {
@@ -35,6 +36,15 @@ interface TestPanelProps {
    * container is destroyed; passing it through is harmless when omitted.
    */
   onAdoptSuccess?: () => void
+  /**
+   * Session-bound system connection id. Lifted to the dialog so this picker
+   * and the header selector stay in sync. The run-test POST sends it so the
+   * sandbox injects the connection's `CONN_*` values. Optional so the panel can
+   * be rendered standalone (tests / no-connection sessions) — defaults to null.
+   */
+  connectionId?: string | null
+  /** Fired when the operator picks/clears a connection here. */
+  onConnectionChange?: OnConnectionChange
 }
 
 /**
@@ -53,7 +63,14 @@ interface TestPanelProps {
  * The run button initiates a POST with SSE streaming; frames are parsed
  * incrementally via ReadableStream.
  */
-export function TestPanel({ sessionId, manifest, manifestError, onAdoptSuccess }: TestPanelProps) {
+export function TestPanel({
+  sessionId,
+  manifest,
+  manifestError,
+  onAdoptSuccess,
+  connectionId = null,
+  onConnectionChange,
+}: TestPanelProps) {
   const { t } = useTranslation()
 
   // Adoption is gated until the operator approves the package allow-list in the
@@ -73,7 +90,8 @@ export function TestPanel({ sessionId, manifest, manifestError, onAdoptSuccess }
   const [envValues, setEnvValues] = useState<Record<string, unknown>>({})
 
   // ── Connection ──
-  const [connectionId, setConnectionId] = useState<string | null>(null)
+  // `connectionId` is owned by the dialog (shared with the header selector) and
+  // arrives via props; this panel only reports changes back up.
 
   // ── Extra egress ──
   const [extraEgress, setExtraEgress] = useState('')
@@ -110,20 +128,20 @@ export function TestPanel({ sessionId, manifest, manifestError, onAdoptSuccess }
     return outType === 'files' || outType === 'image' || outType === 'pdf'
   }, [inputSchema, manifest])
 
-  /** Handle connection selection: prefill env from config preview. */
-  const handleConnectionChange = useCallback(
-    (id: string | null, configPreview: Record<string, unknown>) => {
-      setConnectionId(id)
-      if (!id || !envSchema) {
-        return
+  /**
+   * Handle connection selection: prefill the env form from the connection's
+   * config preview, then report the change up to the dialog (which owns the
+   * shared `connectionId` and the model-facing context).
+   */
+  const handleConnectionChange = useCallback<OnConnectionChange>(
+    (id, info) => {
+      if (id && info && envSchema) {
+        const prefilled = clientPrefillEnv(envSchema.properties ?? {}, info.configPreview)
+        setEnvValues((prev) => ({ ...prev, ...prefilled }))
       }
-      const prefilled = clientPrefillEnv(
-        envSchema.properties ?? {},
-        configPreview
-      )
-      setEnvValues((prev) => ({ ...prev, ...prefilled }))
+      onConnectionChange?.(id, info)
     },
-    [envSchema]
+    [envSchema, onConnectionChange]
   )
 
   if (!manifest) {
@@ -135,12 +153,8 @@ export function TestPanel({ sessionId, manifest, manifestError, onAdoptSuccess }
           className='m-4 space-y-2 rounded-md border border-destructive/40 bg-destructive/5 p-4 text-sm'
           data-testid='dev-studio:test-panel:manifest-error'
         >
-          <p className='font-medium text-destructive'>
-            {t('devStudio.test.manifestInvalidTitle')}
-          </p>
-          <p className='text-muted-foreground text-xs'>
-            {t('devStudio.test.manifestInvalidHint')}
-          </p>
+          <p className='font-medium text-destructive'>{t('devStudio.test.manifestInvalidTitle')}</p>
+          <p className='text-muted-foreground text-xs'>{t('devStudio.test.manifestInvalidHint')}</p>
           <pre className='overflow-x-auto whitespace-pre-wrap rounded bg-muted p-2 text-muted-foreground text-xs'>
             {manifestError.message}
           </pre>
@@ -223,9 +237,10 @@ export function TestPanel({ sessionId, manifest, manifestError, onAdoptSuccess }
               const resultEvt = parsed as unknown as ResultEvent
               setResult({
                 result: {
-                  stdout: typeof resultEvt.data === 'string'
-                    ? resultEvt.data
-                    : JSON.stringify(resultEvt.data ?? '', null, 2),
+                  stdout:
+                    typeof resultEvt.data === 'string'
+                      ? resultEvt.data
+                      : JSON.stringify(resultEvt.data ?? '', null, 2),
                   stderr: resultEvt.schemaError ?? '',
                   exitCode: resultEvt.success ? 0 : 1,
                   durationMs: 0,
@@ -250,8 +265,7 @@ export function TestPanel({ sessionId, manifest, manifestError, onAdoptSuccess }
   }
 
   /** Whether the env form section should be rendered. */
-  const hasEnvSchema =
-    envSchema?.properties && Object.keys(envSchema.properties).length > 0
+  const hasEnvSchema = envSchema?.properties && Object.keys(envSchema.properties).length > 0
 
   return (
     <div className='space-y-4 p-4' data-testid='dev-studio:test-panel'>
@@ -272,14 +286,8 @@ export function TestPanel({ sessionId, manifest, manifestError, onAdoptSuccess }
       {/* Env form — only when manifest declares env properties */}
       {hasEnvSchema && (
         <div>
-          <h4 className='mb-2 font-medium text-sm'>
-            {t('devStudio.test.envFormTitle')}
-          </h4>
-          <EnvForm
-            schema={envSchema!}
-            values={envValues}
-            onChange={setEnvValues}
-          />
+          <h4 className='mb-2 font-medium text-sm'>{t('devStudio.test.envFormTitle')}</h4>
+          <EnvForm schema={envSchema!} values={envValues} onChange={setEnvValues} />
         </div>
       )}
 
@@ -354,11 +362,7 @@ export function TestPanel({ sessionId, manifest, manifestError, onAdoptSuccess }
           sessionId={sessionId}
           executionId={doneEvent?.executionId}
           kept={doneEvent?.kept}
-          onViewLog={
-            doneEvent?.kept
-              ? () => setLogViewerOpen(true)
-              : undefined
-          }
+          onViewLog={doneEvent?.kept ? () => setLogViewerOpen(true) : undefined}
         />
       )}
 
@@ -400,8 +404,19 @@ function schemaHasFileField(schema: JsonSchema): boolean {
 // connection-resolver.ts (which is server-only due to db/crypto imports).
 
 const STRIP_PREFIXES = [
-  'MYSQL_', 'POSTGRES_', 'PG_', 'DB_', 'OPENAI_', 'GITHUB_', 'GITLAB_',
-  'DISCORD_', 'TELEGRAM_', 'WECOM_', 'DINGTALK_', 'FEISHU_', 'WXOA_',
+  'MYSQL_',
+  'POSTGRES_',
+  'PG_',
+  'DB_',
+  'OPENAI_',
+  'GITHUB_',
+  'GITLAB_',
+  'DISCORD_',
+  'TELEGRAM_',
+  'WECOM_',
+  'DINGTALK_',
+  'FEISHU_',
+  'WXOA_',
 ] as const
 
 function stripPrefix(envKey: string): string {
@@ -461,7 +476,7 @@ function EnvForm({ schema, values, onChange }: EnvFormProps) {
         return (
           <div key={key} className='space-y-1'>
             <label htmlFor={id} className='block text-sm'>
-              {(prop as Record<string, unknown>).title as string ?? key}
+              {((prop as Record<string, unknown>).title as string) ?? key}
               {(prop as Record<string, unknown>).description && (
                 <span className='ml-2 text-muted-foreground text-xs'>
                   {(prop as Record<string, unknown>).description as string}

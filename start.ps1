@@ -12,8 +12,8 @@
 
 .EXAMPLE
     .\start.ps1
-    .\start.ps1 --profile k3s --profile minio
-    .\start.ps1 --profile k3s --profile minio --profile ragflow --profile ollama
+    .\start.ps1 --profile opensandbox --profile minio
+    .\start.ps1 --profile opensandbox --profile minio --profile ragflow --profile ollama
 #>
 
 [CmdletBinding()]
@@ -35,6 +35,24 @@ if (-not (Test-Path .env)) {
 }
 else {
     Write-Host "[INFO] .env already exists, skipping copy."
+}
+
+# Generate OPENSANDBOX_API_KEY at first deploy (host-side; NOT baked into the
+# image). Shared by crewmeld and the docker-runtime OpenSandbox server.
+$envRaw = Get-Content .env -Raw
+if ($envRaw -notmatch '(?m)^OPENSANDBOX_API_KEY=.+') {
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $buf = New-Object byte[] 32
+    $rng.GetBytes($buf)
+    $osKey = ($buf | ForEach-Object { $_.ToString('x2') }) -join ''
+    if ($envRaw -match '(?m)^OPENSANDBOX_API_KEY=') {
+        $envRaw = $envRaw -replace '(?m)^OPENSANDBOX_API_KEY=.*', "OPENSANDBOX_API_KEY=$osKey"
+        Set-Content .env -Value $envRaw -NoNewline
+    }
+    else {
+        Add-Content .env -Value "OPENSANDBOX_API_KEY=$osKey"
+    }
+    Write-Host "[INFO] Generated OPENSANDBOX_API_KEY (first deploy)."
 }
 
 # Phase 1: Generate secrets (idempotent)

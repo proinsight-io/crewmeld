@@ -6,9 +6,11 @@ import { useParams, useRouter } from 'next/navigation'
 import { ReactFlowProvider } from 'reactflow'
 import { SopCanvas } from '@/components/sop/editor/sop-canvas'
 import { SopTriggerBar } from '@/components/sop/editor/sop-trigger-bar'
+import { type BoundConnection, PermissionPanel } from '@/components/sop/permission/permission-panel'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { serializeSopToPayload } from '@/lib/sop/serialize'
+import type { SopVisibilityRules } from '@/lib/sop/visibility-types'
 import { useTranslation } from '@/hooks/use-translation'
 import { useSopEditorStore } from '@/stores/sop/editor-store'
 import { SopNodeConfigPanel } from './node-config-panel'
@@ -21,6 +23,8 @@ export default function SopEditPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [toast, setToast] = useState<{ type: 'error' | 'success'; message: string } | null>(null)
+  const [visibilityRules, setVisibilityRules] = useState<SopVisibilityRules | null>(null)
+  const [boundConnections, setBoundConnections] = useState<BoundConnection[]>([])
 
   const showToast = useCallback((type: 'error' | 'success', message: string) => {
     setToast({ type, message })
@@ -46,6 +50,16 @@ export default function SopEditPage() {
   const reset = useSopEditorStore((s) => s.reset)
   const setIsSaving = useSopEditorStore((s) => s.setIsSaving)
   const markClean = useSopEditorStore((s) => s.markClean)
+  const markDirty = useSopEditorStore((s) => s.markDirty)
+
+  /** Update visibility rules and flag the editor dirty so Save enables. */
+  const handleVisibilityChange = useCallback(
+    (next: SopVisibilityRules | null) => {
+      setVisibilityRules(next)
+      markDirty()
+    },
+    [markDirty]
+  )
 
   /** Load SOP on mount */
   useEffect(() => {
@@ -71,6 +85,25 @@ export default function SopEditPage() {
           nodes: data.nodes ?? [],
           edges: data.edges ?? [],
         })
+        const rawVis = data.visibilityRules
+        const validVis =
+          rawVis && typeof rawVis === 'object' && 'enabled' in rawVis
+            ? (rawVis as SopVisibilityRules)
+            : null
+        setVisibilityRules(validVis)
+
+        // Fetch bound channel connections for the permission panel tabs
+        const connRes = await fetch(`/api/employee/sops/${id}/bound-connections`)
+        if (connRes.ok) {
+          const connJson = await connRes.json()
+          if (!cancelled) {
+            setBoundConnections((connJson.data?.connections as BoundConnection[]) ?? [])
+          }
+        } else {
+          if (!cancelled) {
+            showToast('error', '渠道列表加载失败，请重试')
+          }
+        }
       } catch (err) {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : t('sops.editLoadError'))
       } finally {
@@ -82,7 +115,7 @@ export default function SopEditPage() {
       cancelled = true
       reset()
     }
-  }, [id, loadDefinition, reset, t])
+  }, [id, loadDefinition, reset, t, showToast])
 
   /** Save SOP */
   const handleSave = useCallback(async () => {
@@ -100,7 +133,7 @@ export default function SopEditPage() {
       const res = await fetch(`/api/employee/sops/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, visibilityRules }),
       })
 
       if (!res.ok) {
@@ -122,6 +155,7 @@ export default function SopEditPage() {
     triggerConfig,
     sopTimeoutMinutes,
     maxRejectionCycles,
+    visibilityRules,
     setIsSaving,
     markClean,
     t,
@@ -251,9 +285,17 @@ export default function SopEditPage() {
           </ReactFlowProvider>
         </div>
 
-        {selectedNodeId && (
+        {selectedNodeId ? (
           <div className='w-72 shrink-0'>
             <SopNodeConfigPanel nodeId={selectedNodeId} />
+          </div>
+        ) : (
+          <div className='w-80 shrink-0 overflow-y-auto'>
+            <PermissionPanel
+              connections={boundConnections}
+              value={visibilityRules}
+              onChange={handleVisibilityChange}
+            />
           </div>
         )}
       </div>

@@ -177,6 +177,51 @@ export async function dispatchNotification(
 }
 
 /**
+ * Send an approval card directly to a channel-native user id (e.g. the
+ * requester's leader from `_meta.identity.leaderId`), on the given channel.
+ *
+ * Reuses the generic plugin sender (which resolves the channel credential and
+ * builds the card). Returns the dispatch result on success, or `null` when the
+ * channel can't send or the send fails (e.g. the leader id is invalid/stale) so
+ * the caller can fall back to the configured assignee.
+ */
+export async function dispatchApprovalToChannelUser(
+  channel: string,
+  userId: string,
+  content: ApprovalNotificationContent,
+  sourceEmployeeId?: string
+): Promise<DispatchResult | null> {
+  const plugin = getPlugin(channel)
+  if (!plugin?.buildApprovalCard || !plugin.outbound.sendCard || !content.pauseId) {
+    logger.warn('Leader routing skipped: channel cannot send approval cards', { channel })
+    return null
+  }
+
+  try {
+    const result = await sendApprovalViaPlugin(plugin, userId, content, sourceEmployeeId)
+    if (result.status === 'sent') {
+      logger.info('Approval card delivered to leader', { channel, leaderId: userId })
+      return result
+    }
+    // no_credential / dry_run / error → let the caller fall back
+    logger.warn('Leader routing did not deliver; will fall back', {
+      channel,
+      leaderId: userId,
+      status: result.status,
+    })
+    return null
+  } catch (error) {
+    // Invalid/stale leader id, channel rejection, etc. — fall back.
+    logger.warn('Leader routing send failed; will fall back', {
+      channel,
+      leaderId: userId,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return null
+  }
+}
+
+/**
  * Send approval card via channel plugin (generic)
  */
 async function sendApprovalViaPlugin(

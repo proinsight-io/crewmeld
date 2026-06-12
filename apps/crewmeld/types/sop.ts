@@ -28,6 +28,14 @@ export interface SopNode {
   notifyMethod?: string | string[]
   /** Approver list (human_confirm nodes support multiple approvers, First-Wins) */
   approvers?: string[]
+  /**
+   * Approver source for human_employee approval nodes:
+   * - 'assignee' (default): send to the configured collaborator (executorId)
+   * - 'requester_leader': send to the direct leader of whoever triggered the SOP
+   *   (from _meta.identity.leaderId, IM channels only); executorId, if set,
+   *   serves as the fallback approver when no leader can be reached.
+   */
+  approverSource?: 'assignee' | 'requester_leader'
   /** Condition/branch config (for condition / switch nodes) */
   conditionConfig?: ConditionConfig
   exits: SopExit[]
@@ -49,8 +57,15 @@ export interface SopExit {
 
 /** Exit condition */
 export interface SopCondition {
-  type: 'approval_result' | 'workflow_output' | 'variable' | 'always'
+  /**
+   * - approval_result: branch on a human_confirm decision
+   * - workflow_output / variable: branch on the upstream node's output
+   * - identity: branch on the caller's injected identity (positions / leaderId / orgUnitIds)
+   * - always: default/fallback exit
+   */
+  type: 'approval_result' | 'workflow_output' | 'variable' | 'identity' | 'always'
   operator?: 'eq' | 'neq' | 'gt' | 'lt' | 'contains'
+  /** For identity conditions: positions | leaderId | orgUnitIds | employeeId | employeeNo. Otherwise a dot-path into the node output. */
   field?: string
   value?: string | number | boolean
 }
@@ -199,12 +214,18 @@ export interface NotificationJobPayload {
   notifyMethod?: string | string[]
   /** Digital employee ID that triggered the conversation (for looking up bound channel connections, avoiding cross-app) */
   sourceEmployeeId?: string
+  /** Approver source: 'assignee' (default) or 'requester_leader' (deliver to the requester's leader) */
+  approverSource?: 'assignee' | 'requester_leader'
   contextData: {
     sopName: string
     nodeName: string
     aiSummary?: string
     deadline?: string
     pauseId: string
+    /** Requester's direct leader id (when approverSource='requester_leader'), channel-native */
+    leaderId?: string
+    /** Channel the requester came from (e.g. 'feishu'), used to deliver to the leader */
+    requesterChannel?: string
     /** Execution result of the previous digital employee node (JSON string) */
     previousNodeResult?: string
     previousNodeName?: string
