@@ -3,6 +3,7 @@
 import { useCallback, useState } from 'react'
 import { ToastPortal } from '@/components/ui/toast-portal'
 import { cn } from '@/lib/core/utils/cn'
+import type { OnConnectionChange } from '@/lib/dev-studio/connection-context'
 import { useToast } from '@/hooks/use-toast'
 import { useTranslation } from '@/hooks/use-translation'
 import { FileTreePanel } from './file-tree-panel'
@@ -21,6 +22,10 @@ interface WorkspacePanelProps {
    * tear down its chrome once the container is destroyed.
    */
   onAdoptSuccess?: () => void
+  /** Session-bound system connection id (shared with the header selector). */
+  connectionId?: string | null
+  /** Fired when the test-panel picker changes the bound connection. */
+  onConnectionChange?: OnConnectionChange
 }
 
 type WorkspaceTab = 'files' | 'test' | 'readme'
@@ -46,7 +51,12 @@ const TAB_DEFS: ReadonlyArray<{ id: WorkspaceTab; labelKey: string; icon: string
  * moment for the operator. {@link useManifestFirstAppearance} latches by
  * session id so re-renders / SWR revalidation don't fire the toast twice.
  */
-export function WorkspacePanel({ sessionId, onAdoptSuccess }: WorkspacePanelProps) {
+export function WorkspacePanel({
+  sessionId,
+  onAdoptSuccess,
+  connectionId,
+  onConnectionChange,
+}: WorkspacePanelProps) {
   const { t } = useTranslation()
   const { manifest, isPresent, error: manifestError } = useManifest(sessionId)
   const [tab, setTab] = useState<WorkspaceTab>('files')
@@ -124,6 +134,8 @@ export function WorkspacePanel({ sessionId, onAdoptSuccess }: WorkspacePanelProp
           manifest={manifest}
           manifestError={manifestError}
           onAdoptSuccess={onAdoptSuccess}
+          connectionId={connectionId ?? null}
+          onConnectionChange={onConnectionChange}
         />
       </div>
       <div

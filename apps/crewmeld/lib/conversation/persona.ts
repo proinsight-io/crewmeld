@@ -36,7 +36,8 @@ export function buildSystemPrompt(
   workflows: WorkflowInfo[],
   sops: SopInfo[] = [],
   knowledgeReference?: string | null,
-  userLanguage?: string
+  userLanguage?: string,
+  deniedSops: SopInfo[] = []
 ): string {
   const sections: string[] = []
 
@@ -81,6 +82,16 @@ export function buildSystemPrompt(
       .join('\n')
     sections.push(
       `\n## Available Tasks\nYou can invoke the following tasks to fulfill user requests:\n${sopList}\n\nWhen the user's request involves a business scenario covered by the above tasks, you **must invoke the corresponding task tool** instead of answering on your own.`
+    )
+  }
+
+  // Layer 4b: Restricted tasks — caller lacks permission (onNoPermission='deny')
+  if (deniedSops.length > 0) {
+    const deniedList = deniedSops
+      .map((sop) => `- **${sop.name}**${sop.description ? `: ${sop.description}` : ''}`)
+      .join('\n')
+    sections.push(
+      `\n## Restricted Tasks (No Permission)\nThe current user does NOT have permission to run the following tasks:\n${deniedList}\n\nYou must NOT invoke or attempt these tasks. If the user requests one of them, politely tell the user (in their language) that they do not have permission to run that task, naming the task; do not fabricate any result.`
     )
   }
 

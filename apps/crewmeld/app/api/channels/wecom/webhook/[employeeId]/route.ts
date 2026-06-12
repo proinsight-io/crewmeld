@@ -19,17 +19,28 @@ import {
 
 const logger = createLogger('WeComWebhook:Employee')
 
-async function resolveWeComConfig(employeeId: string): Promise<WeComPluginConfig | null> {
+/**
+ * Resolve the WeCom plugin config for an employee.
+ *
+ * @returns The config plus the systemConnections row id that received the message
+ *   (threaded downstream for SOP-visibility identity resolution), or null.
+ */
+async function resolveWeComConfig(
+  employeeId: string
+): Promise<{ config: WeComPluginConfig; connectionId: string } | null> {
   const bound = await resolveCredentialByBoundEmployee(employeeId, 'wecom')
   if (bound) {
     const c = bound.config
     return {
-      corpId: (c.corpId as string) ?? '',
-      corpSecret: (c.corpSecret as string) ?? '',
-      agentId: (c.agentId as string) ?? '',
-      token: (c.token as string) ?? '',
-      encodingAESKey: (c.encodingAESKey as string) ?? '',
-      boundEmployeeId: employeeId,
+      config: {
+        corpId: (c.corpId as string) ?? '',
+        corpSecret: (c.corpSecret as string) ?? '',
+        agentId: (c.agentId as string) ?? '',
+        token: (c.token as string) ?? '',
+        encodingAESKey: (c.encodingAESKey as string) ?? '',
+        boundEmployeeId: employeeId,
+      },
+      connectionId: bound.connectionId,
     }
   }
 
@@ -37,12 +48,15 @@ async function resolveWeComConfig(employeeId: string): Promise<WeComPluginConfig
   if (credentials.length > 0) {
     const c = credentials[0].config
     return {
-      corpId: (c.corpId as string) ?? '',
-      corpSecret: (c.corpSecret as string) ?? '',
-      agentId: (c.agentId as string) ?? '',
-      token: (c.token as string) ?? '',
-      encodingAESKey: (c.encodingAESKey as string) ?? '',
-      boundEmployeeId: employeeId,
+      config: {
+        corpId: (c.corpId as string) ?? '',
+        corpSecret: (c.corpSecret as string) ?? '',
+        agentId: (c.agentId as string) ?? '',
+        token: (c.token as string) ?? '',
+        encodingAESKey: (c.encodingAESKey as string) ?? '',
+        boundEmployeeId: employeeId,
+      },
+      connectionId: credentials[0].connectionId,
     }
   }
 
@@ -63,11 +77,12 @@ export async function GET(
   const nonce = url.searchParams.get('nonce') ?? ''
   const echostr = url.searchParams.get('echostr') ?? ''
 
-  const config = await resolveWeComConfig(employeeId)
-  if (!config) {
+  const resolved = await resolveWeComConfig(employeeId)
+  if (!resolved) {
     return apiErr('api.channelWebhook.wecomNotConfigured', { status: 500 })
   }
 
+  const { config } = resolved
   const expectedSig = generateWeComSignature(config.token, timestamp, nonce, echostr)
   if (expectedSig !== msgSignature) {
     logger.warn('WeCom URL verification signature mismatch', { employeeId })
@@ -91,15 +106,17 @@ export async function POST(
     return apiErr('api.channelWebhook.missingEmployeeId', { status: 400 })
   }
 
-  const config = await resolveWeComConfig(employeeId)
-  if (!config) {
+  const resolved = await resolveWeComConfig(employeeId)
+  if (!resolved) {
     logger.warn('WeCom webhook: no matching credentials', { employeeId })
     return new Response('success', { status: 200 })
   }
 
+  const { config, connectionId } = resolved
   return handleWeComWebhook(request, {
     plugin: wecomPlugin,
     config,
     employeeId,
+    connectionId,
   })
 }

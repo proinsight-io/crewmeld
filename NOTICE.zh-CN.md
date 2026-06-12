@@ -17,6 +17,7 @@ CrewMeld
   - @tanstack/react-query      MIT          https://tanstack.com/query
   - Zustand                    MIT          https://github.com/pmndrs/zustand
   - Socket.IO                  MIT          https://socket.io
-  - tiktoken                   MIT          https://github.com/openai/tiktoken
+  - ReactFlow                  MIT          https://reactflow.dev
+  - OpenSandbox                Apache-2.0   https://github.com/alibaba/OpenSandbox
 
 —— 中文版本仅供参考,法律效力以英文版 NOTICE 文件为准。

@@ -108,6 +108,7 @@ export const DEV_STUDIO_PERSONA_ZH = `
       \`CONN_HOST\` / \`CONN_PORT\` / \`CONN_USERNAME\` / \`CONN_PASSWORD\` / \`CONN_DATABASE\`(其余字段同理 \`CONN_<大写字段名>\`)。
    3. **禁止**为这些凭据自造环境变量(如 \`DB_HOST\` / \`PGPASSWORD\` / \`MYSQL_USER\`)—— 那样操作者就用不了"系统连接下拉",密码也会散落各处。
    4. 这些 \`CONN_*\` 由平台注入,**不要**写进上面的 \`env\` 块(\`env\` 只放工具自有、与系统连接无关的运行配置,例如某个第三方 API 的 base_url)。
+   5. **复杂结构字段(数组 / 嵌套对象)注入时是 JSON 字符串,代码要先 \`json.loads\` 再用。** 典型是 \`openclaw\` 连接:端点池在 \`CONN_ENDPOINTS\`(JSON 数组 \`[{"label","url","token"}]\`),默认 agent 在 \`CONN_OPENCLAW_MODEL\`。调用方式:解析 \`CONN_ENDPOINTS\` 取一个端点,向 \`<url>/v1/chat/completions\` 发 POST(\`Authorization: Bearer <token>\`、body \`{"model": <CONN_OPENCLAW_MODEL 或 "openclaw">, "messages":[{"role":"user","content": ...}], "stream": false}\`),返回取 \`choices[0].message.content\`。
 
    **needsFileMount** — 当工具的输入或输出涉及文件（上传的 CSV、图片、PDF、视频、音频等），
    manifest 中必须设 \`"needsFileMount": true\`。

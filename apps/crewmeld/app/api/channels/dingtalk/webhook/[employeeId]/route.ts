@@ -18,20 +18,31 @@ import {
 
 const logger = createLogger('DingtalkWebhook:Employee')
 
-async function resolveDingtalkConfig(employeeId: string): Promise<DingtalkPluginConfig | null> {
+/**
+ * Resolve the DingTalk plugin config for an employee.
+ *
+ * @returns The config plus the systemConnections row id that received the message
+ *   (threaded downstream for SOP-visibility identity resolution), or null.
+ */
+async function resolveDingtalkConfig(
+  employeeId: string
+): Promise<{ config: DingtalkPluginConfig; connectionId: string } | null> {
   // Prefer the connection bound to the employee
   const bound = await resolveCredentialByBoundEmployee(employeeId, 'dingtalk')
   if (bound) {
     const c = bound.config
     return {
-      appKey: c.appKey ?? '',
-      appSecret: c.appSecret ?? '',
-      robotCode: c.robotCode,
-      secret: c.secret ?? '',
-      aesKey: c.aesKey,
-      token: c.token,
-      suiteKey: c.suiteKey ?? c.appKey,
-      boundEmployeeId: employeeId,
+      config: {
+        appKey: c.appKey ?? '',
+        appSecret: c.appSecret ?? '',
+        robotCode: c.robotCode,
+        secret: c.secret ?? '',
+        aesKey: c.aesKey,
+        token: c.token,
+        suiteKey: c.suiteKey ?? c.appKey,
+        boundEmployeeId: employeeId,
+      },
+      connectionId: bound.connectionId,
     }
   }
 
@@ -40,14 +51,17 @@ async function resolveDingtalkConfig(employeeId: string): Promise<DingtalkPlugin
   if (credentials.length > 0) {
     const c = credentials[0].config
     return {
-      appKey: c.appKey ?? '',
-      appSecret: c.appSecret ?? '',
-      robotCode: c.robotCode,
-      secret: c.secret ?? '',
-      aesKey: c.aesKey,
-      token: c.token,
-      suiteKey: c.suiteKey ?? c.appKey,
-      boundEmployeeId: employeeId,
+      config: {
+        appKey: c.appKey ?? '',
+        appSecret: c.appSecret ?? '',
+        robotCode: c.robotCode,
+        secret: c.secret ?? '',
+        aesKey: c.aesKey,
+        token: c.token,
+        suiteKey: c.suiteKey ?? c.appKey,
+        boundEmployeeId: employeeId,
+      },
+      connectionId: credentials[0].connectionId,
     }
   }
 
@@ -64,16 +78,18 @@ export async function POST(
     return apiErr('api.channelWebhook.missingEmployeeId', { status: 400 })
   }
 
-  const config = await resolveDingtalkConfig(employeeId)
+  const resolved = await resolveDingtalkConfig(employeeId)
 
-  if (!config || (!config.secret && !config.appSecret)) {
+  if (!resolved || (!resolved.config.secret && !resolved.config.appSecret)) {
     logger.warn('DingTalk webhook: no matching credentials', { employeeId })
     return apiErr('api.channelWebhook.dingtalkNotConfigured', { status: 500 })
   }
 
+  const { config, connectionId } = resolved
   return handleChannelWebhook(request, {
     plugin: dingtalkPlugin,
     config,
     employeeId,
+    connectionId,
   })
 }

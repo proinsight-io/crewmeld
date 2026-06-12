@@ -38,7 +38,10 @@ import { CodedError } from '@/lib/core/errors'
 import { t } from '@/lib/core/server-i18n'
 import { encodeSSE } from '@/lib/core/utils/sse'
 import { makeLogMetadata } from '@/lib/i18n/log-payload'
-import { buildContextWindow } from './context'
+import { resolveChannelIdentity } from '@/lib/identity/channel-identity'
+import type { ScopeIdentity } from '@/lib/identity/types'
+import { resolveWebIdentity } from '@/lib/identity/web-identity'
+import { buildContextWindow, stripToolStructureFromHistory } from './context'
 import { classifyIntent } from './intent-classifier'
 import { buildWorkflowToolConfigs } from './intent-router'
 import { getEmployeeKnowledgeBaseIds, queryEmployeeKnowledge } from './knowledge-query'
@@ -86,7 +89,11 @@ export async function processMessage(
   /** Files attached to user message (uploaded to MinIO, written to metadata.files) */
   fileMetadata?: Array<{ key: string; name: string; size: number; mimeType: string }>,
   /** Frontend locale preference, used as fallback when auto-detection is inconclusive */
-  preferredLocale?: string
+  preferredLocale?: string,
+  /** Credentials of the connection that received the message (IM webhooks), threaded to SOP identity resolution so it uses the correct app — not a system default. */
+  channelConfig?: Record<string, unknown>,
+  /** Id of the channel connection that received the message; null/undefined for web/api. */
+  connectionId?: string
 ): Promise<ReadableStream<Uint8Array>> {
   // 1. Load conversation
   const [conv] = await db
@@ -243,7 +250,7 @@ export async function processMessage(
 
   // Step 3: expire assistant plain text replies (summaries based on tool results) following expired tool chains
   // Message order: ... -> assistant(tool_calls) -> tool(result) -> assistant(summary) -> ...
-  const historyMessages: EngineMessage[] = rawMessages.map((msg, i) => {
+  const expiredMessages: EngineMessage[] = rawMessages.map((msg, i) => {
     if (
       msg.role === 'assistant' &&
       !msg.tool_calls &&
@@ -262,6 +269,15 @@ export async function processMessage(
     }
     return msg
   })
+
+  // Step 4: strip raw tool-call structure (assistant tool_calls + tool results)
+  // from the history sent to the LLM. The expiry above already neutralised stale
+  // summaries (so the model still re-invokes tools when data is old); this only
+  // removes the structural tool-call payloads that would otherwise prime the
+  // model to echo a tool call — e.g. a permission-filtered SOP — back to the
+  // user as raw JSON. DB persistence and the UI (which read conversation_messages
+  // directly) are unaffected.
+  const historyMessages: EngineMessage[] = stripToolStructureFromHistory(expiredMessages)
 
   // Language detection — completed before entering stream, for progress text and system prompt
   const LANGUAGE_LABELS: Record<string, string> = {
@@ -503,13 +519,41 @@ export async function processMessage(
           return
         }
 
+        // Resolve caller identity for SOP-visibility filtering (cached 5min for IM;
+        // the SOP bridge reuses the same cache). IM channels resolve from their
+        // directory; web resolves from the platform user + RBAC roles (gated under
+        // the synthetic 'web' connection). 'api' (and any other non-IM) yield a
+        // null identity and null connectionId → default visibility.
+        let visibilityIdentity: ScopeIdentity | null
+        let visibilityConnectionId: string | null
+        if (conv.channel === 'web') {
+          visibilityIdentity = await resolveWebIdentity(userId)
+          visibilityConnectionId = 'web'
+        } else if (conv.channel && conv.channel !== 'api') {
+          visibilityIdentity = await resolveChannelIdentity({
+            channel: conv.channel,
+            userId,
+            config: channelConfig,
+          })
+          visibilityConnectionId = connectionId ?? null
+        } else {
+          visibilityIdentity = null
+          visibilityConnectionId = null
+        }
+
         // 5-7. Load tool config, model config, knowledge base IDs in parallel (three independent queries)
-        const [{ tools, workflowMap, sopMap, skillMap, sopInfos }, modelConfig, kbIds] =
-          await Promise.all([
-            buildWorkflowToolConfigs(conv.employeeId),
-            resolveModelConfig(conv.employeeId, conv.workspaceId),
-            getEmployeeKnowledgeBaseIds(conv.employeeId),
-          ])
+        const [
+          { tools, workflowMap, sopMap, skillMap, sopInfos, deniedSopInfos, deniedSopMap },
+          modelConfig,
+          kbIds,
+        ] = await Promise.all([
+          buildWorkflowToolConfigs(conv.employeeId, {
+            identity: visibilityIdentity,
+            connectionId: visibilityConnectionId,
+          }),
+          resolveModelConfig(conv.employeeId, conv.workspaceId),
+          getEmployeeKnowledgeBaseIds(conv.employeeId),
+        ])
         const hasKnowledgeBase = kbIds.length > 0
         const hasTools = tools.length > 0
         const sopNames = sopInfos.map((s) => s.name)
@@ -584,7 +628,8 @@ export async function processMessage(
           [],
           sopInfos,
           knowledgeReference,
-          userLanguage
+          userLanguage,
+          deniedSopInfos
         )
 
         logger.info('Tool list', {
@@ -615,12 +660,14 @@ export async function processMessage(
           workflowMap,
           sopMap,
           sopNameMap,
+          deniedSopMap,
           skillMap,
           modelConfig,
           userMessage,
           knowledgeReferences,
           taskId,
-          isZh
+          isZh,
+          channelConfig
         )
         await db
           .update(taskExecutions)
@@ -705,12 +752,16 @@ async function runMessageLoop(
   workflowMap: Map<string, string>,
   sopMap: Map<string, string>,
   sopNameMap: Map<string, string>,
+  /** sopToolName (`sop_<id>`) → denied SOP descriptor; calls to these are rejected program-side. */
+  deniedSopMap: Map<string, { id: string; name: string }>,
   skillMap: Map<string, { skillId: string; endpoint: string; openclawConnectionId?: string }>,
   modelConfig: ModelConfig,
   userMessage: string,
   knowledgeReferences: KnowledgeChunkReference[] = [],
   taskId = '',
-  isZh = true
+  isZh = true,
+  /** Credentials of the connection that received the message — threaded to SOP identity resolution. */
+  channelConfig?: Record<string, unknown>
 ): Promise<{ outputSummary: string | null; totalTokens: number }> {
   const lang = isZh ? 'zh' : 'en'
   const messages: EngineMessage[] = [{ role: 'system', content: systemPrompt }, ...contextMessages]
@@ -849,6 +900,7 @@ async function runMessageLoop(
       const wfId = workflowMap.get(tc.function.name)
       const sopId = sopMap.get(tc.function.name)
       const skillInfo = skillMap.get(tc.function.name)
+      const deniedSop = deniedSopMap.get(tc.function.name)
 
       let args: Record<string, unknown> = {}
       try {
@@ -872,6 +924,16 @@ async function runMessageLoop(
         const limit = typeof args.limit === 'number' ? args.limit : 10
         const taskResult = await queryUserTasks(userId, filter, limit)
         toolResult = taskResult.summary
+      } else if (deniedSop) {
+        // Restricted task: caller lacks permission. Reject program-side without
+        // executing; the message is returned so the LLM relays the refusal.
+        // hasRealToolExecution stays false; no SOP dedup/trigger logic runs.
+        toolResult = t('sopNoPermission', lang, { name: deniedSop.name })
+        logger.warn('Denied SOP invocation blocked program-side', {
+          conversationId,
+          tool: tc.function.name,
+          sopId: deniedSop.id,
+        })
       } else if (wfId) {
         // Workflow call
         hasRealToolExecution = true
@@ -973,7 +1035,8 @@ async function runMessageLoop(
               }
               enqueue(encodeSSE(progressEvent))
             },
-            isZh
+            isZh,
+            channelConfig
           )
 
           if (!result.success) {

@@ -183,6 +183,15 @@ export async function POST(_req: Request, ctx: RouteContext): Promise<Response> 
         ANTHROPIC_BASE_URL: modelEnv.ANTHROPIC_BASE_URL,
         ANTHROPIC_MODEL: modelEnv.ANTHROPIC_MODEL,
         ANTHROPIC_SMALL_FAST_MODEL: modelEnv.ANTHROPIC_SMALL_FAST_MODEL,
+        ...(modelEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL
+          ? { ANTHROPIC_DEFAULT_HAIKU_MODEL: modelEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL }
+          : {}),
+        ...(modelEnv.ANTHROPIC_DEFAULT_SONNET_MODEL
+          ? { ANTHROPIC_DEFAULT_SONNET_MODEL: modelEnv.ANTHROPIC_DEFAULT_SONNET_MODEL }
+          : {}),
+        ...(modelEnv.ANTHROPIC_DEFAULT_OPUS_MODEL
+          ? { ANTHROPIC_DEFAULT_OPUS_MODEL: modelEnv.ANTHROPIC_DEFAULT_OPUS_MODEL }
+          : {}),
         API_TIMEOUT_MS: '600000',
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
       },

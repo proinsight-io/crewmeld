@@ -6,6 +6,7 @@
 
 import { createLogger } from '@crewmeld/logger'
 import { t } from '@/lib/core/server-i18n'
+import type { ChannelUserDetail } from '@/lib/channels/directory-types'
 
 const logger = createLogger('DingtalkClient')
 
@@ -279,6 +280,63 @@ export async function downloadRobotFile(
   const buffer = Buffer.from(await fileRes.arrayBuffer())
   logger.info('DingTalk file downloaded successfully', { size: buffer.length })
   return buffer
+}
+
+/**
+ * [IM-DIRECTORY · MERGE→dev0.0.1] Fetch a DingTalk user's personal info from IM.
+ *
+ * Fetch a DingTalk user's directory detail by staffId (userId). Standalone IM
+ * capability — no ontology dependency; merges to dev0.0.1. Best-effort:
+ * returns null when the lookup fails. Dept names resolved best-effort via
+ * topapi/v2/department/get; failures omit the name.
+ */
+export async function getDingtalkUserDetail(
+  appKey: string,
+  appSecret: string,
+  userId: string
+): Promise<ChannelUserDetail | null> {
+  const result = await callDingtalkApi<
+    DingtalkApiResult & {
+      result?: {
+        name?: string
+        email?: string
+        mobile?: string
+        job_number?: string
+        title?: string
+        dept_id_list?: number[]
+        /** Direct manager's userid (钉钉 "直属主管"). */
+        manager_userid?: string
+      }
+    }
+  >(appKey, appSecret, `${DINGTALK_OAPI_BASE}/topapi/v2/user/get`, { userid: userId })
+  if (result.errcode !== 0 || !result.result) return null
+  const u = result.result
+
+  const deptNames: string[] = []
+  for (const deptId of u.dept_id_list ?? []) {
+    try {
+      const dr = await callDingtalkApi<DingtalkApiResult & { result?: { name?: string } }>(
+        appKey,
+        appSecret,
+        `${DINGTALK_OAPI_BASE}/topapi/v2/department/get`,
+        { dept_id: deptId }
+      )
+      if (dr.errcode === 0 && dr.result?.name) deptNames.push(dr.result.name)
+    } catch {
+      // Best-effort.
+    }
+  }
+
+  return {
+    name: u.name,
+    email: u.email,
+    mobile: u.mobile,
+    employeeNo: u.job_number,
+    deptNames,
+    positions: u.title ? [u.title] : [],
+    orgUnitIds: (u.dept_id_list ?? []).map(String),
+    leaderId: u.manager_userid,
+  }
 }
 
 /**

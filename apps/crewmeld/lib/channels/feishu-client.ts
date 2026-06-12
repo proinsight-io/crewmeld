@@ -6,6 +6,7 @@
 
 import { createLogger } from '@crewmeld/logger'
 import { t } from '@/lib/core/server-i18n'
+import type { ChannelUserDetail } from '@/lib/channels/directory-types'
 
 const logger = createLogger('FeishuClient')
 
@@ -195,6 +196,229 @@ export async function getFeishuUserName(
 }
 
 /**
+ * Org profile of a Feishu user, sourced from the Contact API.
+ *
+ * Note: "role" (功能角色 / functional role) is intentionally absent — Feishu
+ * provides no reverse "roles by user" lookup, so it would require enumerating
+ * every functional role's member list. Left as a future addition.
+ */
+export interface FeishuUserProfile {
+  /** Display name */
+  name: string | null
+  /** Primary email; falls back to enterprise email */
+  email: string | null
+  /** Mobile number */
+  mobile: string | null
+  /** Employee number (工号) */
+  employeeNo: string | null
+  /** Job title — maps to the Feishu "职务" field (requires contact:user.employee:readonly) */
+  jobTitle: string | null
+  /** Employee type: 1=full-time, 2=intern, 3=outsourced, 4=labor, 5=consultant, or a custom code */
+  employeeType: number | null
+  /** Open IDs (`od-…`) of the departments the user belongs to — the id space used for matching. */
+  departmentIds: string[]
+  /** Best-effort resolved department names; empty when the departments scope is missing */
+  departmentNames: string[]
+  /**
+   * Tenant custom department ids (e.g. `beijing`) resolved alongside the names.
+   * Recorded for display/audit only — NOT used for SOP permission matching, which
+   * stays on the open_department_id space. Empty when no department exposes a
+   * custom id (or the departments scope is missing).
+   */
+  departmentCustomIds: string[]
+  /** Direct leader's id, in the same id space as `leaderIdType` — used for approval routing */
+  leaderId: string | null
+  /** Id type of `leaderId` and the queried user; matches the input id's format */
+  leaderIdType: 'open_id' | 'union_id' | 'user_id'
+}
+
+/**
+ * Infer a Feishu id type from its prefix.
+ *
+ * open_id starts with `ou_`, union_id with `on_`; anything else is a user_id.
+ * The Contact API needs this so the path id is interpreted correctly and the
+ * returned ids (e.g. leader_user_id) come back in the same id space.
+ */
+function inferUserIdType(id: string): 'open_id' | 'union_id' | 'user_id' {
+  if (id.startsWith('ou_')) return 'open_id'
+  if (id.startsWith('on_')) return 'union_id'
+  return 'user_id'
+}
+
+/**
+ * Resolve a department open ID to its display name (best-effort).
+ *
+ * Returns null on any failure so a missing departments scope never breaks
+ * the surrounding profile fetch.
+ */
+async function getFeishuDepartmentName(token: string, departmentId: string): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `${FEISHU_BASE_URL}/contact/v3/departments/${departmentId}?department_id_type=open_department_id`,
+      {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    )
+
+    const result = (await res.json()) as {
+      code: number
+      msg: string
+      data?: { department?: { name?: string } }
+    }
+
+    if (result.code === 0 && result.data?.department?.name) {
+      return result.data.department.name
+    }
+
+    logger.info('Feishu department name lookup did not return a name', {
+      code: result.code,
+      msg: result.msg,
+      departmentId,
+    })
+    return null
+  } catch (error) {
+    logger.info('Feishu department name lookup failed', { departmentId, error })
+    return null
+  }
+}
+
+/**
+ * Resolve a user's department memberships in the tenant `department_id` space
+ * (the human-set custom ids, e.g. `beijing`) via a second Contact API lookup.
+ *
+ * The primary profile fetch uses `department_id_type=open_department_id`, so its
+ * `departmentIds` are `od-…` (the id space used for matching). This companion
+ * call re-queries the SAME user with `department_id_type=department_id`; per the
+ * Feishu docs the user endpoint's `department_ids` format follows that
+ * parameter, so it returns the custom ids directly. (The department-detail
+ * endpoint is NOT a reliable source — its `department_id` field mirrors the
+ * queried id type, returning `od-…` in open mode.)
+ *
+ * Recorded only, never used for matching. Best-effort: returns [] on any
+ * failure; the tenant root department "0" is filtered out.
+ */
+async function getFeishuUserCustomDepartmentIds(
+  token: string,
+  userId: string,
+  userIdType: 'open_id' | 'union_id' | 'user_id'
+): Promise<string[]> {
+  try {
+    const res = await fetch(
+      `${FEISHU_BASE_URL}/contact/v3/users/${userId}?user_id_type=${userIdType}&department_id_type=department_id`,
+      {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    )
+
+    const result = (await res.json()) as {
+      code: number
+      msg: string
+      data?: { user?: { department_ids?: string[] } }
+    }
+
+    if (result.code === 0 && result.data?.user?.department_ids) {
+      return result.data.user.department_ids.filter((id) => id !== '0')
+    }
+
+    logger.info('Feishu custom department id lookup did not return departments', {
+      code: result.code,
+      msg: result.msg,
+      userId,
+    })
+    return []
+  } catch (error) {
+    logger.info('Feishu custom department id lookup failed', { userId, error })
+    return []
+  }
+}
+
+/**
+ * Fetch a Feishu user's org profile by id (open_id / union_id / user_id).
+ *
+ * The id type is inferred from the id's prefix, so the same call works whether
+ * the inbound event carried an open_id or fell back to a user_id. A single
+ * Contact API call returns name / job title / employee type / department IDs /
+ * leader; `leaderId` comes back in the same id space as the input.
+ *
+ * Department names are resolved with extra best-effort calls; they stay empty
+ * when the departments scope is not granted.
+ *
+ * Returns null when the user lookup itself fails (missing scope or bad id).
+ */
+export async function getFeishuUserProfile(
+  appId: string,
+  appSecret: string,
+  userId: string
+): Promise<FeishuUserProfile | null> {
+  const token = await getTenantAccessToken(appId, appSecret)
+  const userIdType = inferUserIdType(userId)
+
+  const res = await fetch(
+    `${FEISHU_BASE_URL}/contact/v3/users/${userId}?user_id_type=${userIdType}&department_id_type=open_department_id`,
+    {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  )
+
+  const result = (await res.json()) as {
+    code: number
+    msg: string
+    data?: {
+      user?: {
+        name?: string
+        email?: string
+        enterprise_email?: string
+        mobile?: string
+        employee_no?: string
+        job_title?: string
+        employee_type?: number
+        department_ids?: string[]
+        leader_user_id?: string
+      }
+    }
+  }
+
+  if (result.code !== 0 || !result.data?.user) {
+    logger.warn('Feishu user profile fetch failed', {
+      code: result.code,
+      msg: result.msg,
+      userId,
+      userIdType,
+    })
+    return null
+  }
+
+  const user = result.data.user
+  const departmentIds = user.department_ids ?? []
+  // "0" is the tenant root department, not a real org unit — skip its name lookup.
+  const departmentNames = (
+    await Promise.all(
+      departmentIds.filter((id) => id !== '0').map((id) => getFeishuDepartmentName(token, id))
+    )
+  ).filter((name): name is string => name !== null)
+  // Custom (tenant) department ids come from a second user lookup in the
+  // department_id space — recorded only, never used for matching.
+  const departmentCustomIds = await getFeishuUserCustomDepartmentIds(token, userId, userIdType)
+
+  return {
+    name: user.name ?? null,
+    email: user.email ?? user.enterprise_email ?? null,
+    mobile: user.mobile ?? null,
+    employeeNo: user.employee_no ?? null,
+    jobTitle: user.job_title ?? null,
+    employeeType: user.employee_type ?? null,
+    departmentIds,
+    departmentNames,
+    departmentCustomIds,
+    leaderId: user.leader_user_id ?? null,
+    leaderIdType: userIdType,
+  }
+}
+
+/**
  * Send message (supports open_id / chat_id)
  *
  * @param receiveIdType - 'open_id' | 'chat_id' | 'user_id'
@@ -371,5 +595,38 @@ export async function updateMessageCard(
 
   if (result.code !== 0) {
     logger.warn('Feishu card update failed', { code: result.code, msg: result.msg, messageId })
+  }
+}
+
+/**
+ * [IM-DIRECTORY · MERGE→dev0.0.1] Fetch a Feishu user's personal info from IM.
+ *
+ * Thin adapter over {@link getFeishuUserProfile}: one Contact API call yields
+ * every directory field, so this maps the richer profile down to the
+ * cross-channel {@link ChannelUserDetail} shape (positions ← job title,
+ * orgUnitIds ← department ids, leaderId ← direct leader).
+ *
+ * Best-effort: returns null when the Contact API does not return a user (e.g.
+ * missing contact permission).
+ */
+export async function getFeishuUserDetail(
+  appId: string,
+  appSecret: string,
+  openId: string
+): Promise<ChannelUserDetail | null> {
+  const profile = await getFeishuUserProfile(appId, appSecret, openId)
+  if (!profile) return null
+
+  return {
+    name: profile.name ?? undefined,
+    email: profile.email ?? undefined,
+    mobile: profile.mobile ?? undefined,
+    employeeNo: profile.employeeNo ?? undefined,
+    employeeType: profile.employeeType != null ? String(profile.employeeType) : undefined,
+    deptNames: profile.departmentNames,
+    positions: profile.jobTitle ? [profile.jobTitle] : [],
+    orgUnitIds: profile.departmentIds,
+    orgUnitCustomIds: profile.departmentCustomIds,
+    leaderId: profile.leaderId ?? undefined,
   }
 }

@@ -20,9 +20,12 @@
 import { randomUUID } from 'node:crypto'
 import { access, cp, mkdir } from 'node:fs/promises'
 import path from 'node:path'
+import { db, toolDevMessages } from '@crewmeld/db'
 import { createLogger } from '@crewmeld/logger'
+import { asc, eq } from 'drizzle-orm'
 import { getCurrentUserRole } from '@/lib/auth/rbac/check-role'
 import { getDevStudioEnv } from '@/lib/dev-studio/env'
+import { resolveModelEnv } from '@/lib/dev-studio/model-resolver'
 import type { HostVolume } from '@/lib/dev-studio/opensandbox-client'
 import { OpenSandboxClient } from '@/lib/dev-studio/opensandbox-client'
 import { paths } from '@/lib/dev-studio/paths'
@@ -122,6 +125,19 @@ export async function POST(req: Request, _ctx: RouteContext): Promise<Response> 
     )
   }
 
+  // Inherit the source (adopted) session's pinned model so the iteration
+  // continues on the same model the operator built the tool with. A null
+  // modelConfigId resolves to the global env / auto-picked coding model via the
+  // shared resolver — mirroring POST /sessions, instead of the old behavior of
+  // hardcoding the global ANTHROPIC_* env (which broke when .env had no token
+  // and never persisted modelConfigId, so the forked session showed no model).
+  let modelEnv: Awaited<ReturnType<typeof resolveModelEnv>>
+  try {
+    modelEnv = await resolveModelEnv(sourceSession.modelConfigId)
+  } catch (e) {
+    return errorResponse(400, 'model-resolve-failed', String(e), false)
+  }
+
   let env: ReturnType<typeof getDevStudioEnv>
   try {
     env = getDevStudioEnv()
@@ -188,7 +204,46 @@ export async function POST(req: Request, _ctx: RouteContext): Promise<Response> 
     workspaceDir: dstWorkspace,
     claudeStateDir: dstClaude,
     containerStatus: 'creating',
+    // Persist the EFFECTIVE id the resolver landed on, not the source input.
+    // When the source was "系统默认" (null) and the global env model was later
+    // removed, the resolver auto-picks a real coding config; persisting that
+    // id (instead of the null input) is what lets the header selector display
+    // the model actually in use rather than a blank.
+    modelConfigId: modelEnv.modelConfigId,
+    modelName: modelEnv.displayLabel,
   })
+
+  // Carry the source session's chat history into the iteration so the operator
+  // sees the conversation that built the tool instead of a blank panel. The
+  // workspace + claude state copies above already preserve the model's resume
+  // context; this copies the UI-facing `tool_dev_messages` timeline to match.
+  // Rows are append-only and keyed by sessionId, so we re-key clones to the new
+  // session, keeping `sequence` (so the chat route's max(sequence) continues
+  // appending without collision) and dropping `id`/`createdAt` to let the
+  // defaults assign fresh ones. Best-effort: a copy failure must not block the
+  // fork — the iteration still works, just without visible prior history.
+  try {
+    const sourceMessages = await db
+      .select()
+      .from(toolDevMessages)
+      .where(eq(toolDevMessages.sessionId, sourceSession.id))
+      .orderBy(asc(toolDevMessages.sequence))
+    if (sourceMessages.length > 0) {
+      await db.insert(toolDevMessages).values(
+        sourceMessages.map((m) => ({
+          sessionId: newSessionId,
+          sequence: m.sequence,
+          kind: m.kind,
+          payload: m.payload,
+        }))
+      )
+    }
+  } catch (e) {
+    log.warn(
+      { err: e, sourceSessionId: sourceSession.id, newSessionId },
+      'failed to copy chat history into fork'
+    )
+  }
 
   // Spawn sandbox bound to the NEW session's dirs. hostPath is the sandbox-side
   // (Linux) view, derived from `newSessionId` — now populated by the copy above.
@@ -218,10 +273,19 @@ export async function POST(req: Request, _ctx: RouteContext): Promise<Response> 
       },
       timeoutSeconds: env.CREWMELD_SANDBOX_TTL_SECONDS,
       env: {
-        ANTHROPIC_AUTH_TOKEN: env.ANTHROPIC_AUTH_TOKEN,
-        ANTHROPIC_BASE_URL: env.ANTHROPIC_BASE_URL,
-        ANTHROPIC_MODEL: env.ANTHROPIC_MODEL,
-        ANTHROPIC_SMALL_FAST_MODEL: env.ANTHROPIC_SMALL_FAST_MODEL ?? env.ANTHROPIC_MODEL,
+        ANTHROPIC_AUTH_TOKEN: modelEnv.ANTHROPIC_AUTH_TOKEN,
+        ANTHROPIC_BASE_URL: modelEnv.ANTHROPIC_BASE_URL,
+        ANTHROPIC_MODEL: modelEnv.ANTHROPIC_MODEL,
+        ANTHROPIC_SMALL_FAST_MODEL: modelEnv.ANTHROPIC_SMALL_FAST_MODEL,
+        ...(modelEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL
+          ? { ANTHROPIC_DEFAULT_HAIKU_MODEL: modelEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL }
+          : {}),
+        ...(modelEnv.ANTHROPIC_DEFAULT_SONNET_MODEL
+          ? { ANTHROPIC_DEFAULT_SONNET_MODEL: modelEnv.ANTHROPIC_DEFAULT_SONNET_MODEL }
+          : {}),
+        ...(modelEnv.ANTHROPIC_DEFAULT_OPUS_MODEL
+          ? { ANTHROPIC_DEFAULT_OPUS_MODEL: modelEnv.ANTHROPIC_DEFAULT_OPUS_MODEL }
+          : {}),
         API_TIMEOUT_MS: '600000',
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
       },

@@ -157,6 +157,14 @@ async function _POST(request: NextRequest) {
       ...(defaultParams?.frequencyPenalty !== undefined
         ? { frequencyPenalty: defaultParams.frequencyPenalty }
         : {}),
+      // Coding-provider model tiers (dev-studio container env). Only persisted
+      // when a non-empty string is supplied so resolveModelEnv can omit the
+      // corresponding ANTHROPIC_* var on an empty value.
+      ...(defaultParams?.codingFastModel ? { codingFastModel: defaultParams.codingFastModel } : {}),
+      ...(defaultParams?.codingSonnetModel
+        ? { codingSonnetModel: defaultParams.codingSonnetModel }
+        : {}),
+      ...(defaultParams?.codingOpusModel ? { codingOpusModel: defaultParams.codingOpusModel } : {}),
     }
 
     const apiKeyEncrypted = apiKey ? encryptConfig(apiKey) : null

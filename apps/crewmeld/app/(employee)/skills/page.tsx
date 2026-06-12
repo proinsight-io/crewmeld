@@ -39,10 +39,12 @@ import { PermissionGuard } from '../components/permission-guard'
 // import { loadOfficialTools } from './load-official-skills'
 import { AiToolGenerator } from './components/ai-tool-generator'
 import { ApiKeyPanel } from './components/api-key-panel'
+import { ApiToolEditor } from './components/api-tool-editor'
 import { DevStudioDialog } from './components/dev-studio/dev-studio-dialog'
 import { useSessionList } from './components/dev-studio/hooks/use-session-list'
 import { RedeployPrompt } from './components/redeploy-prompt'
 import { ToolEditor } from './components/skill-editor'
+import type { ApiToolPackage } from '@/lib/tools/api-tool-package'
 import type { DeployInfo, GitHubProjectContext, SkillPackage, ToolInstance } from './types'
 import { skillEnvName } from './types'
 
@@ -127,8 +129,11 @@ function TemplateCard({
   onUpgrade,
   onClick,
   onEditMeta,
+  onEdit,
   onExport,
   onDevelop,
+  onPublish,
+  onToggleForwardIdentity,
 }: {
   skill: SkillPackage
   instanceCount: number
@@ -140,9 +145,15 @@ function TemplateCard({
   onUpgrade?: () => void
   onClick?: () => void
   onEditMeta?: () => void
+  /** Open a full editor for this tool (used for api-kind tools) */
+  onEdit?: () => void
   onExport?: () => void
   /** Open DevStudio filtered to this tool (dev-studio source only) */
   onDevelop?: () => void
+  /** Open publish-as-API settings dialog (api-kind tools only) */
+  onPublish?: () => void
+  /** Toggle this tool's template-level forward-identity flag directly from the card. */
+  onToggleForwardIdentity?: (next: boolean) => void
 }) {
   const { t } = useTranslation()
   const needsUpgrade =
@@ -185,6 +196,11 @@ function TemplateCard({
               {skill.source === 'official' && (
                 <Badge variant='outline' className='border-blue-200 bg-blue-50 text-blue-700'>
                   {t('devStudio.source.official')}
+                </Badge>
+              )}
+              {skill.kind === 'api' && (
+                <Badge variant='outline' className='border-cyan-200 bg-cyan-50 text-cyan-700'>
+                  API
                 </Badge>
               )}
               {onEditMeta && (
@@ -239,6 +255,26 @@ function TemplateCard({
               ? t('skills.author', { name: skill.author })
               : t('skills.installedAt', { date: skill.uploadedAt })}
           </span>
+          {onToggleForwardIdentity ? (
+            <span
+              className='flex items-center gap-1'
+              onClick={(e) => e.stopPropagation()}
+            >
+              <Switch
+                id={`fwd-identity-${skill.id}`}
+                checked={skill.forwardIdentity ?? false}
+                onCheckedChange={onToggleForwardIdentity}
+                className='scale-75'
+                data-testid={`skills:switch:forward-identity:${skill.id}`}
+              />
+              <label
+                htmlFor={`fwd-identity-${skill.id}`}
+                className='cursor-pointer select-none whitespace-nowrap text-gray-500'
+              >
+                传身份
+              </label>
+            </span>
+          ) : null}
           {skill.url && (
             <a
               href={skill.url}
@@ -252,9 +288,9 @@ function TemplateCard({
             </a>
           )}
         </div>
-        <div className='flex items-center gap-1' onClick={(e) => e.stopPropagation()}>
+        <div className='flex items-center gap-0.5' onClick={(e) => e.stopPropagation()}>
           {installed && !needsUpgrade && !onUninstall && (
-            <span className='flex items-center gap-1 rounded-md px-2 py-1 text-green-600'>
+            <span className='flex items-center gap-0.5 rounded-md px-1.5 py-1 text-green-600'>
               <CheckCheck className='h-3.5 w-3.5' />
               {t('skills.installed')}
             </span>
@@ -263,7 +299,7 @@ function TemplateCard({
             <button
               type='button'
               onClick={onUpgrade}
-              className='flex items-center gap-1 rounded-md px-2 py-1 text-amber-600 hover:bg-amber-50'
+              className='flex items-center gap-0.5 rounded-md px-1.5 py-1 text-amber-600 hover:bg-amber-50'
             >
               <ArrowUpCircle className='h-3.5 w-3.5' />
               {t('skills.upgrade')}
@@ -273,7 +309,7 @@ function TemplateCard({
             <button
               type='button'
               onClick={onInstall}
-              className='flex items-center gap-1 rounded-md px-2 py-1 text-blue-600 hover:bg-blue-50'
+              className='flex items-center gap-0.5 rounded-md px-1.5 py-1 text-blue-600 hover:bg-blue-50'
             >
               <Download className='h-3.5 w-3.5' />
               {t('skills.install')}
@@ -283,18 +319,40 @@ function TemplateCard({
             <button
               type='button'
               onClick={onDevelop}
-              className='flex items-center gap-1 rounded-md px-2 py-1 text-emerald-600 hover:bg-emerald-50'
+              className='flex items-center gap-0.5 rounded-md px-1.5 py-1 text-emerald-600 hover:bg-emerald-50'
               data-testid={`skills:button:develop:${skill.id}`}
             >
               <Wrench className='h-3.5 w-3.5' />
               {t('skills.develop')}
             </button>
           )}
+          {onEdit && (
+            <button
+              type='button'
+              onClick={onEdit}
+              className='flex items-center gap-0.5 rounded-md px-1.5 py-1 text-violet-600 hover:bg-violet-50'
+              data-testid={`skills:button:edit-api-tool:${skill.id}`}
+            >
+              <Settings2 className='h-3.5 w-3.5' />
+              {t('skills.editTool')}
+            </button>
+          )}
+          {onPublish && (
+            <button
+              type='button'
+              onClick={onPublish}
+              className='flex items-center gap-0.5 rounded-md px-1.5 py-1 text-cyan-600 hover:bg-cyan-50'
+              data-testid={`skills:button:publish-api-tool:${skill.id}`}
+            >
+              <Globe className='h-3.5 w-3.5' />
+              发布
+            </button>
+          )}
           {onExport && (
             <button
               type='button'
               onClick={onExport}
-              className='flex items-center gap-1 rounded-md px-2 py-1 text-gray-500 hover:bg-gray-50'
+              className='flex items-center gap-0.5 rounded-md px-1.5 py-1 text-gray-500 hover:bg-gray-50'
               data-testid={`skills:button:export:${skill.id}`}
             >
               <Upload className='h-3.5 w-3.5' />
@@ -305,7 +363,7 @@ function TemplateCard({
             <button
               type='button'
               onClick={onUninstall}
-              className='flex items-center gap-1 rounded-md px-2 py-1 text-red-500 hover:bg-red-50'
+              className='flex items-center gap-0.5 rounded-md px-1.5 py-1 text-red-500 hover:bg-red-50'
             >
               <Trash2 className='h-3.5 w-3.5' />
               {t('skills.uninstall')}
@@ -573,7 +631,7 @@ function InstanceCard({
               onClick={onDeploy}
               disabled={deploying}
               className={cn(
-                'flex items-center gap-1 rounded-md px-2 py-1',
+                'flex items-center gap-0.5 rounded-md px-1.5 py-1',
                 deploying
                   ? 'cursor-not-allowed text-gray-400'
                   : 'text-emerald-600 hover:bg-emerald-50'
@@ -602,7 +660,7 @@ function InstanceCard({
               onClick={onUndeploy}
               disabled={undeploying}
               className={cn(
-                'flex items-center gap-1 rounded-md px-2 py-1',
+                'flex items-center gap-0.5 rounded-md px-1.5 py-1',
                 undeploying
                   ? 'cursor-not-allowed text-gray-400'
                   : 'text-orange-600 hover:bg-orange-50'
@@ -628,7 +686,7 @@ function InstanceCard({
           <button
             type='button'
             onClick={onEdit}
-            className='flex items-center gap-1 rounded-md px-2 py-1 text-violet-600 hover:bg-violet-50'
+            className='flex items-center gap-0.5 rounded-md px-1.5 py-1 text-violet-600 hover:bg-violet-50'
             data-testid={`skills:button:edit-instance:${instance.id}`}
           >
             <Settings2 className='h-3.5 w-3.5' />
@@ -640,7 +698,7 @@ function InstanceCard({
           <button
             type='button'
             onClick={onExportCompose}
-            className='flex items-center gap-1 rounded-md px-2 py-1 text-gray-500 hover:bg-gray-50'
+            className='flex items-center gap-0.5 rounded-md px-1.5 py-1 text-gray-500 hover:bg-gray-50'
             data-testid={`skills:button:export-compose:${instance.id}`}
           >
             <Download className='h-3.5 w-3.5' />
@@ -653,7 +711,7 @@ function InstanceCard({
             <button
               type='button'
               onClick={onDelete}
-              className='flex items-center gap-1 rounded-md px-2 py-1 text-red-500 hover:bg-red-50'
+              className='flex items-center gap-0.5 rounded-md px-1.5 py-1 text-red-500 hover:bg-red-50'
               data-testid={`skills:button:delete-instance:${instance.id}`}
             >
               <Trash2 className='h-3.5 w-3.5' />
@@ -703,6 +761,9 @@ export default function SkillsPage() {
     null
   )
   const [editingSkill, setEditingSkill] = useState<SkillPackage | null>(null)
+  // ApiToolEditor state
+  const [apiEditorOpen, setApiEditorOpen] = useState(false)
+  const [apiEditorTool, setApiEditorTool] = useState<SkillPackage | undefined>()
   const [apiKeys, setApiKeys] = useState<{ name: string; value: string }[]>([])
   const [apiKeysDialogOpen, setApiKeysDialogOpen] = useState(false)
   const [preloadedModels, setPreloadedModels] = useState<
@@ -742,9 +803,26 @@ export default function SkillsPage() {
    */
   const [redeployPrompt, setRedeployPrompt] = useState<ToolInstance | null>(null)
   const [editingTemplateMeta, setEditingTemplateMeta] = useState<SkillPackage | null>(null)
+
+  // Publish-as-API dialog state (api-kind tools only)
+  const [publishDialogTool, setPublishDialogTool] = useState<SkillPackage | null>(null)
+  const [publishDialogInstance, setPublishDialogInstance] = useState<ToolInstance | null>(null)
+  const [publishDialogLoading, setPublishDialogLoading] = useState(false)
   const [metaDraftName, setMetaDraftName] = useState('')
   const [metaDraftDescription, setMetaDraftDescription] = useState('')
   const [metaSaving, setMetaSaving] = useState(false)
+
+  // .cmapi import dialog state
+  const [apiImportDialogOpen, setApiImportDialogOpen] = useState(false)
+  const [apiImportPackage, setApiImportPackage] = useState<ApiToolPackage | null>(null)
+  /** custom_api connections available for mapping */
+  const [apiImportConnections, setApiImportConnections] = useState<
+    Array<{ id: string; name: string }>
+  >([])
+  /** { [requirement.ref]: selectedConnectionId } */
+  const [apiImportMapping, setApiImportMapping] = useState<Record<string, string>>({})
+  const [apiImporting, setApiImporting] = useState(false)
+  const apiImportInputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     // loadOfficialTools().then(setOfficialSkills).catch(() => {})
@@ -1033,6 +1111,69 @@ export default function SkillsPage() {
     }
   }
 
+  // Open publish-as-API dialog for an api-kind template.
+  // Fetches the existing instance (or creates one if none exist), then shows the dialog.
+  const handleOpenPublishDialog = async (skill: SkillPackage) => {
+    setPublishDialogTool(skill)
+    setPublishDialogInstance(null)
+    setPublishDialogLoading(true)
+    try {
+      // Fetch existing instances for this template
+      const listRes = await fetch(
+        `/api/employee/skills/instances?templateId=${encodeURIComponent(skill.id)}`
+      )
+      if (!listRes.ok) throw new Error('fetch-instances-failed')
+      const listData = await listRes.json()
+      const existing = (listData.instances ?? []) as ToolInstance[]
+      if (existing.length > 0) {
+        setPublishDialogInstance(existing[0])
+        return
+      }
+      // No instance yet — create a default one
+      const createRes = await fetch('/api/employee/skills/instances', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ templateId: skill.id }),
+      })
+      if (!createRes.ok) throw new Error('create-instance-failed')
+      const createData = await createRes.json()
+      setPublishDialogInstance(createData.instance as ToolInstance)
+      // Refresh instance counts in the background
+      fetchInstalledSkills()
+    } catch {
+      showToast('info', t('skills.createInstanceFailed'))
+      setPublishDialogTool(null)
+    } finally {
+      setPublishDialogLoading(false)
+    }
+  }
+
+  // Toggle publishedAsApi for the instance shown in the publish dialog
+  const handlePublishDialogToggle = async (checked: boolean) => {
+    if (!publishDialogInstance) return
+    const prev = publishDialogInstance.publishedAsApi
+    // Optimistic update
+    setPublishDialogInstance((i) => (i ? { ...i, publishedAsApi: checked } : i))
+    try {
+      const res = await fetch(
+        `/api/employee/skills/instances/${publishDialogInstance.id}/publish-api`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ publishedAsApi: checked }),
+        }
+      )
+      if (!res.ok) {
+        // Revert on failure
+        setPublishDialogInstance((i) => (i ? { ...i, publishedAsApi: prev } : i))
+        showToast('info', t('skills.saveFailed'))
+      }
+    } catch {
+      setPublishDialogInstance((i) => (i ? { ...i, publishedAsApi: prev } : i))
+      showToast('info', t('skills.saveFailed'))
+    }
+  }
+
   // Delete instance
   const confirmDeleteInstance = async () => {
     if (!deleteInstanceTarget) return
@@ -1062,15 +1203,28 @@ export default function SkillsPage() {
     const ct = installed.connectorType
     const isOpenclaw =
       typeof ct === 'object' && ct !== null && (ct as { type?: string }).type === 'openclaw'
-    const clickable = installed.code || isOpenclaw || installed.source === 'dev-studio'
+    const isApiTool = installed.kind === 'api'
+    // API tools have no instance-list view; all other clickable tools do.
+    const clickable = !isApiTool && (installed.code || isOpenclaw || installed.source === 'dev-studio')
     return {
       onUninstall: () => setDeleteTarget({ id: installed.id, name: installed.name }),
       onClick: clickable ? () => handleTemplateClick(installed) : undefined,
-      onEditMeta: () => {
-        setEditingTemplateMeta(installed)
-        setMetaDraftName(installed.name)
-        setMetaDraftDescription(installed.description ?? '')
-      },
+      onEditMeta: isApiTool
+        ? undefined
+        : () => {
+            setEditingTemplateMeta(installed)
+            setMetaDraftName(installed.name)
+            setMetaDraftDescription(installed.description ?? '')
+          },
+      // For api tools, expose a full editor button instead of meta-only pencil
+      onEdit: isApiTool
+        ? () => {
+            setApiEditorTool(installed)
+            setApiEditorOpen(true)
+          }
+        : undefined,
+      // For api tools, expose a publish-as-API button
+      onPublish: isApiTool ? () => handleOpenPublishDialog(installed) : undefined,
       onDevelop:
         installed.source === 'dev-studio'
           ? () => {
@@ -1078,6 +1232,28 @@ export default function SkillsPage() {
               setDevStudioOpen(true)
             }
           : undefined,
+      onToggleForwardIdentity: (next: boolean) => handleToggleForwardIdentity(installed, next),
+    }
+  }
+
+  /**
+   * Toggle a tool template's forward-identity flag directly from its card.
+   * Optimistically updates the list, persists via the skills CRUD route (which
+   * writes tools.forward_identity), and reverts on failure.
+   */
+  const handleToggleForwardIdentity = async (skill: SkillPackage, next: boolean) => {
+    const updated: SkillPackage = { ...skill, forwardIdentity: next }
+    setInstalledSkills((prev) => prev.map((s) => (s.id === skill.id ? updated : s)))
+    try {
+      const res = await fetch('/api/employee/skills', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ skill: updated }),
+      })
+      if (!res.ok) throw new Error('save failed')
+    } catch {
+      setInstalledSkills((prev) => prev.map((s) => (s.id === skill.id ? skill : s)))
+      showToast('info', t('skills.saveFailed'))
     }
   }
 
@@ -1403,6 +1579,94 @@ export default function SkillsPage() {
     }
   }
 
+  // Handle .cmapi file pick: parse, fetch connections, open mapping dialog
+  const handleImportCmapiFile = async (file: File) => {
+    let parsed: unknown
+    try {
+      const text = await file.text()
+      parsed = JSON.parse(text)
+    } catch {
+      showToast('info', '文件读取失败，请确认是有效的 .cmapi 文件')
+      return
+    }
+
+    // Minimal client-side validation before opening dialog
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      (parsed as Record<string, unknown>)['_crewmeld_api_tool'] !== true ||
+      !(parsed as Record<string, unknown>)['apiSpec']
+    ) {
+      showToast('info', '无效的 .cmapi 文件：缺少必要字段')
+      return
+    }
+
+    const pkg = parsed as ApiToolPackage
+
+    // Fetch custom_api connections for the mapping dropdowns
+    let connections: Array<{ id: string; name: string }> = []
+    try {
+      const res = await fetch('/api/employee/connectors?type=custom_api')
+      const data = (await res.json()) as {
+        success?: boolean
+        data?: { connections?: Array<{ id: string; name: string }> }
+      }
+      if (data.success && data.data?.connections) {
+        connections = data.data.connections
+      }
+    } catch {
+      // Non-fatal: show empty dropdowns
+    }
+
+    // Pre-fill mapping: match requirement name to connection name (case-insensitive)
+    const defaultMapping: Record<string, string> = {}
+    for (const req of pkg.connectionRequirements ?? []) {
+      const match = connections.find(
+        (c) => c.name.toLowerCase() === req.name.toLowerCase()
+      )
+      if (match) defaultMapping[req.ref] = match.id
+    }
+
+    setApiImportPackage(pkg)
+    setApiImportConnections(connections)
+    setApiImportMapping(defaultMapping)
+    setApiImportDialogOpen(true)
+  }
+
+  // Submit .cmapi import with connection mapping
+  const handleConfirmApiImport = async () => {
+    if (!apiImportPackage || apiImporting) return
+    setApiImporting(true)
+    try {
+      const res = await fetch('/api/employee/skills/import-api', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          package: apiImportPackage,
+          mapping: apiImportMapping,
+        }),
+      })
+      const body = (await res.json().catch(() => null)) as {
+        success?: boolean
+        data?: { toolId?: string; name?: string }
+        message?: string
+      } | null
+      if (!res.ok || !body?.success) {
+        showToast('info', `导入失败：${body?.message ?? res.statusText}`)
+        return
+      }
+      // Refresh skills list to show the newly imported tool
+      fetchInstalledSkills()
+      setApiImportDialogOpen(false)
+      setApiImportPackage(null)
+      showToast('success', `API 工具「${body?.data?.name ?? apiImportPackage.name}」已成功导入`)
+    } catch (err) {
+      showToast('info', `导入失败：${err instanceof Error ? err.message : String(err)}`)
+    } finally {
+      setApiImporting(false)
+    }
+  }
+
   // Unified import entry: route by file extension
   const importInputRef = useRef<HTMLInputElement>(null)
   const handleImportFile = (file: File) => {
@@ -1512,6 +1776,27 @@ export default function SkillsPage() {
                   e.target.value = ''
                 }}
               />
+              <PermissionGuard requires='skill:create'>
+                <Button
+                  variant='outline'
+                  onClick={() => apiImportInputRef.current?.click()}
+                  data-testid='skills:button:import-api'
+                >
+                  <Download className='mr-2 h-4 w-4' />
+                  导入 API 工具
+                </Button>
+              </PermissionGuard>
+              <input
+                ref={apiImportInputRef}
+                type='file'
+                accept='.cmapi,application/json'
+                className='hidden'
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file) handleImportCmapiFile(file)
+                  e.target.value = ''
+                }}
+              />
               <Button
                 variant='outline'
                 onClick={() => setApiKeysDialogOpen(true)}
@@ -1520,6 +1805,19 @@ export default function SkillsPage() {
                 <KeyRound className='mr-2 h-4 w-4' />
                 {t('skills.config')}
               </Button>
+              <PermissionGuard requires='skill:create'>
+                <Button
+                  variant='outline'
+                  onClick={() => {
+                    setApiEditorTool(undefined)
+                    setApiEditorOpen(true)
+                  }}
+                  data-testid='skills:button:create-api-tool'
+                >
+                  <Plus className='mr-2 h-4 w-4' />
+                  新建 API 工具
+                </Button>
+              </PermissionGuard>
               <PermissionGuard requires='skill:create'>
                 <Button
                   onClick={() => setDevStudioOpen(true)}
@@ -1766,6 +2064,29 @@ export default function SkillsPage() {
           setInstalledSkills((prev) => [newSkill, ...prev])
           setActiveTab('installed')
           showToast('success', t('skills.aiToolCreated', { name: tool.title }))
+        }}
+      />
+
+      {/* API tool editor dialog */}
+      <ApiToolEditor
+        open={apiEditorOpen}
+        onOpenChange={(open) => {
+          setApiEditorOpen(open)
+          if (!open) setApiEditorTool(undefined)
+        }}
+        tool={apiEditorTool}
+        onSaved={(saved) => {
+          // Update or prepend the saved skill in the list
+          setInstalledSkills((prev) => {
+            const idx = prev.findIndex((s) => s.id === saved.id)
+            if (idx >= 0) {
+              const next = [...prev]
+              next[idx] = saved
+              return next
+            }
+            return [saved, ...prev]
+          })
+          showToast('success', t('skills.updated', { name: saved.name }))
         }}
       />
 
@@ -2177,6 +2498,202 @@ export default function SkillsPage() {
                 {t('skills.apiKeySaveConfig')}
               </Button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* .cmapi import connection-mapping dialog */}
+      {apiImportDialogOpen && apiImportPackage && (
+        <div
+          className='fixed inset-0 z-40 flex items-center justify-center bg-black/30'
+          onClick={() => {
+            if (!apiImporting) setApiImportDialogOpen(false)
+          }}
+        >
+          <div
+            className='relative w-[540px] rounded-2xl bg-white p-6 shadow-2xl'
+            onClick={(e) => e.stopPropagation()}
+            data-testid='api-tool-import:dialog'
+          >
+            {/* Header */}
+            <div className='mb-4 flex items-center justify-between'>
+              <div className='flex items-center gap-3'>
+                <div className='flex h-10 w-10 items-center justify-center rounded-full bg-cyan-100'>
+                  <Download className='h-5 w-5 text-cyan-600' />
+                </div>
+                <div>
+                  <h2 className='font-semibold text-gray-900 text-lg'>导入 API 工具 - 连接映射</h2>
+                  <p className='text-gray-500 text-xs'>{apiImportPackage.name}</p>
+                </div>
+              </div>
+              <button
+                type='button'
+                onClick={() => {
+                  if (!apiImporting) setApiImportDialogOpen(false)
+                }}
+                className='rounded-lg p-1.5 hover:bg-gray-100'
+              >
+                <X className='h-4 w-4 text-gray-400' />
+              </button>
+            </div>
+
+            {/* Tool info */}
+            {apiImportPackage.description && (
+              <p className='mb-4 text-gray-600 text-sm leading-relaxed'>
+                {apiImportPackage.description}
+              </p>
+            )}
+
+            {/* Connection requirements */}
+            <div className='mb-4'>
+              <p className='mb-2 font-medium text-gray-700 text-sm'>连接映射</p>
+              {!apiImportPackage.connectionRequirements ||
+              apiImportPackage.connectionRequirements.length === 0 ? (
+                <div className='rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-gray-500 text-sm'>
+                  无需连接映射
+                </div>
+              ) : (
+                <div className='space-y-3'>
+                  {apiImportPackage.connectionRequirements.map((req) => (
+                    <div
+                      key={req.ref}
+                      className='flex items-center gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3'
+                      data-testid={`api-tool-import:row:${req.ref}`}
+                    >
+                      <div className='min-w-0 flex-1'>
+                        <p className='font-medium text-gray-800 text-sm'>{req.name}</p>
+                        <p className='text-gray-400 text-xs'>{req.ref}</p>
+                      </div>
+                      <select
+                        value={apiImportMapping[req.ref] ?? ''}
+                        onChange={(e) =>
+                          setApiImportMapping((prev) => ({
+                            ...prev,
+                            [req.ref]: e.target.value,
+                          }))
+                        }
+                        className='min-w-[180px] rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm focus:border-cyan-400 focus:outline-none focus:ring-1 focus:ring-cyan-300'
+                        data-testid={`api-tool-import:select:${req.ref}`}
+                      >
+                        <option value=''>— 请选择连接 —</option>
+                        {apiImportConnections.map((conn) => (
+                          <option key={conn.id} value={conn.id}>
+                            {conn.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className='flex justify-end gap-3'>
+              <Button
+                variant='outline'
+                onClick={() => setApiImportDialogOpen(false)}
+                disabled={apiImporting}
+              >
+                取消
+              </Button>
+              <Button
+                onClick={handleConfirmApiImport}
+                disabled={apiImporting}
+                className='bg-cyan-600 hover:bg-cyan-700'
+                data-testid='api-tool-import:confirm'
+              >
+                {apiImporting ? (
+                  <>
+                    <Loader2 className='mr-2 h-4 w-4 animate-spin' />
+                    导入中...
+                  </>
+                ) : (
+                  '确认导入'
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Publish-as-API settings dialog (api-kind tools) */}
+      {publishDialogTool && (
+        <div
+          className='fixed inset-0 z-40 flex items-center justify-center bg-black/30'
+          onClick={() => {
+            if (!publishDialogLoading) setPublishDialogTool(null)
+          }}
+        >
+          <div
+            className='relative w-[520px] rounded-2xl bg-white p-6 shadow-2xl'
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Dialog header */}
+            <div className='mb-4 flex items-center justify-between'>
+              <div className='flex items-center gap-3'>
+                <div className='flex h-10 w-10 items-center justify-center rounded-full bg-cyan-100'>
+                  <Globe className='h-5 w-5 text-cyan-600' />
+                </div>
+                <div>
+                  <h2 className='font-semibold text-gray-900 text-lg'>发布设置</h2>
+                  <p className='text-gray-500 text-xs'>{publishDialogTool.name}</p>
+                </div>
+              </div>
+              <button
+                type='button'
+                onClick={() => setPublishDialogTool(null)}
+                className='rounded-lg p-1.5 hover:bg-gray-100'
+                data-testid='dialog:publish-api:close'
+              >
+                <X className='h-4 w-4 text-gray-400' />
+              </button>
+            </div>
+
+            {/* Loading state while fetching/creating instance */}
+            {publishDialogLoading && (
+              <div className='flex items-center justify-center py-8'>
+                <Loader2 className='h-6 w-6 animate-spin text-cyan-600' />
+                <span className='ml-2 text-gray-500 text-sm'>正在准备...</span>
+              </div>
+            )}
+
+            {/* Content — shown once instance is ready */}
+            {!publishDialogLoading && publishDialogInstance && (
+              <>
+                {/* Publish toggle */}
+                <div className='mb-4 flex items-center gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3'>
+                  <Switch
+                    checked={!!publishDialogInstance.publishedAsApi}
+                    onCheckedChange={handlePublishDialogToggle}
+                    data-testid={`dialog:publish-api:switch:${publishDialogInstance.id}`}
+                  />
+                  <div>
+                    <p className='font-medium text-gray-800 text-sm'>{t('skills.publishApi')}</p>
+                    <p className='text-gray-500 text-xs'>
+                      启用后，外部系统可通过 API Key 调用此工具
+                    </p>
+                  </div>
+                </div>
+
+                {/* API key management — only when published */}
+                {publishDialogInstance.publishedAsApi && (
+                  <ApiKeyPanel
+                    instanceId={publishDialogInstance.id}
+                    parameters={
+                      publishDialogTool.parameters as Parameters<typeof ApiKeyPanel>[0]['parameters']
+                    }
+                  />
+                )}
+
+                {/* Close button */}
+                <div className='mt-6 flex justify-end'>
+                  <Button variant='outline' onClick={() => setPublishDialogTool(null)}>
+                    {t('common.close')}
+                  </Button>
+                </div>
+              </>
+            )}
           </div>
         </div>
       )}

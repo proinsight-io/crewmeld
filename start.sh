@@ -5,8 +5,8 @@
 # Usage: ./start.sh [docker compose flags]
 # Examples:
 #   ./start.sh
-#   ./start.sh --profile k3s --profile minio
-#   ./start.sh --profile k3s --profile minio --profile ragflow --profile ollama
+#   ./start.sh --profile opensandbox --profile minio
+#   ./start.sh --profile opensandbox --profile minio --profile ragflow --profile ollama
 
 set -euo pipefail
 
@@ -20,6 +20,23 @@ if [[ ! -f .env ]]; then
     cp .env.example .env
 else
     echo "[INFO] .env already exists, skipping copy."
+fi
+
+# Generate OPENSANDBOX_API_KEY at first deploy (host-side; NOT baked into the
+# image). Shared by crewmeld and the docker-runtime OpenSandbox server. Skipped
+# once a non-empty value exists.
+if ! grep -qE '^OPENSANDBOX_API_KEY=.+' .env; then
+    if command -v openssl >/dev/null 2>&1; then
+        OSKEY="$(openssl rand -hex 32)"
+    else
+        OSKEY="$(head -c32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    fi
+    if grep -qE '^OPENSANDBOX_API_KEY=' .env; then
+        sed -i.bak "s#^OPENSANDBOX_API_KEY=.*#OPENSANDBOX_API_KEY=${OSKEY}#" .env && rm -f .env.bak
+    else
+        printf '\nOPENSANDBOX_API_KEY=%s\n' "$OSKEY" >> .env
+    fi
+    echo "[INFO] Generated OPENSANDBOX_API_KEY (first deploy)."
 fi
 
 # Phase 1: Generate secrets (idempotent — skips if already filled)

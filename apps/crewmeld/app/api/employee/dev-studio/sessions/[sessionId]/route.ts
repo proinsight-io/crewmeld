@@ -2,8 +2,8 @@
  * Single-session resource endpoints.
  *
  * - GET: return the session row when owned by the caller.
- * - PATCH: update narrow whitelist of session metadata (currently only
- *   `rightPanelVisible`). Strict schema rejects unknown fields with 400.
+ * - PATCH: update narrow whitelist of session metadata (`rightPanelVisible`,
+ *   `connectionId`). Strict schema rejects unknown fields with 400.
  * - DELETE: physically delete the session and its related records
  *   (messages, pending actions). If the session has a linked tool (`toolId`
  *   is non-null), workspace files are PRESERVED (they belong to the tool).
@@ -25,6 +25,10 @@ import { purgeSession } from '@/lib/dev-studio/session-teardown'
 const PatchSchema = z
   .object({
     rightPanelVisible: z.boolean().optional(),
+    // System connection bound to the session, or null to clear. The studio
+    // surfaces the connection's CONN_* env vars to the model and the test-run
+    // sandbox injects the resolved values.
+    connectionId: z.string().nullable().optional(),
   })
   .strict()
 

@@ -14,9 +14,11 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import { buildConnEnvKeys, type OnConnectionChange } from '@/lib/dev-studio/connection-context'
 import { useTranslation } from '@/hooks/use-translation'
 import { useDevStudioUI } from '@/stores/dev-studio-ui/store'
 import { type CloseAction, CloseConfirmDialog } from './close-confirm-dialog'
+import { CreateSessionDialog } from './create-session-dialog'
 import { DevStudioChat } from './dev-studio-chat'
 import { DevStudioHeader } from './dev-studio-header'
 import { DevStudioInput } from './dev-studio-input'
@@ -26,6 +28,7 @@ import { useManifestFirstAppearance } from './hooks/use-manifest-first-appearanc
 import { useSessionList } from './hooks/use-session-list'
 import { useSplitRatio } from './hooks/use-split-ratio'
 import { useStreamChat } from './hooks/use-stream-chat'
+import { LoadingOverlay } from './loading-overlay'
 import { ResumeOverlay } from './resume-overlay'
 import { SplitPane } from './split-pane'
 import { WorkspacePanel } from './workspace-panel'
@@ -63,24 +66,37 @@ function ChatPanel({
   sessionId,
   onAskAnswered,
   busy,
+  loadingHistory,
 }: {
   messages: ReturnType<typeof useStreamChat>['messages']
   sessionId: string | null
   onAskAnswered: () => void
   busy: boolean
+  loadingHistory: boolean
 }) {
+  const { t } = useTranslation()
   // h-full (not flex-1) because the SplitPane slot wrapping this is a
   // plain block (h-full overflow-hidden), not a flex container — flex-1
   // there silently resolves to height:auto and the ScrollArea inside
   // collapses to zero, killing both visibility and the ability to scroll.
   return (
-    <div className='h-full min-h-0 flex flex-col' data-testid='dev-studio:chat-panel'>
+    <div className='relative h-full min-h-0 flex flex-col' data-testid='dev-studio:chat-panel'>
       <DevStudioChat
         messages={messages}
         sessionId={sessionId}
         onAskAnswered={onAskAnswered}
         busy={busy}
       />
+      {/* History spinner — shown while a session's persisted timeline loads, but
+          only before any message has rendered, so it covers the blank gap on
+          first landing / session switch without flickering over an in-flight
+          stream that has already started appending. */}
+      {loadingHistory && messages.length === 0 && (
+        <LoadingOverlay
+          label={t('devStudio.loading.history')}
+          testId='dev-studio:history-loading'
+        />
+      )}
     </div>
   )
 }
@@ -96,13 +112,35 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
     return () => setDialogOpen(false)
   }, [open, setDialogOpen])
   const session = useDevStudioSession(open, { initialSessionId, toolId })
-  const chat = useStreamChat(session.sessionId)
+  // Bound system connection for this session. Lifted here (rather than living
+  // in the test panel) so the header selector and the test-panel picker share
+  // a single source of truth, and so the connection context can be woven into
+  // the model's first message / a mid-session prompt.
+  const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null)
+  // Pre-composed connection note woven into the model's FIRST message when the
+  // operator bound a connection before typing anything. Null otherwise.
+  const [connectionInitialContext, setConnectionInitialContext] = useState<string | null>(null)
+  const chat = useStreamChat(session.sessionId, connectionInitialContext)
   const sessionListOpts = toolId ? { toolId } : undefined
   const { sessions, mutate: mutateSessions } = useSessionList(sessionListOpts)
   const sessionRecord = session.sessionId
     ? (sessions.find((s) => s.id === session.sessionId) ?? null)
     : null
   const showRightPanel = sessionRecord?.rightPanelVisible ?? false
+
+  // Hydrate the bound connection from the session row once it first loads for
+  // the current session. Latched by session id so it applies the persisted
+  // value on open / session-switch without clobbering a live operator change
+  // (which already updates both the local state and the row).
+  const loadedConnForSessionRef = useRef<string | null>(null)
+  useEffect(() => {
+    const sid = session.sessionId
+    if (!sid || !sessionRecord) return
+    if (loadedConnForSessionRef.current === sid) return
+    loadedConnForSessionRef.current = sid
+    setSelectedConnectionId(sessionRecord.connectionId ?? null)
+    setConnectionInitialContext(null)
+  }, [session.sessionId, sessionRecord])
 
   const split = useSplitRatio({ storageKey: 'dev-studio.split.ratio' })
 
@@ -132,6 +170,11 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
     modelConfigId: string | null
   } | null>(null)
   const [switchingModel, setSwitchingModel] = useState(false)
+  // Container-spawning entry actions (~10-30s each). These gate a full-body
+  // LoadingOverlay so the operator gets visible feedback instead of a frozen
+  // dialog while a new container is created.
+  const [forking, setForking] = useState(false)
+  const [creatingNew, setCreatingNew] = useState(false)
   // Gate the 5s polling on dialog open — otherwise SWR keeps hitting /manifest
   // after the dialog closes (the Radix Dialog can keep children mounted in some
   // animation states; passing null disables the SWR key entirely).
@@ -178,7 +221,9 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
     const switchTarget = pendingSwitchId
     if (switchTarget) {
       suppressOuterCloseRef.current = true
-      setTimeout(() => { suppressOuterCloseRef.current = false }, 100)
+      setTimeout(() => {
+        suppressOuterCloseRef.current = false
+      }, 100)
     }
     setCloseConfirmOpen(false)
     setPendingSwitchId(null)
@@ -260,6 +305,7 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
    * so the old one is destroyed server-side when the new one starts).
    */
   async function handleCreateNew(modelConfigId: string | null) {
+    setCreatingNew(true)
     try {
       // Abort any in-flight stream before destroying the old container,
       // otherwise the broken connection produces error frames that leak
@@ -276,6 +322,75 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
       session.setSessionId(body.sessionId)
     } catch {
       await mutateSessions().catch(() => {})
+    } finally {
+      setCreatingNew(false)
+    }
+  }
+
+  /**
+   * Handle a system-connection selection (from either the header selector or
+   * the test-panel picker — they share this one handler).
+   *
+   * Three things happen:
+   *  1. Update local state (drives both pickers + the test-run payload).
+   *  2. Persist the choice on the session row so it survives reloads and the
+   *     test-run sandbox can resolve the same connection.
+   *  3. Surface the connection to the model:
+   *     - Before the first message: stash a context note so the next first
+   *       turn carries the connection's `CONN_*` variable names.
+   *     - Mid-session (conversation already started): fire a hidden turn so
+   *       the model proactively asks the operator what to do with it.
+   *
+   * Selectors are disabled while `chat.busy`, so a mid-session selection can
+   * never race an in-flight turn; the `!chat.busy` guard is belt-and-braces.
+   */
+  const handleConnectionChange: OnConnectionChange = (id, info) => {
+    setSelectedConnectionId(id)
+
+    const keys = id && info ? buildConnEnvKeys(info.configPreview) : []
+    const keyList = keys.join(', ')
+
+    // First-message context — only meaningful while no turn has happened yet.
+    setConnectionInitialContext(
+      id && info
+        ? t('devStudio.connectionContext.initial', {
+            name: info.name,
+            type: info.type,
+            keys: keyList,
+          })
+        : null
+    )
+
+    // Persist on the session row (fire-and-forget; revalidate on success).
+    const sid = session.sessionId
+    if (sid) {
+      void fetch(`/api/employee/dev-studio/sessions/${encodeURIComponent(sid)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ connectionId: id }),
+      })
+        .then(() => mutateSessions())
+        .catch(() => {})
+    }
+
+    // Mid-session selection of a real connection → nudge the model to ask what
+    // the operator wants to do with it. The hidden message is `[系统提示]`-
+    // prefixed (single paragraph) so it is stripped from the chat on reload.
+    // Requires a live container (chat 409s otherwise) and an already-started
+    // conversation; a pre-first-message selection rides the first turn instead.
+    if (
+      id &&
+      info &&
+      !chat.isFirstMessage &&
+      !chat.busy &&
+      sessionRecord?.containerStatus === 'running'
+    ) {
+      const prompt = t('devStudio.connectionContext.midSession', {
+        name: info.name,
+        type: info.type,
+        keys: keyList,
+      })
+      void chat.send(prompt, { hidden: true })
     }
   }
 
@@ -323,6 +438,7 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
     if (!toolId) return
     const sourceSession = sessions[0]
     if (!sourceSession) return
+    setForking(true)
     try {
       await chat.abort()
       const res = await fetch(
@@ -339,6 +455,8 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
       session.setSessionId(body.sessionId)
     } catch {
       await mutateSessions().catch(() => {})
+    } finally {
+      setForking(false)
     }
   }
 
@@ -376,9 +494,28 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
           onCreateNew={handleCreateNew}
           onSwitchModel={handleSwitchModel}
           switchingModel={switchingModel}
+          busy={chat.busy}
+          selectedConnectionId={selectedConnectionId}
+          onConnectionChange={handleConnectionChange}
           toolId={toolId}
           onForkIteration={toolId ? handleForkIteration : undefined}
         />
+
+        {session.status === 'resolving' && (
+          <div
+            className='flex-1 flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground'
+            data-testid='dev-studio:resolving'
+          >
+            <Loader2 className='size-8 animate-spin' />
+            <span>{t('devStudio.loading.resolving')}</span>
+          </div>
+        )}
+
+        {session.status === 'select-model' && (
+          <div className='flex-1 flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground'>
+            <span>{t('devStudio.createSession.pickToStart')}</span>
+          </div>
+        )}
 
         {session.status === 'creating' && (
           <div className='flex-1 flex flex-col items-center justify-center gap-3 text-sm text-muted-foreground'>
@@ -430,9 +567,15 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
                   sessionId={session.sessionId}
                   onAskAnswered={chat.resumeAfterAsk}
                   busy={chat.busy}
+                  loadingHistory={chat.loadingHistory}
                 />
                 {session.sessionId ? (
-                  <WorkspacePanel sessionId={session.sessionId} onAdoptSuccess={onClose} />
+                  <WorkspacePanel
+                    sessionId={session.sessionId}
+                    onAdoptSuccess={onClose}
+                    connectionId={selectedConnectionId}
+                    onConnectionChange={handleConnectionChange}
+                  />
                 ) : (
                   <div />
                 )}
@@ -441,7 +584,13 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
             <div className='relative'>
               <DevStudioInput
                 busy={chat.busy}
-                disabled={false}
+                // Block sending until the persisted history (and the resumed
+                // claude session id) finish loading. Otherwise a message sent
+                // mid-load races the restore: the async `setMessages(restored)`
+                // overwrites the just-started turn, so the reply silently
+                // vanishes and a fresh claude session is started instead of
+                // resuming. Surfaces only on session switch / reopen.
+                disabled={chat.loadingHistory}
                 isFirstMessage={chat.isFirstMessage}
                 sessionId={session.sessionId}
                 onSend={chat.send}
@@ -450,13 +599,38 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
               {sessionRecord && sessionRecord.containerStatus !== 'running' && (
                 <ResumeOverlay
                   sessionId={sessionRecord.id}
+                  // Adopted originals cannot be rehydrated (BFF returns 410) — the
+                  // overlay forks a fresh iteration off the baseline instead.
+                  // Active iterations rehydrate their own suspended container.
+                  mode={sessionRecord.status === 'adopted' && toolId ? 'fork' : 'rehydrate'}
                   onResumed={() => mutateSessions()}
+                  onFork={toolId ? handleForkIteration : undefined}
                 />
               )}
             </div>
           </>
         )}
+
+        {/* Full-body overlays for container-recreating actions. Each leaves the
+            view unchanged for ~10-30s, so without feedback the dialog looks
+            frozen. Rendered last (and z-20) so they sit above the chat/input. */}
+        {switchingModel && <LoadingOverlay label={t('devStudio.loading.switchingModel')} />}
+        {forking && <LoadingOverlay label={t('devStudio.loading.forking')} />}
+        {creatingNew && <LoadingOverlay label={t('devStudio.loading.creating')} />}
       </DialogContent>
+      {/* Entry model-picker: shown when there is nothing to resume, instead of
+          auto-creating a session with the deprecated global-env model. */}
+      {/* Gate on `open` too: this is a separate portal dialog whose visibility
+          would otherwise hinge solely on session.status — which the session
+          hook does NOT reset when the (always-mounted) DevStudioDialog merely
+          closes. Without the `open` guard, cancelling/closing the model picker
+          left it orphaned on screen after the outer dialog had closed. */}
+      <CreateSessionDialog
+        open={open && session.status === 'select-model'}
+        onConfirm={(modelConfigId) => session.startWithModel(modelConfigId)}
+        onCancel={onClose}
+      />
+
       <CloseConfirmDialog
         open={closeConfirmOpen}
         manifestPresent={manifestPresent}

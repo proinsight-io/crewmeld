@@ -11,6 +11,7 @@ import { inArray } from 'drizzle-orm'
 import type { SkillPackage } from '@/app/(employee)/skills/types'
 import type { OpenAITool } from '@/lib/conversation/types'
 import { t } from '@/lib/core/server-i18n'
+import type { ApiToolSpec } from '@/lib/tools/api-tool-types'
 
 const logger = createLogger('SopToolBuilder')
 
@@ -29,6 +30,21 @@ interface ToolParameters {
   type: string
   properties: Record<string, { type: string; description: string }>
   required?: string[]
+}
+
+/** Build the OpenAI function `parameters` object from a tool's stored schema. */
+function buildToolParameters(skillParams: ToolParameters | null): Record<string, unknown> {
+  return skillParams
+    ? {
+        type: skillParams.type || 'object',
+        properties: skillParams.properties ?? {},
+        ...(skillParams.required ? { required: skillParams.required } : {}),
+      }
+    : {
+        type: 'object',
+        description: t('sopToolInput'),
+        additionalProperties: true,
+      }
 }
 
 export interface ToolEndpointInfo {
@@ -62,11 +78,18 @@ export interface ToolEndpointInfo {
    * defaults inside the invoker when running script-type tools.
    */
   envVars?: Array<{ name: string; value: string }>
+  /** When true, platform forwards resolved identity into the tool request. */
+  forwardIdentity?: boolean
 }
 
 export interface BuildToolResult {
   tools: OpenAITool[]
   endpointMap: Map<string, ToolEndpointInfo>
+  /**
+   * API-kind tools (in-process JS sandbox, no deploy/endpoint): toolName →
+   * spec + forwardIdentity. Consumed by the executor's `apitool` route.
+   */
+  apiTools: Map<string, { spec: ApiToolSpec; forwardIdentity?: boolean }>
 }
 
 /**
@@ -77,9 +100,10 @@ export interface BuildToolResult {
 export async function buildToolDefinitionsFromIds(instanceIds: string[]): Promise<BuildToolResult> {
   const tools: OpenAITool[] = []
   const endpointMap = new Map<string, ToolEndpointInfo>()
+  const apiTools = new Map<string, { spec: ApiToolSpec; forwardIdentity?: boolean }>()
 
   if (instanceIds.length === 0) {
-    return { tools, endpointMap }
+    return { tools, endpointMap, apiTools }
   }
 
   // Query instance info. presetParams / envVars are pulled too so the
@@ -115,6 +139,9 @@ export async function buildToolDefinitionsFromIds(instanceIds: string[]): Promis
             language: toolsTable.language,
             envVars: toolsTable.envVars,
             needsFileMount: toolsTable.needsFileMount,
+            forwardIdentity: toolsTable.forwardIdentity,
+            kind: toolsTable.kind,
+            apiSpec: toolsTable.apiSpec,
           })
           .from(toolsTable)
           .where(inArray(toolsTable.id, templateIds))
@@ -137,6 +164,33 @@ export async function buildToolDefinitionsFromIds(instanceIds: string[]): Promis
   for (const row of instanceRows) {
     const deploy = row.deploy as { status?: string; endpoint?: string; deployType?: string; useProxy?: boolean } | null
     const template = templateMap.get(row.templateId)
+
+    // API-kind tools run in-process (node:vm sandbox) — they have no deploy or
+    // endpoint, so the deploy/endpoint path below would skip them. Emit the LLM
+    // definition and register the spec so the executor's `apitool` route runs it.
+    if (template?.kind === 'api') {
+      if (!template.apiSpec) {
+        logger.warn(`API tool instance ${row.id} (${row.name}) has no apiSpec, skipping`)
+        continue
+      }
+      const toolName = `skill_${row.id}`
+      tools.push({
+        type: 'function',
+        function: {
+          name: toolName,
+          description: buildToolDescription(template.description, template.apiDoc, row.name),
+          parameters: buildToolParameters(
+            template.parameters as ToolParameters | null
+          ) as OpenAITool['function']['parameters'],
+        },
+      })
+      apiTools.set(toolName, {
+        spec: template.apiSpec as ApiToolSpec,
+        forwardIdentity: template.forwardIdentity === true,
+      })
+      continue
+    }
+
     const needsFileMount = template?.needsFileMount === true
     const isScript = deploy?.deployType === 'opensandbox-script'
 
@@ -161,6 +215,7 @@ export async function buildToolDefinitionsFromIds(instanceIds: string[]): Promis
       instanceName: row.name,
       useProxy: deploy?.useProxy ?? false,
       deployType: deploy?.deployType as ToolEndpointInfo['deployType'],
+      forwardIdentity: template?.forwardIdentity === true,
       ...(isScript
         ? {
             envVars:
@@ -199,32 +254,20 @@ export async function buildToolDefinitionsFromIds(instanceIds: string[]): Promis
     }
     endpointMap.set(toolName, endpointInfo)
 
-    const skillParams = template?.parameters as ToolParameters | null
-
-    const parameters: Record<string, unknown> = skillParams
-      ? {
-          type: skillParams.type || 'object',
-          properties: skillParams.properties ?? {},
-          ...(skillParams.required ? { required: skillParams.required } : {}),
-        }
-      : {
-          type: 'object',
-          description: t('sopToolInput'),
-          additionalProperties: true,
-        }
-
     tools.push({
       type: 'function',
       function: {
         name: toolName,
         description: buildToolDescription(template?.description, template?.apiDoc, row.name),
-        parameters: parameters as OpenAITool['function']['parameters'],
+        parameters: buildToolParameters(
+          template?.parameters as ToolParameters | null
+        ) as OpenAITool['function']['parameters'],
       },
     })
   }
 
   logger.info(`Built ${tools.length} tool definitions from ${instanceIds.length} instance IDs`)
-  return { tools, endpointMap }
+  return { tools, endpointMap, apiTools }
 }
 
 /**
