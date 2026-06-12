@@ -39,6 +39,19 @@ export interface DeployInfo {
 
 export type SkillLanguage = 'javascript' | 'python'
 
+/** Inline API-tool spec stored as JSON in tools.api_spec. */
+export interface ApiToolSpecInline {
+  /** JS source snippet: handler(input, ctx). Must `return`. */
+  pre: string
+  /** Primary HTTP call config. */
+  request: {
+    /** Default custom_api connection id. */
+    connectionId: string
+  }
+  /** JS source snippet: handler(response, ctx). Must `return`. */
+  post: string
+}
+
 export interface SkillPackage {
   id: string
   name: string
@@ -84,6 +97,21 @@ export interface SkillPackage {
   templateId?: string
   /** SHA-256 hex digest of the workspace code (dev-studio content fingerprint) */
   packageSha256?: string
+  /**
+   * Tool execution kind.
+   * - 'script': container-based execution (default for legacy tools)
+   * - 'api': in-process JS sandbox with pre/request/post stages
+   */
+  kind?: 'script' | 'api'
+  /** API-tool spec (only when kind='api'). */
+  apiSpec?: ApiToolSpecInline
+  /**
+   * When true, the platform forwards the resolved caller identity into this
+   * tool's request (api: body.identity / X-Identity header; service/script:
+   * body.identity). Sourced from the tool record, never from LLM output.
+   * Fail-closed when declared but identity is unresolved. Default false.
+   */
+  forwardIdentity?: boolean
 }
 
 /** Connection env var name prefix */

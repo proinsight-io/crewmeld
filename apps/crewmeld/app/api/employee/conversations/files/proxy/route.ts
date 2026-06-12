@@ -4,7 +4,7 @@
  * GET /api/employee/conversations/files/proxy?url=<base64url-encoded MinIO URL>
  *
  * Used for tool-generated files (charts, exports, etc.) whose presigned URLs
- * point to external addresses (e.g. 103.237.248.131:19000), but the server accesses MinIO via internal network.
+ * point to external addresses (e.g. <minio-host>:19000), but the server accesses MinIO via internal network.
  *
  * Logic:
  * 1. Decode URL, verify host is a known MinIO address

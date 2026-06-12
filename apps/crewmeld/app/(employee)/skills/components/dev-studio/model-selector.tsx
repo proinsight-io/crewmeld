@@ -10,9 +10,6 @@ import {
 } from '@/components/ui/select'
 import { useTranslation } from '@/hooks/use-translation'
 
-/** Sentinel value for the "system default" option — Radix Select needs a non-empty string value. */
-const DEFAULT_VALUE = '__system_default__'
-
 /** Shape of one coding model config returned by GET /models?category=coding. */
 interface CodingModelConfig {
   id: string
@@ -37,8 +34,11 @@ interface ModelSelectorProps {
 
 /**
  * Coding-model picker for dev-studio. Lists active `category=coding` model
- * configs plus a "system default" entry (global env fallback). Used both at
- * session-create time and for mid-session model switching (Sub-spec C §5).
+ * configs as a flat list: each option shows the model's display name, with the
+ * provider appended in muted text ONLY when it differs — so a model named after
+ * its provider (e.g. "千帆编程" under provider "千帆编程") renders once instead
+ * of as a confusing duplicated header + item. Used both at session-create time
+ * and for mid-session model switching (Sub-spec C §5).
  */
 export function ModelSelector({ value, onChange, disabled, currentLabel }: ModelSelectorProps) {
   const { t } = useTranslation()
@@ -58,39 +58,38 @@ export function ModelSelector({ value, onChange, disabled, currentLabel }: Model
     }
   }, [])
 
-  const options = configs.map((c) => ({
-    value: c.id,
-    label: `${c.providerMeta?.name ?? c.providerId} / ${c.displayName}`,
-  }))
-  // If the pinned model isn't in the loaded list yet (still loading, or a stale
-  // config), synthesize an option from the session's label so the trigger shows
-  // the current model instead of a blank selection.
-  if (value && currentLabel && !options.some((o) => o.value === value)) {
-    options.push({ value, label: currentLabel })
-  }
+  // When the pinned model isn't in the loaded list yet (still loading, or a
+  // stale config), fall back to a synthetic option from the session's label so
+  // the trigger shows the current model instead of a blank selection.
+  const showFallback = !!(value && currentLabel && !configs.some((c) => c.id === value))
 
   return (
-    <Select
-      value={value ?? DEFAULT_VALUE}
-      onValueChange={(v) => onChange(v === DEFAULT_VALUE ? null : v)}
-      disabled={disabled}
-    >
+    <Select value={value ?? undefined} onValueChange={(v) => onChange(v)} disabled={disabled}>
       <SelectTrigger className='h-8 w-[180px] text-xs' data-testid='dev-studio:model-selector'>
         <SelectValue placeholder={t('devStudio.modelSelector.label')} />
       </SelectTrigger>
       <SelectContent>
-        <SelectItem value={DEFAULT_VALUE} data-testid='dev-studio:model-selector:default'>
-          {t('devStudio.modelSelector.systemDefault')}
-        </SelectItem>
-        {options.map((o) => (
-          <SelectItem
-            key={o.value}
-            value={o.value}
-            data-testid={`dev-studio:model-selector:item:${o.value}`}
-          >
-            {o.label}
+        {configs.map((c) => {
+          const provider = c.providerMeta?.name ?? c.providerId
+          const showProvider = provider && provider !== c.displayName
+          return (
+            <SelectItem
+              key={c.id}
+              value={c.id}
+              data-testid={`dev-studio:model-selector:item:${c.id}`}
+            >
+              <span className='flex items-center gap-2'>
+                <span className='truncate'>{c.displayName}</span>
+                {showProvider && <span className='text-muted-foreground text-xs'>{provider}</span>}
+              </span>
+            </SelectItem>
+          )
+        })}
+        {showFallback && value && (
+          <SelectItem value={value} data-testid={`dev-studio:model-selector:item:${value}`}>
+            {currentLabel}
           </SelectItem>
-        ))}
+        )}
       </SelectContent>
     </Select>
   )

@@ -453,6 +453,7 @@ CREATE TABLE "sop_definitions" (
 	"created_by" text NOT NULL,
 	"version" integer DEFAULT 1 NOT NULL,
 	"is_active" boolean DEFAULT true NOT NULL,
+	"visibility_rules" jsonb,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
@@ -585,6 +586,9 @@ CREATE TABLE "tools" (
 	"api_doc" text,
 	"connector_type" jsonb,
 	"needs_file_mount" boolean DEFAULT false NOT NULL,
+	"kind" text DEFAULT 'script' NOT NULL,
+	"api_spec" jsonb,
+	"forward_identity" boolean DEFAULT false NOT NULL,
 	"package_sha256" text,
 	"created_by" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -870,6 +874,7 @@ CREATE TABLE "tool_dev_sessions" (
 	"last_package" jsonb,
 	"model_config_id" text,
 	"model_name" text,
+	"connection_id" text,
 	"total_input_tokens" bigint DEFAULT 0 NOT NULL,
 	"total_output_tokens" bigint DEFAULT 0 NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -893,6 +898,7 @@ ALTER TABLE "tool_dev_pending_actions" ADD CONSTRAINT "tool_dev_pending_actions_
 ALTER TABLE "tool_dev_sessions" ADD CONSTRAINT "tool_dev_sessions_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tool_dev_sessions" ADD CONSTRAINT "tool_dev_sessions_tool_id_tools_id_fk" FOREIGN KEY ("tool_id") REFERENCES "public"."tools"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tool_dev_sessions" ADD CONSTRAINT "tool_dev_sessions_model_config_id_model_configs_id_fk" FOREIGN KEY ("model_config_id") REFERENCES "public"."model_configs"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "tool_dev_sessions" ADD CONSTRAINT "tool_dev_sessions_connection_id_system_connections_id_fk" FOREIGN KEY ("connection_id") REFERENCES "public"."system_connections"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "tool_instance_api_keys" ADD CONSTRAINT "tool_instance_api_keys_instance_id_tool_instances_id_fk" FOREIGN KEY ("instance_id") REFERENCES "public"."tool_instances"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "tiak_instance_id_idx" ON "tool_instance_api_keys" USING btree ("instance_id");--> statement-breakpoint
 CREATE INDEX "tiak_hashed_key_idx" ON "tool_instance_api_keys" USING btree ("hashed_key");--> statement-breakpoint

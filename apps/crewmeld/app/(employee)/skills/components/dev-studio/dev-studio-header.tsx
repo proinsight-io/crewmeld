@@ -1,6 +1,8 @@
 'use client'
 
 import { Sparkles } from 'lucide-react'
+import type { OnConnectionChange } from '@/lib/dev-studio/connection-context'
+import { ConnectionSelector } from './connection-selector'
 import { ConnectionStatus } from './connection-status'
 import { useSessionList } from './hooks/use-session-list'
 import { ModelSelector } from './model-selector'
@@ -20,6 +22,16 @@ interface DevStudioHeaderProps {
   onSwitchModel: (sessionId: string, modelConfigId: string | null) => void
   /** True while a model switch is in flight — disables the selector. */
   switchingModel?: boolean
+  /**
+   * True while the model is generating a response. Disables both the model and
+   * connection selectors so neither the model nor the bound connection can
+   * change mid-turn.
+   */
+  busy?: boolean
+  /** Currently-selected system connection id, or null. */
+  selectedConnectionId?: string | null
+  /** Fired when the operator picks (or clears) a system connection. */
+  onConnectionChange?: OnConnectionChange
   /** Optional tool id filter for the session list. */
   toolId?: string
   /** Called when operator clicks "New iteration". Only present when toolId is set. */
@@ -44,6 +56,9 @@ export function DevStudioHeader({
   onCreateNew,
   onSwitchModel,
   switchingModel,
+  busy,
+  selectedConnectionId,
+  onConnectionChange,
   toolId,
   onForkIteration,
 }: DevStudioHeaderProps) {
@@ -69,7 +84,14 @@ export function DevStudioHeader({
           value={session?.modelConfigId ?? null}
           currentLabel={session?.modelName ?? null}
           onChange={(modelConfigId) => onSwitchModel(sessionId, modelConfigId)}
-          disabled={switchingModel || session?.containerStatus === 'creating'}
+          disabled={busy || switchingModel || session?.containerStatus === 'creating'}
+        />
+      )}
+      {sessionId && onConnectionChange && (
+        <ConnectionSelector
+          value={selectedConnectionId ?? null}
+          onChange={onConnectionChange}
+          disabled={busy || switchingModel || session?.containerStatus === 'creating'}
         />
       )}
       <ToolMetaBar sessionId={sessionId} />

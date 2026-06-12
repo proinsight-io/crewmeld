@@ -6,7 +6,7 @@ export const codingProviders: Record<string, ProviderDefinition> = {
   'kimi-coding': {
     id: 'kimi-coding',
     name: 'Kimi 编程',
-    description: '月之暗面 Kimi 编程模型（OpenAI 兼容协议）',
+    description: '月之暗面 Kimi 编程模型（Anthropic 兼容协议）',
     defaultModel: 'kimi-code-latest',
     modelPatterns: [/^kimi/, /^moonshot/],
     icon: MoonshotIcon,

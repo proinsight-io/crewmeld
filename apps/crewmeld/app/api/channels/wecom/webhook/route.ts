@@ -99,6 +99,9 @@ export async function POST(request: NextRequest) {
 
   const credentials = await resolveAllCredentialsByType('wecom')
   let config: WeComPluginConfig | null = null
+  // Id of the systemConnections row that received this message; threaded downstream
+  // for SOP-visibility identity resolution.
+  let connectionId: string | undefined
 
   // Multiple WeCom connections may share the same corpId but have different tokens (different apps)
   // Try signature verification one by one; the one that matches is the correct connection
@@ -115,6 +118,7 @@ export async function POST(request: NextRequest) {
     const sig = generateWeComSignature(cred.config.token, timestamp, nonce, encryptedContent)
     if (sig === msgSignature) {
       config = cred.config as unknown as WeComPluginConfig
+      connectionId = cred.connectionId
       break
     }
   }
@@ -124,6 +128,7 @@ export async function POST(request: NextRequest) {
     for (const cred of credentials) {
       if (cred.config.corpId === toUserName) {
         config = cred.config as unknown as WeComPluginConfig
+        connectionId = cred.connectionId
         break
       }
     }
@@ -131,6 +136,7 @@ export async function POST(request: NextRequest) {
 
   if (!config && credentials.length > 0) {
     config = credentials[0].config as unknown as WeComPluginConfig
+    connectionId = credentials[0].connectionId
   }
 
   if (!config) {
@@ -157,5 +163,6 @@ export async function POST(request: NextRequest) {
     plugin: wecomPlugin,
     config,
     employeeId,
+    connectionId,
   })
 }
