@@ -1,7 +1,10 @@
 import { createLogger } from '@crewmeld/logger'
 import { generateApprovalToken } from '@/lib/human-employees/approval-token'
 import { buildNotificationContent } from '@/lib/human-employees/notification-content'
-import { dispatchNotification } from '@/lib/human-employees/notification-dispatcher'
+import {
+  dispatchApprovalToChannelUser,
+  dispatchNotification,
+} from '@/lib/human-employees/notification-dispatcher'
 import type { NotificationJobPayload } from '@/types/sop'
 
 const logger = createLogger('SopNotificationWorker')
@@ -56,25 +59,55 @@ export async function processNotification(payload: NotificationJobPayload): Prom
       contextData.userLanguage ?? 'zh'
     )
 
+    const approvalContent = {
+      subject: content.subject,
+      body: content.body,
+      pauseId: contextData.pauseId,
+      sopName: contextData.sopName,
+      nodeName: contextData.nodeName,
+      aiSummary: contextData.aiSummary,
+      deadline: contextData.deadline,
+      previousNodeResult: contextData.previousNodeResult,
+      previousNodeName: contextData.previousNodeName,
+      approvalPageUrl: content.approvalUrl,
+      approveUrl: content.approveUrl,
+      rejectUrl: content.rejectUrl,
+      senderName: contextData.senderName,
+      senderEmail: contextData.senderEmail,
+      language: contextData.userLanguage,
+    }
+
+    // approverSource='requester_leader': deliver to the requester's leader on
+    // their channel. On failure (no leader / invalid leader id / send error),
+    // fall back to the configured assignee below.
+    if (
+      payload.approverSource === 'requester_leader' &&
+      contextData.requesterChannel &&
+      contextData.leaderId
+    ) {
+      const leaderResult = await dispatchApprovalToChannelUser(
+        contextData.requesterChannel,
+        contextData.leaderId,
+        approvalContent,
+        payload.sourceEmployeeId
+      )
+      if (leaderResult) {
+        logger.info('Approval routed to requester leader', {
+          pauseId: contextData.pauseId,
+          channel: contextData.requesterChannel,
+          status: leaderResult.status,
+        })
+        return
+      }
+      logger.info('Leader routing unavailable, falling back to configured assignee', {
+        pauseId: contextData.pauseId,
+        recipientId: payload.recipientId,
+      })
+    }
+
     const results = await dispatchNotification(
       payload.recipientId,
-      {
-        subject: content.subject,
-        body: content.body,
-        pauseId: contextData.pauseId,
-        sopName: contextData.sopName,
-        nodeName: contextData.nodeName,
-        aiSummary: contextData.aiSummary,
-        deadline: contextData.deadline,
-        previousNodeResult: contextData.previousNodeResult,
-        previousNodeName: contextData.previousNodeName,
-        approvalPageUrl: content.approvalUrl,
-        approveUrl: content.approveUrl,
-        rejectUrl: content.rejectUrl,
-        senderName: contextData.senderName,
-        senderEmail: contextData.senderEmail,
-        language: contextData.userLanguage,
-      },
+      approvalContent,
       payload.notifyMethod,
       payload.sourceEmployeeId
     )

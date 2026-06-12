@@ -260,8 +260,19 @@ function dbRecordToChatMessages(
 export interface UseStreamChatResult {
   messages: ChatMessage[]
   busy: boolean
+  /**
+   * True while the persisted history for the current session is being fetched
+   * (on first landing and on every session switch). Drives the chat panel's
+   * loading spinner so a session switch never shows a blank panel mid-load.
+   */
+  loadingHistory: boolean
   isFirstMessage: boolean
-  send: (text: string) => Promise<void>
+  /**
+   * Send a chat turn. `opts.hidden` suppresses the user bubble (used for
+   * resume sentinels and mid-session connection nudges) — the message is still
+   * forwarded to the model and persisted.
+   */
+  send: (text: string, opts?: { hidden?: boolean }) => Promise<void>
   abort: () => Promise<void>
   /**
    * Continue the conversation after an inline ask was answered. Posts a
@@ -297,10 +308,23 @@ function newUuid(): string {
   })
 }
 
-export function useStreamChat(sessionId: string | null): UseStreamChatResult {
+/**
+ * @param sessionId - Active dev-studio session, or null when none selected.
+ * @param initialConnectionContext - Pre-composed, single-paragraph note about
+ *   the system connection the operator bound *before* sending the first
+ *   message (connection name/type + `CONN_*` variable names). Woven into the
+ *   first turn only, right after the persona, so the model builds the tool
+ *   against those env vars. `null` when no connection is bound up front
+ *   (mid-session selections are handled by the dialog via a hidden `send`).
+ */
+export function useStreamChat(
+  sessionId: string | null,
+  initialConnectionContext: string | null = null
+): UseStreamChatResult {
   const { locale } = useTranslation()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [busy, setBusy] = useState(false)
+  const [loadingHistory, setLoadingHistory] = useState(false)
   const [isFirstMessage, setIsFirstMessage] = useState(true)
   const [pipelinePhases, setPipelinePhases] = useState<string[] | null>(null)
   const [currentPhase, setCurrentPhase] = useState<string | null>(null)
@@ -350,8 +374,12 @@ export function useStreamChat(sessionId: string | null): UseStreamChatResult {
     markerExtractorRef.current = null
     askExtractorRef.current = null
 
-    if (!sessionId) return
+    if (!sessionId) {
+      setLoadingHistory(false)
+      return
+    }
     let cancelled = false
+    setLoadingHistory(true)
     const base = `/api/employee/dev-studio/sessions/${encodeURIComponent(sessionId)}`
     void (async () => {
       try {
@@ -365,9 +393,15 @@ export function useStreamChat(sessionId: string | null): UseStreamChatResult {
         if (cancelled) return
         const registry = new Map<string, { name: string; input: unknown }>()
         const restored: ChatMessage[] = []
+        // Latest claude session id carried by the persisted frames. Assistant /
+        // system / result frames store the SDK message verbatim, which includes
+        // `session_id` at the top level; it is stable across a conversation.
+        let latestClaudeSessionId: string | undefined
         if (msgRes?.ok) {
           const data = (await msgRes.json()) as { messages?: DbMessageRecord[] }
           for (const rec of data.messages ?? []) {
+            const sid = (rec.payload as { session_id?: unknown })?.session_id
+            if (typeof sid === 'string' && sid) latestClaudeSessionId = sid
             restored.push(...dbRecordToChatMessages(rec, registry))
           }
         }
@@ -386,12 +420,33 @@ export function useStreamChat(sessionId: string | null): UseStreamChatResult {
         }
         if (cancelled) return
         toolUseRegistryRef.current = registry
+        // Restore the claude session id so the NEXT turn resumes the prior
+        // conversation instead of starting a fresh one. Without this the model
+        // forgets everything shown in the restored history: the chat route only
+        // resumes when the request carries this id, and it was reset to
+        // undefined at the top of this effect on every session switch / reopen.
+        // Guard on the ref still being empty so a turn that started mid-load
+        // (its live `session_id` already captured) is not clobbered with the
+        // older persisted id.
+        if (latestClaudeSessionId && !claudeSessionIdRef.current) {
+          claudeSessionIdRef.current = latestClaudeSessionId
+        }
         if (restored.length > 0) {
-          setMessages(restored)
+          // Defensive merge: if a turn was already started while history was
+          // loading (input is normally disabled until then, but programmatic
+          // sends can still fire), prepend the restored history instead of
+          // replacing — otherwise `setMessages(restored)` would wipe the live
+          // user message + streaming reply.
+          setMessages((prev) => (prev.length === 0 ? restored : [...restored, ...prev]))
           setIsFirstMessage(false)
         }
       } catch {
         // An empty chat is an acceptable fallback if the load fails.
+      } finally {
+        // Clear the spinner only when this effect run is still current; a
+        // superseded run (session switched mid-load) must not flip the flag
+        // for the newer load that already set it true.
+        if (!cancelled) setLoadingHistory(false)
       }
     })()
     return () => {
@@ -624,7 +679,12 @@ export function useStreamChat(sessionId: string | null): UseStreamChatResult {
       // and English replies.
       if (isFirstMessage && !hidden) {
         const persona = getDevStudioPersona(locale)
-        actualMessage = `${persona}\n\n${actualMessage}`
+        // Weave the bound connection's context (if any) between the persona and
+        // the real user message. It is a single paragraph (no blank lines) so
+        // the persona-prefix parser in extractUserText still splits on the
+        // final \n\n and recovers the operator's original message verbatim.
+        const connCtx = initialConnectionContext ? `${initialConnectionContext}\n\n` : ''
+        actualMessage = `${persona}\n\n${connCtx}${actualMessage}`
       }
 
       const requestId = newUuid()
@@ -716,7 +776,7 @@ export function useStreamChat(sessionId: string | null): UseStreamChatResult {
         requestIdRef.current = null
       }
     },
-    [sessionId, busy, isFirstMessage]
+    [sessionId, busy, isFirstMessage, initialConnectionContext, locale]
   )
 
   const abort = useCallback(async () => {
@@ -773,6 +833,7 @@ export function useStreamChat(sessionId: string | null): UseStreamChatResult {
   return {
     messages,
     busy,
+    loadingHistory,
     isFirstMessage,
     send,
     abort,

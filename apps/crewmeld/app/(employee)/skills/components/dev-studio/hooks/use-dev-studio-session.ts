@@ -18,13 +18,19 @@ interface ApiError {
   retryable: boolean
 }
 
-export type SessionStatus = 'idle' | 'creating' | 'ready' | 'error'
+export type SessionStatus = 'idle' | 'resolving' | 'select-model' | 'creating' | 'ready' | 'error'
 
 export interface UseDevStudioSessionResult {
   sessionId: string | null
   status: SessionStatus
   error: ApiError | null
   retry: () => void
+  /**
+   * Create a brand-new session pinned to the chosen coding model. Used by the
+   * entry model-picker shown when there is nothing to resume — replaces the
+   * old behavior of auto-creating with the global-env ("system default") model.
+   */
+  startWithModel: (modelConfigId: string | null) => void
   /**
    * Swap the currently-displayed session id without creating or destroying
    * a container — used by the header SessionSwitcher to pivot the dialog to
@@ -68,13 +74,21 @@ export function useDevStudioSession(
   // or resumed into. Resuming an existing session must leave it alone on close.
   const ownedSessionIdRef = useRef<string | null>(null)
 
-  const create = useCallback(async (signal: AbortSignal) => {
+  const create = useCallback(async (signal: AbortSignal, modelConfigId?: string | null) => {
     setStatus('creating')
     setError(null)
     try {
       const res = await fetch(SESSIONS_URL, {
         method: 'POST',
         signal,
+        // Only attach a JSON body when a model was explicitly chosen; legacy
+        // no-body callers keep the global-env fallback semantics server-side.
+        ...(modelConfigId !== undefined
+          ? {
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ modelConfigId }),
+            }
+          : {}),
       })
       if (!res.ok) {
         const body = (await res.json().catch(() => ({}))) as Partial<ApiError>
@@ -116,82 +130,63 @@ export function useDevStudioSession(
   }, [])
 
   /**
-   * Fork the tool's most recent adopted session into a fresh iteration session.
-   * Used by the tool-scoped entry ("develop existing tool") when no active
-   * iteration exists yet, so the operator lands on the tool's code instead of a
-   * blank session. The fork BFF copies the adopted workspace into the new
-   * session's own dirs.
+   * Resolve which session the dev-studio entry should land on — without ever
+   * spawning a container. Priority:
+   *  1. Most recent in-progress iteration (`status='active'`) → resume it so
+   *     the operator returns to their backgrounded work.
+   *  2. Otherwise, for the tool-scoped entry, the tool's original adopted
+   *     session (`status='adopted'`) → resume it READ-ONLY (its container is
+   *     destroyed, so the ResumeOverlay surfaces a "继续开发" fork action). This
+   *     replaces the old auto-fork-on-open, which spawned a container (~10-30s)
+   *     and silently created an iteration the operator never asked for.
+   *  3. Nothing to resume (generic entry, or a tool with no sessions) → hand
+   *     off to the entry model-picker rather than auto-creating with the
+   *     global-env model (which 404s when .env has no ANTHROPIC_*).
    *
-   * The fork route resolves the source session by `toolId` from the body, so
-   * the path segment is just a placeholder. Returns the new session id, or
-   * `null` when there is nothing to fork (e.g. the tool has no adopted session).
-   */
-  const forkTool = useCallback(async (tid: string, signal: AbortSignal): Promise<string | null> => {
-    const res = await fetch(`${SESSIONS_URL}/${encodeURIComponent(tid)}/fork`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ toolId: tid }),
-      signal,
-    })
-    if (!res.ok) return null
-    const body = (await res.json()) as { sessionId?: string }
-    return body.sessionId ?? null
-  }, [])
-
-  /**
-   * Resume the most recent active session if one exists; otherwise:
-   *  - tool-scoped entry (toolId set): fork the adopted tool so the operator
-   *    lands on its code rather than a blank session;
-   *  - generic entry: create a fresh new-tool session.
-   *
-   * This is the entry behavior: clicking the dev-studio button returns the
-   * operator to their backgrounded work instead of spawning a new sandbox and
-   * suspending the old one. To deliberately start fresh while a session is
-   * running, the in-dialog SessionSwitcher's "+ new session" issues its own
-   * create (which the BFF backgrounds the old container for).
+   * All resume paths leave the session OUT of `ownedSessionIdRef`, so closing
+   * the dialog never tears down or mutates a pre-existing session — including
+   * the adopted baseline.
    */
   const resolveOrCreate = useCallback(
     async (signal: AbortSignal) => {
-      setStatus('creating')
+      setStatus('resolving')
       setError(null)
-      const params = new URLSearchParams({ toolId: toolId ?? 'none', status: 'active' })
+      // Status scope differs by entry:
+      //  - Tool-scoped (toolId set): widen to `all` so we can land on the
+      //    tool's adopted original when no active iteration exists.
+      //  - Generic ("new tool", no toolId): stay `active`. Widening here would
+      //    resurface an offline adopted/archived no-tool session — which the
+      //    session-switcher (active-only) can't even show — instead of the
+      //    fresh model-picker the operator expects from "new tool".
+      const status = toolId ? 'all' : 'active'
+      const params = new URLSearchParams({ toolId: toolId ?? 'none', status })
       try {
         const res = await fetch(`${SESSIONS_URL}?${params}`, { signal })
         if (res.ok) {
           const body = (await res.json()) as { sessions?: SessionRecord[] }
-          // The list endpoint orders by lastActiveAt desc, so [0] is the most
-          // recently active session — the one the operator most likely wants.
-          const recent = body.sessions?.[0]
+          const sessions = body.sessions ?? []
+          // The list is ordered by lastActiveAt desc. Prefer the most recent
+          // active iteration; for the tool-scoped entry only, fall back to the
+          // adopted original (read-only landing on the published baseline).
+          const recent = toolId
+            ? (sessions.find((s) => s.status === 'active') ??
+              sessions.find((s) => s.status === 'adopted'))
+            : sessions.find((s) => s.status === 'active')
           if (recent) {
             resume(recent.id)
             return
           }
         }
-        // Nothing to resume. For the tool-scoped entry, fork the adopted tool so
-        // the operator continues from its code; the fork is owned by this hook
-        // so it suspends (not deletes) on unmount. Only when there is nothing to
-        // fork do we fall through to a fresh blank session.
-        if (toolId) {
-          const forkedId = await forkTool(toolId, signal)
-          if (forkedId) {
-            sessionIdRef.current = forkedId
-            ownedSessionIdRef.current = forkedId
-            setSessionId(forkedId)
-            setStatus('ready')
-            setError(null)
-            return
-          }
-        }
-        // Non-ok response, empty list, or nothing to fork: create fresh.
-        await create(signal)
+        // Nothing to land on — let the operator pick a model and start fresh.
+        setStatus('select-model')
       } catch (e) {
         if ((e as Error).name === 'AbortError') return
-        // A flaky lookup/fork must not block the operator from working — fall
-        // back to creating a new session rather than surfacing an error screen.
-        await create(signal)
+        // A flaky lookup must not block the operator — fall through to the
+        // model-picker rather than surfacing an error screen.
+        setStatus('select-model')
       }
     },
-    [toolId, create, resume, forkTool]
+    [toolId, resume]
   )
 
   useEffect(() => {
@@ -247,6 +242,18 @@ export function useDevStudioSession(
 
   const retry = useCallback(() => setAttempt((a) => a + 1), [])
 
+  /**
+   * Create a fresh session pinned to the operator-chosen coding model. Driven
+   * by the entry model-picker (status='select-model'). Uses its own
+   * AbortController since it fires outside the mount effect.
+   */
+  const startWithModel = useCallback(
+    (modelConfigId: string | null) => {
+      void create(new AbortController().signal, modelConfigId)
+    },
+    [create]
+  )
+
   const switchTo = useCallback((id: string) => {
     sessionIdRef.current = id
     setSessionId(id)
@@ -254,5 +261,5 @@ export function useDevStudioSession(
     setError(null)
   }, [])
 
-  return { sessionId, status, error, retry, setSessionId: switchTo }
+  return { sessionId, status, error, retry, startWithModel, setSessionId: switchTo }
 }

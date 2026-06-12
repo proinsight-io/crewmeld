@@ -1188,6 +1188,15 @@ export const zhCN = {
       '填写后可对接 OpenAI 兼容服务（阿里云百炼、DeepSeek、硅基流动等）；留空则使用 OpenAI 官方接口',
     modelEndpointAnthropicHint:
       '填写后可对接 Anthropic 兼容服务（DeepSeek、智谱 GLM 等的 Anthropic 端点）；留空则使用 Anthropic 官方接口',
+    // coding-provider model tiers (dev-studio)
+    modelCodingFast: '快速模型',
+    modelCodingFastHint: '对应 Haiku 档（同时设置 SMALL_FAST 与 HAIKU），留空则不传',
+    modelCodingSonnet: '标准模型',
+    modelCodingSonnetHint: '对应 Sonnet 档，留空则不传',
+    modelCodingOpus: '高级模型',
+    modelCodingOpusHint: '对应 Opus 档，留空则不传',
+    modelCodingTierOptional: '（可选）',
+    modelEndpointClaudeDefaultHint: '留空将使用系统默认端点 https://api.anthropic.com/v1',
     // model-config-dialog
     modelEditTitle: '编辑 {name}',
     modelConfigDisplayName: '显示名称',
@@ -1383,6 +1392,12 @@ export const zhCN = {
     nodeConfigUseKnowledgeBase: '关联知识库',
     nodeConfigUseKnowledgeBaseHint: '执行时将自动读取该数字员工绑定的所有知识库',
     nodeConfigAssignHuman: '指派协作人员',
+    nodeConfigApproverSource: '审批人来源',
+    nodeConfigApproverAssignee: '指定协作人员',
+    nodeConfigApproverLeader: '发起人直属上级',
+    nodeConfigApproverLeaderHint:
+      '卡片将发给触发本流程的用户的直属上级（来自飞书/钉钉/企业微信的组织身份），无需指定具体人。解析不到上级时，发给下方的兜底审批人。',
+    nodeConfigFallbackApprover: '兜底审批人（可选）',
     nodeConfigSelectHuman: '选择协作人员',
     nodeConfigNotifyMethod: '审批通知方式',
     nodeConfigNotifySelected: '（已选 {count} 个平台）',
@@ -3846,6 +3861,8 @@ export const zhCN = {
       importManifestMissing: '无效的 .cmtool 包：未找到 manifest.json',
       importManifestInvalid: '无效的 .cmtool 包：manifest.json 解析失败',
       importFailed: '导入工具失败',
+      importApiInvalid: '无效的 .cmapi 包：格式校验失败',
+      importApiFailed: '导入 API 工具失败',
     },
     conversation: {
       notFound: '对话不存在',
@@ -4031,11 +4048,25 @@ export const zhCN = {
       label: '编程模型',
       systemDefault: '系统默认',
     },
+    connectionSelector: {
+      label: '连接',
+      none: '不使用连接',
+    },
+    connectionContext: {
+      initial:
+        '已选择系统连接「{name}」（类型 {type}）。开发本工具时，请通过以下环境变量读取该连接的凭据与配置：{keys}。务必从这些环境变量取值，不要在代码里硬编码任何凭据。',
+      midSession:
+        '[系统提示] 用户刚刚为本工具选择了系统连接「{name}」（类型 {type}），可通过这些环境变量读取其凭据与配置：{keys}。请主动询问用户希望用这个连接做什么（例如读写哪些数据、新增或调整哪些能力），明确后再继续开发，并从上述环境变量取值、不要硬编码凭据。',
+    },
     createSession: {
       title: '新建开发会话',
       modelLabel: '选择编程模型',
       create: '创建',
       cancel: '取消',
+      loading: '加载模型中…',
+      pickToStart: '选择一个编程模型以开始',
+      noCodingModel: '还没有可用的编程模型。请先到「连接」页配置并启用一个编程模型。',
+      goConfigure: '去配置编程模型',
     },
     modelSwitch: {
       confirmTitle: '切换编程模型?',
@@ -4226,6 +4257,15 @@ export const zhCN = {
       resume: '恢复',
       resuming: '正在恢复容器…',
       resumeFailed: '恢复失败',
+      continueFromAdopted: '在此基础上继续开发',
+      continuing: '正在创建迭代…',
+    },
+    loading: {
+      resolving: '正在加载工具…',
+      history: '正在加载聊天记录…',
+      switchingModel: '正在切换模型，重建容器（约 10–30 秒）…',
+      forking: '正在新建迭代…',
+      creating: '正在新建会话…',
     },
     source: {
       installed: '手动创建',

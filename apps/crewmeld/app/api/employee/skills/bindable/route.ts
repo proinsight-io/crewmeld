@@ -21,7 +21,8 @@ export interface BindableInstance {
  * employee skill-binding UI. A template counts as bindable when ANY of:
  *
  *   - `tools.code` is non-null (legacy inline-code tools)
- *   - `tools.package_key` is non-null (dev-studio .cmtool service tools)
+ *   - `tools.source = 'dev-studio'` (dev-studio .cmtool service tools)
+ *   - `tools.kind = 'api'` (in-process JS-sandbox API tools)
  *   - `tools.connector_type ->> 'type' = 'openclaw'` (external connector tools)
  *
  * Centralising the predicate here keeps the new-employee wizard and the
@@ -47,7 +48,7 @@ export async function GET() {
     .where(
       and(
         sql`${toolInstances.deploy}->>'status' = 'deployed'`,
-        sql`(${tools.code} IS NOT NULL OR ${tools.source} = 'dev-studio' OR ${tools.connectorType}->>'type' = 'openclaw')`
+        sql`(${tools.code} IS NOT NULL OR ${tools.source} = 'dev-studio' OR ${tools.kind} = 'api' OR ${tools.connectorType}->>'type' = 'openclaw')`
       )
     )
     .orderBy(desc(toolInstances.createdAt))

@@ -6,9 +6,13 @@ import type { NextRequest } from 'next/server'
 import { apiAuthErr, apiErr, apiOk } from '@/lib/api/response'
 import { withAudit } from '@/lib/audit/with-audit'
 import { requirePermission } from '@/lib/auth/rbac/check-permission'
+import type { SopVisibilityRules } from '@/lib/sop/visibility-types'
 import type { SopDefinitionPayload } from '@/types/sop'
 
 const logger = createLogger('API:Sops:Detail')
+
+/** Request body accepted by the PATCH endpoint. */
+type SopPatchBody = Partial<SopDefinitionPayload> & { visibilityRules?: SopVisibilityRules | null }
 
 export async function GET(_request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -41,7 +45,7 @@ async function _PATCH(request: NextRequest, { params }: { params: Promise<{ id: 
     }
 
     const { id } = await params
-    const body = (await request.json()) as Partial<SopDefinitionPayload>
+    const body = (await request.json()) as SopPatchBody
 
     const VALID_TRIGGER_TYPES = ['scheduled', 'event', 'manual'] as const
     if (
@@ -76,9 +80,14 @@ async function _PATCH(request: NextRequest, { params }: { params: Promise<{ id: 
     // Status toggle — not a definition change, no version bump
     if (body.isActive !== undefined) updates.isActive = body.isActive
 
+    // Visibility rules — permission metadata, not a definition change, no version bump
+    if (body.visibilityRules !== undefined) {
+      updates.visibilityRules = body.visibilityRules as SopVisibilityRules | null
+    }
+
     // Bump version only when definition fields changed
     const hasDefinitionChange = Object.keys(updates).some(
-      (k) => k !== 'updatedAt' && k !== 'isActive'
+      (k) => k !== 'updatedAt' && k !== 'isActive' && k !== 'visibilityRules'
     )
     const newVersion = hasDefinitionChange ? existing.version + 1 : existing.version
     if (hasDefinitionChange) updates.version = newVersion

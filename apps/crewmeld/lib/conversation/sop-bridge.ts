@@ -20,6 +20,8 @@ import { and, desc, eq } from 'drizzle-orm'
 import { generateExecutionId } from '@/lib/core/execution-id'
 import { t } from '@/lib/core/server-i18n'
 import { getBaseUrl } from '@/lib/core/utils/urls'
+import { resolveChannelIdentity } from '@/lib/identity/channel-identity'
+import type { ScopeIdentity } from '@/lib/identity/types'
 import { executeSop, transitionStatus } from '@/lib/sop/engine'
 import { processDeliverables } from '@/lib/sop/deliverables'
 import {
@@ -79,7 +81,9 @@ export async function executeSopFromConversation(
   triggerData: Record<string, unknown>,
   userId: string,
   onProgress?: (message: string) => void,
-  isZh = true
+  isZh = true,
+  /** Credentials of the connection that received the message — used to resolve caller identity against the correct app (no system-default fallback). */
+  channelConfig?: Record<string, unknown>
 ): Promise<SopBridgeResult> {
   const executionId = generateExecutionId('sop')
 
@@ -152,6 +156,35 @@ export async function executeSopFromConversation(
       metadata: convRow?.metadata,
     })
 
+    // Resolve caller identity from the IM channel so node-executor can read
+    // _meta.identity without making its own channel API call.
+    let identityMeta: ScopeIdentity | undefined
+    if (channel && userId) {
+      try {
+        identityMeta =
+          (await resolveChannelIdentity({ channel, userId, config: channelConfig })) ?? undefined
+      } catch (idErr) {
+        logger.warn('SOP bridge: failed to resolve caller identity; proceeding without it', {
+          conversationId,
+          error: idErr instanceof Error ? idErr.message : String(idErr),
+        })
+      }
+
+      // Always attach the IM-level caller info (channel + external user id +
+      // sender name) so _meta.identity is never empty for a real inbound
+      // message — even for web/anonymous callers that resolve to no internal
+      // employee. This base layer is what forwardIdentity forwards when the
+      // channel exposed no org scope; channels that DID resolve keep their
+      // fields and merely gain the profile.
+      identityMeta = {
+        positions: [],
+        scope: { orgUnitIds: [] },
+        ...identityMeta,
+        employeeId: identityMeta?.employeeId ?? userId,
+        profile: { channel, externalUserId: userId, ...(senderName ? { senderName } : {}) },
+      }
+    }
+
     // Try to get baseUrl for approval notification link construction
     let baseUrl: string | undefined
     try {
@@ -177,6 +210,7 @@ export async function executeSopFromConversation(
           channel,
           baseUrl,
           userLanguage: isZh ? 'zh' : 'en',
+          ...(identityMeta ? { identity: identityMeta } : {}),
         },
         ...triggerData,
       },

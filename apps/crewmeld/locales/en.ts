@@ -1202,6 +1202,15 @@ export const en: LooseMessages = {
       'Set this to use an OpenAI-compatible service (Alibaba Bailian, DeepSeek, SiliconFlow, etc.); leave empty to use the official OpenAI API',
     modelEndpointAnthropicHint:
       'Set this to use an Anthropic-compatible service (e.g. DeepSeek or Zhipu GLM Anthropic endpoints); leave empty to use the official Anthropic API',
+    modelCodingFast: 'Fast Model',
+    modelCodingFastHint: 'Haiku tier (sets both SMALL_FAST and HAIKU). Leave empty to omit.',
+    modelCodingSonnet: 'Standard Model',
+    modelCodingSonnetHint: 'Sonnet tier. Leave empty to omit.',
+    modelCodingOpus: 'Advanced Model',
+    modelCodingOpusHint: 'Opus tier. Leave empty to omit.',
+    modelCodingTierOptional: '(Optional)',
+    modelEndpointClaudeDefaultHint:
+      'Leave empty to use the system default endpoint https://api.anthropic.com/v1',
     modelEditTitle: 'Edit {name}',
     modelConfigDisplayName: 'Display Name',
     modelConfigModelName: 'Model Name',
@@ -1438,6 +1447,12 @@ export const en: LooseMessages = {
     nodeConfigUseKnowledgeBaseHint:
       'When enabled, all knowledge bases bound to this employee will be queried during execution',
     nodeConfigAssignHuman: 'Assign Collaborator',
+    nodeConfigApproverSource: 'Approver Source',
+    nodeConfigApproverAssignee: 'Specified collaborator',
+    nodeConfigApproverLeader: "Requester's direct leader",
+    nodeConfigApproverLeaderHint:
+      "The card is sent to the direct leader of whoever triggered this flow (resolved from Feishu/DingTalk/WeCom org identity) — no need to pick a person. When no leader can be resolved, it falls back to the collaborator below.",
+    nodeConfigFallbackApprover: 'Fallback approver (optional)',
     nodeConfigSelectHuman: 'Select Collaborator',
     nodeConfigNotifyMethod: 'Approval Notification',
     nodeConfigNotifySelected: '({count} platforms selected)',
@@ -3885,6 +3900,8 @@ You are a general-purpose intelligent assistant that can handle various daily wo
       importManifestMissing: 'Invalid .cmtool package: manifest.json not found',
       importManifestInvalid: 'Invalid .cmtool package: manifest.json failed validation',
       importFailed: 'Failed to import tool',
+      importApiInvalid: 'Invalid .cmapi package: validation failed',
+      importApiFailed: 'Failed to import API tool',
     },
     conversation: {
       notFound: 'Conversation not found',
@@ -4073,11 +4090,26 @@ You are a general-purpose intelligent assistant that can handle various daily wo
       label: 'Coding model',
       systemDefault: 'System default',
     },
+    connectionSelector: {
+      label: 'Connection',
+      none: 'No connection',
+    },
+    connectionContext: {
+      initial:
+        'System connection "{name}" (type {type}) is selected. When building this tool, read its credentials and config from these environment variables: {keys}. Always read from these env vars — never hard-code any credential.',
+      midSession:
+        '[System hint] The user just bound system connection "{name}" (type {type}) to this tool; its credentials and config are available via these environment variables: {keys}. Proactively ask the user what they want to do with this connection (e.g. which data to read/write, which capability to add or adjust), then continue building — reading values from those env vars and never hard-coding credentials.',
+    },
     createSession: {
       title: 'New dev session',
       modelLabel: 'Select coding model',
       create: 'Create',
       cancel: 'Cancel',
+      loading: 'Loading models…',
+      pickToStart: 'Pick a coding model to start',
+      noCodingModel:
+        'No coding model available yet. Configure and enable one on the Connections page first.',
+      goConfigure: 'Configure a coding model',
     },
     modelSwitch: {
       confirmTitle: 'Switch coding model?',
@@ -4274,6 +4306,15 @@ You are a general-purpose intelligent assistant that can handle various daily wo
       resume: 'Resume',
       resuming: 'Resuming container…',
       resumeFailed: 'Resume failed',
+      continueFromAdopted: 'Continue from here',
+      continuing: 'Creating iteration…',
+    },
+    loading: {
+      resolving: 'Loading tool…',
+      history: 'Loading chat history…',
+      switchingModel: 'Switching model, rebuilding container (~10–30s)…',
+      forking: 'Creating new iteration…',
+      creating: 'Creating new session…',
     },
     source: {
       installed: 'Manual',

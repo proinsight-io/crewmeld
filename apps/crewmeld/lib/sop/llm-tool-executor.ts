@@ -11,6 +11,8 @@ import { randomUUID } from 'node:crypto'
 import { createLogger } from '@crewmeld/logger'
 import type { ConversationModelConfig } from '@/lib/conversation/types'
 import { t } from '@/lib/core/server-i18n'
+import type { ScopeIdentity } from '@/lib/identity/types'
+import type { ApiToolSpec } from '@/lib/tools/api-tool-types'
 import type { ToolEndpointInfo } from './tool-builder'
 
 const logger = createLogger('SopLLMToolExecutor')
@@ -76,6 +78,15 @@ interface ExecuteLLMWithToolsParams {
    * (`_sopFileUrlPrefix`). Typically derived from APP_BASE_URL.
    */
   sopFileUrlPrefix?: string
+  /**
+   * In-process API tools (kind='api'), keyed by tool name.
+   * Each entry carries the spec AND the tool-level forwardIdentity flag so
+   * the executor can pass it through to {@link runApiTool} without an extra
+   * DB query.
+   */
+  apiTools?: Map<string, { spec: ApiToolSpec; forwardIdentity?: boolean }>
+  /** Platform-resolved caller identity, forwarded to tools with forwardIdentity=true. Never from LLM. */
+  identity?: ScopeIdentity
 }
 
 interface ChatMessage {
@@ -109,6 +120,36 @@ interface ChatCompletionResponse {
 }
 
 /**
+ * Classify how an LLM tool call should be dispatched.
+ *
+ * Priority: builtin > apitool > http-endpoint > unknown.
+ *
+ * @param toolName - The name of the tool as reported by the LLM.
+ * @param deps - Available tool registries to search.
+ * @returns A discriminated union describing the dispatch kind.
+ */
+export function resolveToolCall(
+  toolName: string,
+  deps: {
+    toolEndpoints?: Map<string, ToolEndpointInfo>
+    builtinTools?: Map<string, (args: Record<string, unknown>) => Promise<unknown>>
+    apiTools?: Map<string, { spec: ApiToolSpec; forwardIdentity?: boolean }>
+  },
+):
+  | { kind: 'builtin'; handler: (args: Record<string, unknown>) => Promise<unknown> }
+  | { kind: 'apitool'; spec: ApiToolSpec; forwardIdentity?: boolean }
+  | { kind: 'http'; info: ToolEndpointInfo }
+  | { kind: 'unknown' } {
+  const builtin = deps.builtinTools?.get(toolName)
+  if (builtin) return { kind: 'builtin', handler: builtin }
+  const apiEntry = deps.apiTools?.get(toolName)
+  if (apiEntry) return { kind: 'apitool', spec: apiEntry.spec, forwardIdentity: apiEntry.forwardIdentity }
+  const info = deps.toolEndpoints?.get(toolName)
+  if (info) return { kind: 'http', info }
+  return { kind: 'unknown' }
+}
+
+/**
  * Non-streaming LLM multi-round tool call loop
  */
 export async function executeLLMWithTools({
@@ -121,6 +162,8 @@ export async function executeLLMWithTools({
   onToolResult,
   sopExecutionId,
   sopFileUrlPrefix,
+  apiTools,
+  identity,
 }: ExecuteLLMWithToolsParams): Promise<LLMToolExecutionResult> {
   const messages: ChatMessage[] = [
     { role: 'system', content: systemPrompt },
@@ -255,7 +298,87 @@ export async function executeLLMWithTools({
       }
 
       let resultContent: string
-      if (!endpointInfo) {
+      const apiEntry = apiTools?.get(tc.function.name)
+      if (apiEntry) {
+        const apiSpec = apiEntry.spec
+        const apiToolForwardIdentity = apiEntry.forwardIdentity ?? false
+        const apiToolStart = Date.now()
+        try {
+          const { runApiTool } = await import('@/lib/tools/api-tool-runner')
+          const { buildApiToolDeps } = await import('@/lib/tools/api-tool-deps')
+          const r = await runApiTool(apiSpec, args, buildApiToolDeps(), {
+            toolId: tc.function.name,
+            forwardIdentity: apiToolForwardIdentity,
+            identity,
+          })
+          const durationMs = Date.now() - apiToolStart
+          if (r.success) {
+            resultContent =
+              typeof r.result === 'string' ? r.result : JSON.stringify(r.result, null, 2)
+            const toolOutput: Record<string, unknown> = { result: r.result ?? null }
+            toolResults.push({
+              toolName: tc.function.name,
+              toolId: tc.function.name,
+              input: args,
+              output: toolOutput,
+              round,
+            })
+            await onToolResult?.({
+              toolName: tc.function.name,
+              toolId: tc.function.name,
+              instanceName: tc.function.name,
+              input: args,
+              output: toolOutput,
+              success: true,
+              round,
+              durationMs,
+            })
+          } else {
+            const errOutput = { error: r.error ?? 'Unknown error' }
+            resultContent = `Tool execution failed: ${r.error ?? 'Unknown error'}`
+            toolResults.push({
+              toolName: tc.function.name,
+              toolId: tc.function.name,
+              input: args,
+              output: errOutput,
+              round,
+            })
+            await onToolResult?.({
+              toolName: tc.function.name,
+              toolId: tc.function.name,
+              instanceName: tc.function.name,
+              input: args,
+              output: errOutput,
+              success: false,
+              round,
+              durationMs,
+            })
+          }
+        } catch (e) {
+          const errMsg = e instanceof Error ? e.message : String(e)
+          logger.error('API tool call failed', { toolName: tc.function.name, error: errMsg })
+          resultContent = `Tool call failed: ${errMsg}`
+          const errOutput = { error: errMsg }
+          const durationMs = Date.now() - apiToolStart
+          toolResults.push({
+            toolName: tc.function.name,
+            toolId: tc.function.name,
+            input: args,
+            output: errOutput,
+            round,
+          })
+          await onToolResult?.({
+            toolName: tc.function.name,
+            toolId: tc.function.name,
+            instanceName: tc.function.name,
+            input: args,
+            output: errOutput,
+            success: false,
+            round,
+            durationMs,
+          })
+        }
+      } else if (!endpointInfo) {
         resultContent = `Unknown tool: ${tc.function.name}`
         logger.warn(`LLM called unknown tool: ${tc.function.name}`)
       } else {
@@ -282,6 +405,43 @@ export async function executeLLMWithTools({
         // wrappers). These fields start with `_` and are stripped by the
         // wrapper before the tool code sees its parameters.
         const requestBody: Record<string, unknown> = { ...args }
+
+        // Platform-injected identity for service/script tools (forwardIdentity).
+        // Covers http (service) and opensandbox-script (script reads input.identity).
+        if (endpointInfo.forwardIdentity && identity) {
+          requestBody.identity = identity
+        }
+
+        // Fail-closed: if forwardIdentity is declared but identity is unresolved,
+        // reject the tool call now rather than allow unauthorized access.
+        if (endpointInfo.forwardIdentity && !identity) {
+          const failMsg = 'Tool execution failed: forwardIdentity identity unresolved (fail-closed)'
+          logger.warn('Fail-closed: forwardIdentity set but identity unresolved', {
+            toolName: tc.function.name,
+            toolId: endpointInfo.toolId,
+          })
+          resultContent = failMsg
+          const errOutput = { error: failMsg }
+          toolResults.push({
+            toolName: tc.function.name,
+            toolId: endpointInfo.toolId,
+            input: args,
+            output: errOutput,
+            round,
+          })
+          await onToolResult?.({
+            toolName: tc.function.name,
+            toolId: endpointInfo.toolId,
+            instanceName: endpointInfo.instanceName,
+            input: args,
+            output: errOutput,
+            success: false,
+            round,
+            durationMs: 0,
+          })
+          // Skip the actual fetch/invoke — fall through to message append below
+        } else {
+
         // Generated per-call regardless of needsFileMount so logs can
         // correlate "which invocation" downstream. Tools without file
         // mount just ignore the field.
@@ -617,6 +777,7 @@ export async function executeLLMWithTools({
             durationMs: Date.now() - toolCallStart,
           })
         }
+        } // end else (forwardIdentity fail-closed guard)
       }
 
       // Append tool result message

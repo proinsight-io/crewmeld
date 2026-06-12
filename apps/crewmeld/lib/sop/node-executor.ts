@@ -12,10 +12,12 @@ import { createLogger } from '@crewmeld/logger'
 import { and, asc, eq, inArray, ne } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import { resolveModelConfig } from '@/lib/conversation/model-config'
-import type { ConversationModelConfig } from '@/lib/conversation/types'
+import type { ConversationModelConfig, OpenAITool } from '@/lib/conversation/types'
 import { t } from '@/lib/core/server-i18n'
 import { generateApprovalToken } from '@/lib/human-employees/approval-token'
+import type { ScopeIdentity } from '@/lib/identity/types'
 import { buildImageProxyUrl, loadRagflowConfig, retrieval } from '@/lib/ragflow'
+import type { ApiToolSpec } from '@/lib/tools/api-tool-types'
 import type { NodeExecutionResult, SopNode, SopStateSnapshot } from '@/types/sop'
 import { executeLLMWithTools, type ToolCallLogEntry } from './llm-tool-executor'
 import { getSopNotificationQueue, getSopTimeoutQueue } from './queue'
@@ -700,7 +702,11 @@ async function supplementUpstreamTools(
   })
 
   // Build definitions for uncalled tools
-  const { tools: uncalledTools, endpointMap } = await buildToolDefinitionsFromIds(uncalledToolIds)
+  const {
+    tools: uncalledTools,
+    endpointMap,
+    apiTools: uncalledApiTools,
+  } = await buildToolDefinitionsFromIds(uncalledToolIds)
   if (uncalledTools.length === 0) return null
 
   // Collect branch condition descriptions so LLM knows what data is needed
@@ -734,6 +740,7 @@ async function supplementUpstreamTools(
       modelConfig,
       tools: uncalledTools,
       toolEndpoints: endpointMap,
+      apiTools: uncalledApiTools,
       systemPrompt,
       userMessage,
       maxRounds: 3,
@@ -918,9 +925,13 @@ async function executeDigitalEmployeeWithLLMTools(
     const modelConfig = await resolveModelConfig(node.executorId, workspaceId)
 
     // Build tool definitions
-    const { tools, endpointMap } = node.toolIds?.length
+    const { tools, endpointMap, apiTools } = node.toolIds?.length
       ? await buildToolDefinitionsFromIds(node.toolIds)
-      : { tools: [], endpointMap: new Map() }
+      : {
+          tools: [] as OpenAITool[],
+          endpointMap: new Map<string, ToolEndpointInfo>(),
+          apiTools: new Map<string, { spec: ApiToolSpec; forwardIdentity?: boolean }>(),
+        }
 
     // For any tool with needsFileMount=true, deploy a per-execution Pod
     // For any tool with needsFileMount=true, ensure the shared instance
@@ -963,6 +974,12 @@ async function executeDigitalEmployeeWithLLMTools(
     const currentSenderName = meta?.senderName as string | undefined
     const currentChannel = meta?.channel as string | undefined
 
+    // Read the platform-stamped caller identity injected by the sop-bridge at
+    // dispatch time (spec §6 _meta.identity contract).  Falls back to undefined
+    // when the trigger is not an IM channel message (API / webhook), in which
+    // case forwardIdentity tools fail-closed at the runner.
+    const identityMeta = (meta?.identity as ScopeIdentity | undefined) ?? undefined
+
     const systemPromptSections = [
       `You are digital employee "${employeeName}", executing a task step in an SOP workflow.`,
     ]
@@ -975,9 +992,26 @@ async function executeDigitalEmployeeWithLLMTools(
     // Without this block, the LLM cannot resolve placeholders like "userId" in node descriptions and
     // would pass the literal string instead of the actual value.
     if (currentUserId) {
-      const userLines = [`- userId: ${currentUserId}`]
-      if (currentSenderName) userLines.push(`- name: ${currentSenderName}`)
+      // Each field carries a short gloss so the node LLM knows exactly what it
+      // is (e.g. userId is the IM account id, NOT the employee number) and can
+      // pass the right value to tools.
+      const userLines = [`- userId (IM account id, not the employee number): ${currentUserId}`]
+      if (currentSenderName) userLines.push(`- name (display name): ${currentSenderName}`)
       if (currentChannel) userLines.push(`- via channel: ${currentChannel}`)
+      // Surface the resolved org identity so the node LLM can reason about the
+      // caller's role/department and route work accordingly.
+      if (identityMeta?.positions?.length) {
+        userLines.push(`- positions (job titles): ${identityMeta.positions.join(', ')}`)
+      }
+      if (identityMeta?.employeeNo) {
+        userLines.push(`- employeeNo (HR employee number): ${identityMeta.employeeNo}`)
+      }
+      if (identityMeta?.scope?.orgUnitIds?.length) {
+        userLines.push(`- orgUnitIds (department ids): ${identityMeta.scope.orgUnitIds.join(', ')}`)
+      }
+      if (identityMeta?.leaderId) {
+        userLines.push(`- leaderId (direct manager's account id): ${identityMeta.leaderId}`)
+      }
       systemPromptSections.push(
         '',
         '## Current User Context',
@@ -1218,6 +1252,8 @@ async function executeDigitalEmployeeWithLLMTools(
       maxRounds: 5,
       sopExecutionId: executionId,
       sopFileUrlPrefix,
+      apiTools,
+      identity: identityMeta,
       onToolResult: async (entry: ToolCallLogEntry) => {
         try {
           const displayName = entry.instanceName || entry.toolName
@@ -1297,6 +1333,8 @@ async function executeDigitalEmployeeWithLLMTools(
           maxRounds: 3,
           sopExecutionId: executionId,
           sopFileUrlPrefix,
+          apiTools,
+          identity: identityMeta,
           onToolResult: async (entry: ToolCallLogEntry) => {
             try {
               const displayName = entry.instanceName || entry.toolName
@@ -1793,6 +1831,25 @@ function extractSenderEmail(snapshot: SopStateSnapshot): string | undefined {
   return typeof meta?.senderEmail === 'string' ? meta.senderEmail : undefined
 }
 
+/**
+ * Extract the requester's direct leader id from the injected caller identity
+ * (snapshot triggerData._meta.identity.leaderId), for the 'requester_leader'
+ * approver source.
+ */
+function extractLeaderId(snapshot: SopStateSnapshot): string | undefined {
+  const meta = extractMeta(snapshot)
+  const identity = meta?.identity as ScopeIdentity | undefined
+  return identity?.leaderId
+}
+
+/**
+ * Extract the trigger channel (e.g. 'feishu') from snapshot triggerData._meta.channel
+ */
+function extractRequesterChannel(snapshot: SopStateSnapshot): string | undefined {
+  const meta = extractMeta(snapshot)
+  return typeof meta?.channel === 'string' ? meta.channel : undefined
+}
+
 function extractMeta(snapshot: SopStateSnapshot): Record<string, unknown> | undefined {
   return (snapshot.triggerData as Record<string, unknown> | undefined)?._meta as
     | Record<string, unknown>
@@ -1858,11 +1915,19 @@ async function enqueueNotification(
   approvalToken: string,
   snapshot: SopStateSnapshot
 ): Promise<void> {
+  const approverSource = node.approverSource ?? 'assignee'
   const recipientId = node.executorId
-  if (!recipientId) {
-    logger.warn('enqueueNotification: node has no assigned executor, skipping notification', {
+  // In requester_leader mode, resolve the leader + channel from the injected
+  // identity; executorId (if set) is the fallback approver.
+  const leaderId = approverSource === 'requester_leader' ? extractLeaderId(snapshot) : undefined
+  const requesterChannel =
+    approverSource === 'requester_leader' ? extractRequesterChannel(snapshot) : undefined
+
+  if (!recipientId && !leaderId) {
+    logger.warn('enqueueNotification: no leader and no assignee to notify, skipping', {
       executionId,
       nodeId: node.id,
+      approverSource,
     })
     return
   }
@@ -1870,11 +1935,13 @@ async function enqueueNotification(
   const sopName = await lookupSopName(executionId)
   const prevResult = await extractPreviousNodeResult(snapshot, executionId)
 
-  const employee = await db
-    .select({ name: humanEmployees.name })
-    .from(humanEmployees)
-    .where(eq(humanEmployees.id, recipientId))
-    .then((rows) => rows[0])
+  const employee = recipientId
+    ? await db
+        .select({ name: humanEmployees.name })
+        .from(humanEmployees)
+        .where(eq(humanEmployees.id, recipientId))
+        .then((rows) => rows[0])
+    : undefined
 
   // Extract digital employee ID, sender name, user language from triggerData._meta
   const sourceEmployeeId = extractSourceEmployeeId(snapshot)
@@ -1884,6 +1951,9 @@ async function enqueueNotification(
   const userLanguage = extractUserLanguage(snapshot)
   logger.info('Notification enqueued: sender info', {
     executionId,
+    approverSource,
+    hasLeaderId: !!leaderId,
+    requesterChannel,
     senderName,
     senderEmail,
     sourceEmployeeId,
@@ -1898,16 +1968,19 @@ async function enqueueNotification(
   const payload = {
     executionId,
     nodeId: node.id,
-    recipientId,
-    recipientName: employee?.name ?? recipientId,
+    recipientId: recipientId ?? '',
+    recipientName: employee?.name ?? recipientId ?? '',
     approvalToken,
     messageTemplate: 'sop_approval_request',
     notifyMethod: node.notifyMethod,
     sourceEmployeeId,
+    approverSource,
     contextData: {
       sopName,
       nodeName: node.name,
       pauseId,
+      leaderId,
+      requesterChannel,
       senderName,
       senderEmail,
       baseUrl,
@@ -1916,7 +1989,7 @@ async function enqueueNotification(
     },
   }
 
-  await dispatchNotificationJob(payload, pauseId, recipientId)
+  await dispatchNotificationJob(payload, pauseId, recipientId ?? leaderId ?? 'leader')
 }
 
 /**

@@ -16,7 +16,7 @@ import { createExecutionEventWriter, setExecutionMeta } from '@/lib/execution/ev
 import type { SopExecutionEvent } from '@/lib/types/execution-events'
 import type { SopNode, SopStateSnapshot } from '@/types/sop'
 import { validateBeforeApproval } from './approval-gate'
-import { evaluateExits, resolveErrorExit } from './exit-resolver'
+import { evaluateExits, extractIdentityFromTriggerData, resolveErrorExit } from './exit-resolver'
 import { executeNode, resolveWorkspaceIdFromExecution } from './node-executor'
 import { getSopTimeoutQueue } from './queue'
 
@@ -652,7 +652,11 @@ export async function executeSop(executionId: string): Promise<void> {
         data: { output: result.output },
       })
 
-      const exitResult = evaluateExits(node, result)
+      const exitResult = evaluateExits(
+        node,
+        result,
+        extractIdentityFromTriggerData(snapshot.triggerData)
+      )
 
       if (exitResult) {
         snapshot.nodeStates[currentNodeId] = {
@@ -833,9 +837,11 @@ export async function resumeSopFromPause(pauseState: {
   const currentNode = nodesMap.get(pauseState.nodeId)
   if (!currentNode) return
 
-  const exitResult = evaluateExits(currentNode, {
-    output: { decision: pauseState.decision, comment: pauseState.comment },
-  })
+  const exitResult = evaluateExits(
+    currentNode,
+    { output: { decision: pauseState.decision, comment: pauseState.comment } },
+    extractIdentityFromTriggerData(execution.triggerData as Record<string, unknown> | undefined)
+  )
 
   if (!exitResult || exitResult.targetNodeId === null) {
     await transitionStatus(pauseState.executionId, 'running', 'completed', {

@@ -1,4 +1,18 @@
+import type { ScopeIdentity } from '@/lib/identity/types'
 import type { NodeExecutionResult, SopCondition, SopExit, SopNode } from '@/types/sop'
+
+/**
+ * Pull the caller's injected identity out of an execution's triggerData._meta.
+ *
+ * Returns undefined when the SOP was not triggered from an IM channel or no
+ * identity could be resolved, so identity-type conditions then evaluate falsy.
+ */
+export function extractIdentityFromTriggerData(
+  triggerData: Record<string, unknown> | undefined
+): ScopeIdentity | undefined {
+  const meta = triggerData?._meta as Record<string, unknown> | undefined
+  return meta?.identity as ScopeIdentity | undefined
+}
 
 /**
  * Exit resolution algorithm (whitepaper §8.4.4)
@@ -14,7 +28,8 @@ import type { NodeExecutionResult, SopCondition, SopExit, SopNode } from '@/type
  */
 export function evaluateExits(
   node: SopNode,
-  executionResult: NodeExecutionResult
+  executionResult: NodeExecutionResult,
+  identity?: ScopeIdentity
 ): { exitId: string; targetNodeId: string | null } | null {
   // Filter out error exits, only evaluate normal exits
   const normalExits = node.exits.filter((e) => e.type !== 'error')
@@ -28,7 +43,7 @@ export function evaluateExits(
       continue
     }
 
-    if (evaluateCondition(exit.condition, executionResult)) {
+    if (evaluateCondition(exit.condition, executionResult, identity)) {
       return { exitId: exit.id, targetNodeId: exit.targetNodeId }
     }
   }
@@ -61,7 +76,11 @@ export function resolveErrorExit(
 /**
  * Condition evaluation
  */
-export function evaluateCondition(condition: SopCondition, result: NodeExecutionResult): boolean {
+export function evaluateCondition(
+  condition: SopCondition,
+  result: NodeExecutionResult,
+  identity?: ScopeIdentity
+): boolean {
   switch (condition.type) {
     case 'approval_result':
       return compareValue(result.output?.decision, condition.operator ?? 'eq', condition.value)
@@ -78,12 +97,57 @@ export function evaluateCondition(condition: SopCondition, result: NodeExecution
       return compareValue(actual, condition.operator ?? 'eq', condition.value)
     }
 
+    case 'identity': {
+      // Branch on the caller's injected identity (e.g. positions contains "店长").
+      const actual = getIdentityField(identity, condition.field ?? '')
+      return compareIdentityValue(actual, condition.operator ?? 'contains', condition.value)
+    }
+
     case 'always':
       return true
 
     default:
       return false
   }
+}
+
+/**
+ * Resolve an identity field for an `identity`-type condition.
+ *
+ * Recognized fields: positions/position (job titles), leaderId, orgUnitIds,
+ * employeeId. Anything else falls back to a dot-path lookup into the identity.
+ */
+function getIdentityField(identity: ScopeIdentity | undefined, field: string): unknown {
+  if (!identity) return undefined
+  switch (field) {
+    case 'position':
+    case 'positions':
+      return identity.positions
+    case 'leaderId':
+      return identity.leaderId
+    case 'orgUnitId':
+    case 'orgUnitIds':
+      return identity.scope?.orgUnitIds
+    case 'employeeId':
+      return identity.employeeId
+    case 'employeeNo':
+      return identity.employeeNo
+    default:
+      return getNestedValue(identity, field)
+  }
+}
+
+/**
+ * Compare an identity field value. Array fields (positions, orgUnitIds) are
+ * matched by membership, so `positions contains 店长` means "any position
+ * equals 店长"; `neq` means "no member equals the value".
+ */
+function compareIdentityValue(actual: unknown, operator: string, expected: unknown): boolean {
+  if (Array.isArray(actual)) {
+    const hasMatch = actual.some((item) => compareValue(item, 'eq', expected))
+    return operator === 'neq' ? !hasMatch : hasMatch
+  }
+  return compareValue(actual, operator, expected)
 }
 
 /**
