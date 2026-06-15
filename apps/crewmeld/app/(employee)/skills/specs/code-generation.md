@@ -9,6 +9,7 @@ When generating or modifying tool code, you must include a JSON code block (wrap
   "title": "Tool name (concise)",
   "description": "Brief description of what the tool does",
   "language": "javascript or python",
+  "needsFileMount": false,
   "parameters": {
     "type": "object",
     "properties": {
@@ -21,6 +22,8 @@ When generating or modifying tool code, you must include a JSON code block (wrap
   "apiDoc": "API documentation in Markdown format describing each non-secret input parameter and return value"
 }
 ```
+
+`needsFileMount` is a boolean that selects the file-handling mode for the tool (see "File Handling Mode Selection" below). Defaults to `false` if omitted. Set `true` only when the tool reads files the user uploaded into a conversation, or produces files other SOP nodes will consume.
 
 > **Parameter names must be in English** (e.g. `city`, `apiKey`); parameter `description` should be in the user's language.
 
@@ -134,6 +137,169 @@ except Exception:
 2. Must assign the result to a `result` variable (equivalent to JS `return`)
 3. Environment variables read via `os.environ.get('PARAM_NAME')`
 4. Use single quotes for strings
+
+### File Handling Mode Selection (Critical)
+
+When the tool involves files, choose ONE of two modes based on user intent. Output a `needsFileMount` boolean field in the JSON to declare which mode this tool uses.
+
+#### Mode A — SOP Workspace Mount (`needsFileMount: true`)
+
+Use when the tool runs inside a SOP that needs to:
+- read a file the **user uploaded into the conversation**, or
+- produce output files **other SOP nodes / the chat UI** will consume.
+
+Runtime behavior:
+- The tool Pod is **long-lived per tool instance** and mounts a shared
+  PVC at `/workspace`. One Pod serves every SOP execution that routes to
+  this instance.
+- Per-request the server wrapper extracts the execution id and exposes
+  `SOP_WORKDIR` / `SOP_FILE_URL_PREFIX` / `SOP_EXECUTION_ID` to the
+  tool — the tool code does **not** need to know about the underlying
+  execution-id-based directory layout.
+- **Flat layout**: inputs and outputs share a single directory
+  `/workspace/<execId>/`. `SOP_INPUT_DIR` and `SOP_OUTPUT_DIR` are kept
+  as backward-compatible aliases for `SOP_WORKDIR` and point at the
+  same path.
+- `SOP_WORKDIR` already contains every file the user uploaded in the
+  triggering conversation (copied in by the SOP bridge before the tool
+  starts).
+- The tool reads from and writes to `$SOP_WORKDIR`. **No MinIO SDK, no
+  credentials, no URL handling** — pure filesystem operations.
+- The tool returns a URL pointing at the project's proxy route; the
+  route streams the underlying MinIO object back.
+- After SOP completion the orchestrator uploads everything written under
+  `$SOP_WORKDIR` to MinIO `sop/<execId>/` (30-day retention), then
+  cleans up the PVC directory. Only files the LLM explicitly referenced
+  in the final user-facing message get promoted to the conversation's
+  permanent prefix.
+
+Per-request env vars (set by the server wrapper before each tool call):
+
+| Env | Value | Use |
+|-----|-------|-----|
+| `SOP_WORKDIR` | `/workspace/<execId>` | read user-uploaded files and write generated files (same directory) |
+| `SOP_INPUT_DIR` | `/workspace/<execId>` | back-compat alias for SOP_WORKDIR |
+| `SOP_OUTPUT_DIR` | `/workspace/<execId>` | back-compat alias for SOP_WORKDIR |
+| `SOP_EXECUTION_ID` | `<execId>` | for log correlation |
+| `SOP_FILE_URL_PREFIX` | `https://<app>/api/sop/<execId>/files` | concat with output filename for the return URL |
+
+**Important isolation note**: Multiple SOP executions may share the same
+Pod process. The server wrapper injects per-request env, but tool code
+**must not** persist file handles or globals between calls that
+reference paths from a previous execution's `SOP_WORKDIR`. Always derive
+paths fresh from `os.environ` / `process.env` at the start of the run.
+
+**Python template (mount mode)**:
+```python
+import os
+from datetime import datetime
+import pdfplumber           # third-party libs are auto pip-installed
+from docx import Document
+
+workdir = os.environ.get('SOP_WORKDIR', '/workspace')
+url_prefix = os.environ.get('SOP_FILE_URL_PREFIX', '')
+os.makedirs(workdir, exist_ok=True)
+
+# 1. Pick input file: prefer caller-supplied fileName, else first match
+target = None
+if 'fileName' in dir() and fileName:
+    candidate = os.path.join(workdir, fileName)
+    if os.path.isfile(candidate):
+        target = fileName
+if not target and os.path.isdir(workdir):
+    candidates = sorted([f for f in os.listdir(workdir) if f.lower().endswith('.pdf')])
+    if candidates:
+        target = candidates[0]
+
+if not target:
+    result = {'error': 'No input file found in $SOP_WORKDIR'}
+else:
+    src = os.path.join(workdir, target)
+    out_name = os.path.splitext(target)[0] + '.docx'
+    out_path = os.path.join(workdir, out_name)
+
+    # ... process src, write to out_path using a real library (pdfplumber+docx, openpyxl, reportlab, etc.) ...
+
+    result = {
+        'sourceFile': target,
+        'outputFile': out_name,
+        'outputSize': os.path.getsize(out_path),
+        'downloadUrl': f"{url_prefix}/{out_name}",
+        'message': f'Converted {target} -> {out_name}'
+    }
+```
+
+**Critical rules in mount mode**:
+- ✅ **input parameter is a plain filename string** (e.g. `"invoice.pdf"`), NOT a URL. The orchestrator passes the literal filename the user uploaded.
+- ✅ **output filename can be Chinese / any UTF-8** — the project proxy route handles encoding. (Inputs filename also Chinese-safe; the SOP bridge sanitizes server-side.)
+- ✅ **Always use `os.environ.get(NAME, DEFAULT)`** (Python) or `process.env.NAME ?? DEFAULT` (JS) when reading `SOP_*` envs — never bracket-access `os.environ['SOP_WORKDIR']`. The test sandbox doesn't inject these envs, and a `KeyError` makes the tool fail the LLM auto-test step. Use sensible defaults:
+  ```python
+  workdir = os.environ.get('SOP_WORKDIR', '/workspace')
+  url_prefix = os.environ.get('SOP_FILE_URL_PREFIX', '')
+  ```
+- ✅ **Do not gate the main logic on `'SOP_WORKDIR' in os.environ`**. The test sandbox runs the same code path; rely on the `.get()` defaults and let the "no input file found" branch handle the empty-directory case naturally.
+- ❌ **Do NOT** import boto3 / `@aws-sdk/client-s3` — credentials are not available in this mode.
+- ❌ **Do NOT** read `process.env.MINIO_*` — `SOP_*` envs are the contract for mount mode.
+- ❌ **Do NOT** try to download from a URL parameter — there is no URL, just a filename.
+- ❌ **Do NOT add a "sample" / "demo" fallback** when the input file is not found. Return a real error object instead:
+  ```python
+  if not target:
+      result = {
+          'error': 'No matching input file found',
+          'hint': 'Confirm the SOP was triggered from a conversation with the file uploaded'
+      }
+  # NEVER: result = { 'sourceFile': 'sample.xlsx', 'outputFile': 'sample.pdf', ... }
+  ```
+  Reason: a sample-data fallback masks real bugs (mount not working, file not copied,
+  env not injected) and produces broken download URLs the user can click on.
+
+**Mode A return shape**:
+```json
+{
+  "sourceFile": "input.pdf",
+  "outputFile": "output.docx",
+  "outputSize": 12345,
+  "downloadUrl": "<SOP_FILE_URL_PREFIX>/output.docx",
+  "message": "..."
+}
+```
+
+#### Mode B — Direct MinIO Upload (`needsFileMount: false`)
+
+Use when the tool:
+- does not depend on user-uploaded files (e.g. fetches data from an API, queries DB, then generates a file), OR
+- is invoked **outside a SOP** (standalone via the tool tester / cron / direct skill call).
+
+In this mode the Pod still has `MINIO_ENDPOINT` / `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` / `MINIO_BUCKET` env vars and writes via the boto3 / `@aws-sdk/client-s3` SDK (see the "File Generation Tool Standards" section below for the full template).
+
+#### How to decide
+
+| User description pattern | Mode |
+|---|---|
+| "read the user-uploaded file" / "convert the PDF the user sent" / "extract info from the attachment" | **A (true)** |
+| "process the chat attachment" / "summarize the uploaded document" | **A (true)** |
+| "call <some API>, generate a report" / "query the database and export Excel" | **B (false)** |
+| "download a file from URL and process it" | **B (false)** |
+| Tool's natural parameter is `apiKey` / `query` / `url` (no upload involved) | **B (false)** |
+| Unclear / mixed | **B (false)** — conservative default |
+
+When in doubt, ask the user in `<think>` whether the tool will receive files via conversation upload. If yes → A; if no → B.
+
+#### Mandatory: declare the mode in the JSON output
+
+You **must** include a top-level `needsFileMount` boolean in the JSON code block. Examples:
+
+```json
+{
+  "title": "PDF to Word",
+  "language": "python",
+  "needsFileMount": true,
+  "parameters": { ... },
+  "code": "..."
+}
+```
+
+If `needsFileMount` is missing, it defaults to `false` (Mode B).
 
 ### File Generation Tool Standards
 When tool output involves files (Excel, PDF, CSV, ZIP, images, etc.), **must upload to MinIO object storage and return a signed download URL. Absolutely forbidden to return Base64 or file paths**.

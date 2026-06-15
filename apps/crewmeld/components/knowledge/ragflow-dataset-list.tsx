@@ -5,6 +5,7 @@ import {
   AlertCircle,
   Database,
   FileText,
+  Pencil,
   Plus,
   RefreshCw,
   Search,
@@ -59,12 +60,13 @@ export function RagflowDatasetList() {
   const [errorKind, setErrorKind] = useState<ErrorKind>('connection_error')
   const [searchTerm, setSearchTerm] = useState('')
 
-  // Create dialog state
-  const [showCreateDialog, setShowCreateDialog] = useState(false)
-  const [createName, setCreateName] = useState('')
-  const [createDesc, setCreateDesc] = useState('')
-  const [creating, setCreating] = useState(false)
-  const [createError, setCreateError] = useState<string | null>(null)
+  // Create / edit dialog state (shared form, distinguished by editTarget)
+  const [showFormDialog, setShowFormDialog] = useState(false)
+  const [editTarget, setEditTarget] = useState<{ id: string } | null>(null)
+  const [formName, setFormName] = useState('')
+  const [formDesc, setFormDesc] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [formError, setFormError] = useState<string | null>(null)
 
   // Delete confirmation state
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string } | null>(null)
@@ -96,32 +98,57 @@ export function RagflowDatasetList() {
     fetchDatasets()
   }, [fetchDatasets])
 
-  async function handleCreate() {
-    if (!createName.trim()) return
-    setCreating(true)
-    setCreateError(null)
+  function openCreateDialog() {
+    setEditTarget(null)
+    setFormName('')
+    setFormDesc('')
+    setFormError(null)
+    setShowFormDialog(true)
+  }
+
+  function openEditDialog(ds: RagflowDataset) {
+    setEditTarget({ id: ds.id })
+    setFormName(ds.name)
+    setFormDesc(ds.description ?? '')
+    setFormError(null)
+    setShowFormDialog(true)
+  }
+
+  async function handleSubmit() {
+    if (!formName.trim()) return
+    setSubmitting(true)
+    setFormError(null)
     try {
-      const res = await fetch('/api/employee/ragflow/datasets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: createName.trim(),
-          description: createDesc.trim() || undefined,
-        }),
-      })
+      const isEdit = editTarget !== null
+      const res = await fetch(
+        isEdit
+          ? `/api/employee/ragflow/datasets/${encodeURIComponent(editTarget.id)}`
+          : '/api/employee/ragflow/datasets',
+        {
+          method: isEdit ? 'PUT' : 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: formName.trim(),
+            description: formDesc.trim(),
+          }),
+        }
+      )
       const json = await res.json()
       if (res.ok && json.success) {
-        setShowCreateDialog(false)
-        setCreateName('')
-        setCreateDesc('')
+        setShowFormDialog(false)
+        setEditTarget(null)
+        setFormName('')
+        setFormDesc('')
         fetchDatasets()
       } else {
-        setCreateError(json.error ?? t('knowledge.createFailed'))
+        setFormError(
+          json.error ?? t(isEdit ? 'knowledge.updateFailed' : 'knowledge.createFailed')
+        )
       }
     } catch {
-      setCreateError(t('common.networkError'))
+      setFormError(t('common.networkError'))
     } finally {
-      setCreating(false)
+      setSubmitting(false)
     }
   }
 
@@ -249,10 +276,7 @@ export function RagflowDatasetList() {
         </div>
         <PermissionGuard requires='knowledge:create'>
           <Button
-            onClick={() => {
-              setShowCreateDialog(true)
-              setCreateError(null)
-            }}
+            onClick={openCreateDialog}
             data-testid='knowledge:ragflow:create'
           >
             <Plus className='h-4 w-4' />
@@ -267,12 +291,7 @@ export function RagflowDatasetList() {
           <p className='mb-2 font-medium text-gray-700 text-lg'>{t('knowledge.emptyDatasets')}</p>
           <p className='mb-4 text-gray-500 text-sm'>{t('knowledge.emptyDatasetsHint')}</p>
           <PermissionGuard requires='knowledge:create'>
-            <Button
-              onClick={() => {
-                setShowCreateDialog(true)
-                setCreateError(null)
-              }}
-            >
+            <Button onClick={openCreateDialog}>
               <Plus className='h-4 w-4' />
               {t('knowledge.addKnowledge')}
             </Button>
@@ -309,90 +328,121 @@ export function RagflowDatasetList() {
                   )}
                 </div>
               </Link>
-              <PermissionGuard requires='knowledge:delete'>
-                <button
-                  type='button'
-                  onClick={(e) => {
-                    e.preventDefault()
-                    e.stopPropagation()
-                    setDeleteTarget({ id: ds.id, name: ds.name })
-                  }}
-                  data-testid={`knowledge:ragflow:delete:${ds.id}`}
-                  className='absolute top-3 right-3 rounded p-1 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500'
-                >
-                  <Trash2 className='h-4 w-4' />
-                </button>
-              </PermissionGuard>
+              <div className='absolute top-3 right-3 flex items-center gap-1'>
+                <PermissionGuard requires='knowledge:edit'>
+                  <button
+                    type='button'
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      openEditDialog(ds)
+                    }}
+                    aria-label={t('knowledge.editDataset')}
+                    title={t('knowledge.editDataset')}
+                    data-testid={`knowledge:ragflow:edit:${ds.id}`}
+                    className='rounded p-1 text-gray-400 transition-colors hover:bg-blue-50 hover:text-blue-500'
+                  >
+                    <Pencil className='h-4 w-4' />
+                  </button>
+                </PermissionGuard>
+                <PermissionGuard requires='knowledge:delete'>
+                  <button
+                    type='button'
+                    onClick={(e) => {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      setDeleteTarget({ id: ds.id, name: ds.name })
+                    }}
+                    aria-label={t('knowledge.deleteDataset')}
+                    title={t('knowledge.deleteDataset')}
+                    data-testid={`knowledge:ragflow:delete:${ds.id}`}
+                    className='rounded p-1 text-gray-400 transition-colors hover:bg-red-50 hover:text-red-500'
+                  >
+                    <Trash2 className='h-4 w-4' />
+                  </button>
+                </PermissionGuard>
+              </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* Add knowledge base dialog */}
+      {/* Create / edit knowledge base dialog (shared form) */}
       <Dialog
-        open={showCreateDialog}
+        open={showFormDialog}
         onOpenChange={(open) => {
           if (!open) {
-            setCreateName('')
-            setCreateDesc('')
-            setCreateError(null)
+            setEditTarget(null)
+            setFormName('')
+            setFormDesc('')
+            setFormError(null)
           }
-          setShowCreateDialog(open)
+          setShowFormDialog(open)
         }}
       >
         <DialogContent className='sm:max-w-md'>
           <DialogHeader>
-            <DialogTitle>{t('knowledge.addDatasetTitle')}</DialogTitle>
+            <DialogTitle>
+              {editTarget
+                ? t('knowledge.editDatasetTitle')
+                : t('knowledge.addDatasetTitle')}
+            </DialogTitle>
           </DialogHeader>
           <div className='space-y-4 py-2'>
-            {createError && (
+            {formError && (
               <div className='rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-red-600 text-xs'>
-                {createError}
+                {formError}
               </div>
             )}
             <div>
               <label
-                htmlFor='ragflow-create-name'
+                htmlFor='ragflow-form-name'
                 className='mb-1.5 block font-medium text-gray-700 text-sm'
               >
                 {t('knowledge.datasetNameLabel')} <span className='text-red-500'>*</span>
               </label>
               <Input
-                id='ragflow-create-name'
+                id='ragflow-form-name'
                 placeholder={t('knowledge.datasetNamePlaceholder')}
-                value={createName}
-                onChange={(e) => setCreateName(e.target.value)}
-                data-testid='knowledge:ragflow:create:name'
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                data-testid='knowledge:ragflow:form:name'
               />
             </div>
             <div>
               <label
-                htmlFor='ragflow-create-desc'
+                htmlFor='ragflow-form-desc'
                 className='mb-1.5 block font-medium text-gray-700 text-sm'
               >
                 {t('knowledge.datasetDescLabel')}
               </label>
               <textarea
-                id='ragflow-create-desc'
+                id='ragflow-form-desc'
                 placeholder={t('knowledge.datasetDescPlaceholder')}
-                value={createDesc}
-                onChange={(e) => setCreateDesc(e.target.value)}
+                value={formDesc}
+                onChange={(e) => setFormDesc(e.target.value)}
                 rows={3}
                 className='w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-gray-900 text-sm placeholder:text-gray-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400'
-                data-testid='knowledge:ragflow:create:desc'
+                data-testid='knowledge:ragflow:form:desc'
               />
             </div>
           </div>
           <DialogFooter>
-            <Button variant='outline' onClick={() => setShowCreateDialog(false)}>
+            <Button variant='outline' onClick={() => setShowFormDialog(false)}>
               {t('common.cancel')}
             </Button>
             <Button
-              onClick={handleCreate}
-              disabled={!createName.trim() || creating}
-              data-testid='knowledge:ragflow:create:submit'
+              onClick={handleSubmit}
+              disabled={!formName.trim() || submitting}
+              data-testid='knowledge:ragflow:form:submit'
             >
-              {creating ? t('common.creating') : t('common.create')}
+              {submitting
+                ? editTarget
+                  ? t('common.saving')
+                  : t('common.creating')
+                : editTarget
+                  ? t('common.save')
+                  : t('common.create')}
             </Button>
           </DialogFooter>
         </DialogContent>

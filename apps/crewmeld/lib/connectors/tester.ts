@@ -31,6 +31,8 @@ export async function testConnection(
         return await testCustomApi(config, startTime)
       case 'n8n':
         return await testN8n(config, startTime)
+      case 'openclaw':
+        return await testOpenclaw(config, startTime)
       case 'email':
         return await testEmail(config, startTime)
       case 'telegram':
@@ -364,80 +366,25 @@ async function testCustomApi(
   if (!config.apiEndpoint) return required('API URL', startTime)
 
   try {
-    const url = new URL(config.apiEndpoint)
-    if (Array.isArray(config.params)) {
-      for (const p of config.params) {
-        if (p.enabled && p.key?.trim()) url.searchParams.append(p.key, p.value ?? '')
-      }
-    }
-
-    const headers: Record<string, string> = {}
-    if (Array.isArray(config.customHeaders)) {
-      for (const h of config.customHeaders) {
-        if (h.enabled && h.key?.trim()) headers[h.key] = h.value ?? ''
-      }
-    }
-
-    const authType = config.authType ?? 'none'
-    if (authType === 'api_key' && config.apiKey) {
-      headers['X-API-Key'] = config.apiKey
-    } else if (authType === 'bearer' && config.bearerToken) {
-      headers.Authorization = `Bearer ${config.bearerToken}`
-    } else if (authType === 'basic' && config.basicUsername) {
-      const encoded = Buffer.from(`${config.basicUsername}:${config.basicPassword ?? ''}`).toString(
-        'base64'
-      )
-      headers.Authorization = `Basic ${encoded}`
-    }
-
-    const method = (config.httpMethod ?? 'GET').toUpperCase()
-    let body: string | undefined
-    const bodyType = config.bodyType ?? 'none'
-    if (bodyType !== 'none' && config.bodyContent && method !== 'GET' && method !== 'HEAD') {
-      body = config.bodyContent
-      if (bodyType === 'json' && !headers['Content-Type'] && !headers['content-type']) {
-        headers['Content-Type'] = 'application/json'
-      } else if (
-        bodyType === 'form-urlencoded' &&
-        !headers['Content-Type'] &&
-        !headers['content-type']
-      ) {
-        headers['Content-Type'] = 'application/x-www-form-urlencoded'
-      }
-    }
-
+    const { callCustomApi } = await import('./call-custom-api')
     const fetchStart = Date.now()
-    const res = await fetch(url.toString(), {
-      method,
-      headers,
-      body,
-      signal: AbortSignal.timeout(30_000),
-    })
+    const r = await callCustomApi(config, {})
     const latencyMs = Date.now() - fetchStart
-    const resBody = await res.text()
-    const resHeaders: Record<string, string> = {}
-    res.headers.forEach((v, k) => {
-      resHeaders[k] = v
-    })
-
-    const isOk = res.status >= 200 && res.status < 400
-    const statusStr = `${res.status} ${res.statusText}`
+    const isOk = r.status >= 200 && r.status < 400
+    // callCustomApi returns body as parsed JSON object or raw string; re-stringify objects to
+    // preserve the prior string contract expected by callers of testCustomApi.
+    const bodyText = typeof r.body === 'string' ? r.body : JSON.stringify(r.body)
     return {
       success: isOk,
       messageKey: isOk ? 'connTestRequestSuccess' : 'connTestRequestFailed',
-      messageParams: { status: statusStr },
+      messageParams: { status: `${r.status} ${r.statusText}` },
       latencyMs,
       details: {
         endpoint: config.apiEndpoint,
-        method,
-        status: `${res.status}`,
+        method: (config.httpMethod ?? 'GET').toUpperCase(),
+        status: `${r.status}`,
       },
-      response: {
-        status: res.status,
-        statusText: res.statusText,
-        body: resBody,
-        headers: resHeaders,
-      },
+      response: { status: r.status, statusText: r.statusText, body: bodyText, headers: r.headers },
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
@@ -553,6 +500,52 @@ async function testN8n(config: ConnectionConfig, startTime: number): Promise<Con
     const msg = error instanceof Error ? error.message : '__gateway_unreachable__'
     return fail('connTestFailed', { name: 'n8n', error: msg }, startTime)
   }
+}
+
+async function testOpenclaw(
+  config: ConnectionConfig,
+  startTime: number
+): Promise<ConnectionTestResult> {
+  const endpoints = config.endpoints ?? []
+  if (endpoints.length === 0) {
+    return required('endpoints', startTime)
+  }
+
+  const perEndpointTimeout = config.timeout ?? 10_000
+
+  // Probe every endpoint in parallel so the user sees the full pool status
+  // in one shot. Overall success requires every endpoint to come back ok.
+  const results = await Promise.all(
+    endpoints.map(async (ep) => {
+      const httpUrl = ep.url
+        .replace(/^ws:\/\//, 'http://')
+        .replace(/^wss:\/\//, 'https://')
+        .replace(/\/+$/, '')
+      try {
+        const res = await fetch(httpUrl, {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${ep.token}` },
+          signal: AbortSignal.timeout(perEndpointTimeout),
+        })
+        return { label: ep.label, ok: true, detail: String(res.status) }
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : '__gateway_unreachable__'
+        return { label: ep.label, ok: false, detail: msg }
+      }
+    })
+  )
+
+  const details: Record<string, string> = {}
+  for (const r of results) {
+    details[r.label] = r.ok ? `OK ${r.detail}` : `FAIL ${r.detail}`
+  }
+
+  const failed = results.filter((r) => !r.ok)
+  if (failed.length === 0) {
+    return ok('connTestSucceeded', { name: 'OpenClaw' }, startTime, details)
+  }
+  const errSummary = failed.map((r) => `${r.label}: ${r.detail}`).join('; ')
+  return fail('connTestFailed', { name: 'OpenClaw', error: errSummary }, startTime, details)
 }
 
 async function testTelegram(

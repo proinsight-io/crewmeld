@@ -4,7 +4,7 @@
  * GET /api/employee/conversations/files/proxy?url=<base64url-encoded MinIO URL>
  *
  * Used for tool-generated files (charts, exports, etc.) whose presigned URLs
- * point to external addresses (e.g. 103.237.248.131:19000), but the server accesses MinIO via internal network.
+ * point to external addresses (e.g. <minio-host>:19000), but the server accesses MinIO via internal network.
  *
  * Logic:
  * 1. Decode URL, verify host is a known MinIO address
@@ -91,13 +91,21 @@ export async function GET(request: NextRequest) {
 
   // Extract bucket and key from path
   // Path format: /{bucket}/{key...}  e.g. /tool-files/charts/chart_xxx.png
+  // URL.pathname keeps percent-encoded chars (e.g. %E8%8D%AF for 药) — decode per
+  // segment so the resulting S3 key matches what MinIO actually stored.
   const pathParts = parsedUrl.pathname.split('/').filter(Boolean)
   if (pathParts.length < 2) {
     return apiErr('api.files.invalidFilePath', { status: 400 })
   }
 
-  const bucket = pathParts[0]
-  const key = pathParts.slice(1).join('/')
+  let bucket: string
+  let key: string
+  try {
+    bucket = decodeURIComponent(pathParts[0])
+    key = pathParts.slice(1).map(decodeURIComponent).join('/')
+  } catch {
+    return apiErr('api.files.invalidFilePath', { status: 400 })
+  }
 
   try {
     const result = await getClient().send(new GetObjectCommand({ Bucket: bucket, Key: key }))

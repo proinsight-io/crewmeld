@@ -314,33 +314,76 @@ export function SopNodeConfigPanel({ nodeId }: SopNodeConfigPanelProps) {
       )}
 
       {sopNode.type === 'human_employee' && (
-        <div>
-          <Label className='mb-1.5 text-gray-500 text-xs'>{t('sops.nodeConfigAssignHuman')}</Label>
-          <Select
-            value={sopNode.executorId ?? ''}
-            onValueChange={(v) => {
-              // When switching employee, clear old notify methods, auto-select first contact of new person
-              const newEmployee = humanEmployeeList.find((u) => u.id === v)
-              const cms = newEmployee?.contactMethods ?? []
-              const defaultMethod =
-                cms.length > 0
-                  ? [cms.find((cm) => cm.type === 'email') ? 'email' : cms[0].type]
-                  : []
-              handleChange({ executorId: v || undefined, notifyMethod: defaultMethod })
-            }}
-          >
-            <SelectTrigger data-testid='sop-editor:config-panel:input:executor-id'>
-              <SelectValue placeholder={t('sops.nodeConfigSelectHuman')} />
-            </SelectTrigger>
-            <SelectContent>
-              {humanEmployeeList.map((u) => (
-                <SelectItem key={u.id} value={u.id}>
-                  {u.name}（{u.title}）
-                </SelectItem>
+        <>
+          {/* Approver source: configured collaborator vs the requester's direct leader */}
+          <div>
+            <Label className='mb-1.5 text-gray-500 text-xs'>
+              {t('sops.nodeConfigApproverSource')}
+            </Label>
+            <div className='mt-1 space-y-1.5' data-testid='sop-editor:config-panel:approver-source'>
+              {(['assignee', 'requester_leader'] as const).map((src) => (
+                <label
+                  key={src}
+                  className='flex cursor-pointer items-center gap-2 rounded-md border border-gray-100 px-2.5 py-1.5 text-xs transition-colors hover:bg-gray-50'
+                >
+                  <input
+                    type='radio'
+                    name={`approver-source-${sopNode.id}`}
+                    className='h-3.5 w-3.5 border-gray-300 text-blue-600 focus:ring-blue-500'
+                    checked={(sopNode.approverSource ?? 'assignee') === src}
+                    onChange={() => handleChange({ approverSource: src })}
+                    data-testid={`sop-editor:config-panel:approver-source:${src}`}
+                  />
+                  <span>
+                    {t(
+                      src === 'assignee'
+                        ? 'sops.nodeConfigApproverAssignee'
+                        : 'sops.nodeConfigApproverLeader'
+                    )}
+                  </span>
+                </label>
               ))}
-            </SelectContent>
-          </Select>
-        </div>
+            </div>
+          </div>
+
+          {(sopNode.approverSource ?? 'assignee') === 'requester_leader' && (
+            <div className='rounded-md bg-blue-50 px-3 py-2 text-[11px] text-blue-700'>
+              {t('sops.nodeConfigApproverLeaderHint')}
+            </div>
+          )}
+
+          <div>
+            <Label className='mb-1.5 text-gray-500 text-xs'>
+              {(sopNode.approverSource ?? 'assignee') === 'requester_leader'
+                ? t('sops.nodeConfigFallbackApprover')
+                : t('sops.nodeConfigAssignHuman')}
+            </Label>
+            <Select
+              value={sopNode.executorId ?? ''}
+              onValueChange={(v) => {
+                // When switching employee, clear old notify methods, auto-select first contact of new person
+                const newEmployee = humanEmployeeList.find((u) => u.id === v)
+                const cms = newEmployee?.contactMethods ?? []
+                const defaultMethod =
+                  cms.length > 0
+                    ? [cms.find((cm) => cm.type === 'email') ? 'email' : cms[0].type]
+                    : []
+                handleChange({ executorId: v || undefined, notifyMethod: defaultMethod })
+              }}
+            >
+              <SelectTrigger data-testid='sop-editor:config-panel:input:executor-id'>
+                <SelectValue placeholder={t('sops.nodeConfigSelectHuman')} />
+              </SelectTrigger>
+              <SelectContent>
+                {humanEmployeeList.map((u) => (
+                  <SelectItem key={u.id} value={u.id}>
+                    {u.name}（{u.title}）
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </>
       )}
 
       {sopNode.type === 'human_employee' && selectedHumanEmployee && (

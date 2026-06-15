@@ -15,6 +15,9 @@ import {
 import { createLogger } from '@crewmeld/logger'
 import { eq } from 'drizzle-orm'
 import { t } from '@/lib/core/server-i18n'
+import type { ScopeIdentity } from '@/lib/identity/types'
+import { resolveSopAccess } from '@/lib/sop/visibility-matcher'
+import type { SopVisibilityRules } from '@/lib/sop/visibility-types'
 import type { SopNode } from '@/types/sop'
 import type { OpenAITool } from './types'
 
@@ -24,9 +27,13 @@ interface ToolConfigResult {
   tools: OpenAITool[]
   workflowMap: Map<string, string>
   sopMap: Map<string, string>
-  /** skillToolName → { skillId, endpoint } */
-  skillMap: Map<string, { skillId: string; endpoint: string }>
+  /** skillToolName → { skillId, endpoint, openclawConnectionId? } */
+  skillMap: Map<string, { skillId: string; endpoint: string; openclawConnectionId?: string }>
   sopInfos: SopInfo[]
+  /** SOPs the caller may NOT run but which are surfaced as restricted tasks (onNoPermission='deny'). */
+  deniedSopInfos: SopInfo[]
+  /** sopToolName (`sop_<id>`) → minimal denied SOP descriptor, for the program-level rejection safety net. */
+  deniedSopMap: Map<string, { id: string; name: string }>
 }
 
 /**
@@ -35,28 +42,54 @@ interface ToolConfigResult {
  * No longer query employee-bound workflows, directly query which SOPs assigned this employee (executorId),
  * let LLM self-judge the most suitable SOP and trigger execution.
  */
-export async function buildWorkflowToolConfigs(employeeId: string): Promise<ToolConfigResult> {
+export async function buildWorkflowToolConfigs(
+  employeeId: string,
+  visibility?: { identity: ScopeIdentity | null; connectionId: string | null }
+): Promise<ToolConfigResult> {
   const tools: OpenAITool[] = []
   const workflowMap = new Map<string, string>() // Reserved interface, always empty
   const sopMap = new Map<string, string>()
-  const skillMap = new Map<string, { skillId: string; endpoint: string }>()
+  const skillMap = new Map<
+    string,
+    { skillId: string; endpoint: string; openclawConnectionId?: string }
+  >()
 
   // 1. Query active SOPs assigned to this employee
   const sopInfos = await querySopsByEmployee(employeeId)
 
-  if (sopInfos.length === 0) {
-    // When no SOPs, degrade to exposing employee-bound skill tools (direct conversation)
+  // 1a. Bucket by tri-state access when a caller identity is available.
+  // allow → visible (tools + prompt), deny → restricted task, hide → dropped.
+  const { visible: visibleSops, denied: deniedSops } = visibility
+    ? bucketSopsByAccess(sopInfos, visibility.identity, visibility.connectionId)
+    : { visible: sopInfos, denied: [] as SopInfo[] }
+
+  // 1b. Build the denied-SOP descriptor map (program-level rejection safety net).
+  const deniedSopMap = new Map<string, { id: string; name: string }>()
+  for (const sop of deniedSops) {
+    deniedSopMap.set(`sop_${sop.id}`, { id: sop.id, name: sop.name })
+  }
+
+  if (visibleSops.length === 0) {
+    // When no visible SOPs, degrade to exposing employee-bound skill tools (direct conversation)
     await buildSkillTools(employeeId, tools, skillMap)
     logger.info(
-      `Employee ${employeeId} not assigned to any SOP, falling back to exposing ${skillMap.size} skills`
+      `Employee ${employeeId} has no visible SOP, falling back to exposing ${skillMap.size} skills`
     )
-    return { tools, workflowMap, sopMap, skillMap, sopInfos: [] }
+    return {
+      tools,
+      workflowMap,
+      sopMap,
+      skillMap,
+      sopInfos: [],
+      deniedSopInfos: deniedSops,
+      deniedSopMap,
+    }
   }
 
   // 2. Collect all SOP-associated workflow IDs for resolving inputFormat
   const sopWorkflowIdMap = new Map<string, string[]>()
   const allSopWorkflowIds = new Set<string>()
-  for (const sop of sopInfos) {
+  for (const sop of visibleSops) {
     const wfIds = getSopWorkflowIdsFromNodes(sop.nodes)
     sopWorkflowIdMap.set(sop.id, wfIds)
     for (const wfId of wfIds) {
@@ -68,7 +101,7 @@ export async function buildWorkflowToolConfigs(employeeId: string): Promise<Tool
   const inputFormatMap = await batchGetWorkflowInputFormats(allSopWorkflowIds)
 
   // 4. Build SOP tools
-  for (const sop of sopInfos) {
+  for (const sop of visibleSops) {
     const toolName = `sop_${sop.id}`
     sopMap.set(toolName, sop.id)
 
@@ -144,7 +177,15 @@ export async function buildWorkflowToolConfigs(employeeId: string): Promise<Tool
   logger.info(`Built ${tools.length} tools (SOP ${sopMap.size}, skills ${skillMap.size})`, {
     employeeId,
   })
-  return { tools, workflowMap, sopMap, skillMap, sopInfos }
+  return {
+    tools,
+    workflowMap,
+    sopMap,
+    skillMap,
+    sopInfos: visibleSops,
+    deniedSopInfos: deniedSops,
+    deniedSopMap,
+  }
 }
 
 // ── SOP query (by executorId) ────────────────────────────────────────
@@ -158,6 +199,32 @@ export interface SopInfo {
   involvedWorkflows: string[]
   /** SOP node list (internal use) */
   nodes: SopNode[]
+  /** Per-connection visibility rules; null/undefined ⇒ visible to all. */
+  visibilityRules?: SopVisibilityRules | null
+}
+
+/**
+ * Bucket SOPs by tri-state access, BEFORE they become LLM tools or enter the
+ * system prompt. Program-only (never an LLM). A SOP with no rules is `visible`.
+ *
+ * - `allow` → visible (becomes a tool + Available Tasks entry).
+ * - `deny` → denied (surfaced as a restricted task; rejected if actually called).
+ * - `hide` → neither (silently dropped).
+ */
+export function bucketSopsByAccess(
+  sops: SopInfo[],
+  identity: ScopeIdentity | null,
+  connectionId: string | null
+): { visible: SopInfo[]; denied: SopInfo[] } {
+  const visible: SopInfo[] = []
+  const denied: SopInfo[] = []
+  for (const sop of sops) {
+    const access = resolveSopAccess(sop.visibilityRules, identity, connectionId)
+    if (access === 'allow') visible.push(sop)
+    else if (access === 'deny') denied.push(sop)
+    // 'hide' → dropped
+  }
+  return { visible, denied }
 }
 
 /**
@@ -173,6 +240,7 @@ async function querySopsByEmployee(employeeId: string): Promise<SopInfo[]> {
       description: sopDefinitions.description,
       triggerType: sopDefinitions.triggerType,
       nodes: sopDefinitions.nodes,
+      visibilityRules: sopDefinitions.visibilityRules,
     })
     .from(sopDefinitions)
     .where(eq(sopDefinitions.isActive, true))
@@ -196,6 +264,7 @@ async function querySopsByEmployee(employeeId: string): Promise<SopInfo[]> {
       triggerType: sop.triggerType,
       involvedWorkflows: [], // No longer need to display associated workflows
       nodes,
+      visibilityRules: (sop.visibilityRules ?? null) as SopVisibilityRules | null,
     })
   }
 
@@ -350,7 +419,7 @@ interface ToolParameters {
 async function buildSkillTools(
   employeeId: string,
   tools: OpenAITool[],
-  skillMap: Map<string, { skillId: string; endpoint: string }>
+  skillMap: Map<string, { skillId: string; endpoint: string; openclawConnectionId?: string }>
 ): Promise<void> {
   const rows = await db
     .select({
@@ -360,6 +429,8 @@ async function buildSkillTools(
       skillParameters: toolsTable.parameters,
       instanceDeploy: toolInstances.deploy,
       apiDoc: toolsTable.apiDoc,
+      instanceConnectionId: toolInstances.connectionId,
+      templateConnectorType: toolsTable.connectorType,
     })
     .from(employeeSkillBindings)
     .innerJoin(toolInstances, eq(employeeSkillBindings.instanceId, toolInstances.id))
@@ -373,8 +444,17 @@ async function buildSkillTools(
     const deploy = row.instanceDeploy as { status?: string; endpoint?: string } | null
     if (deploy?.status !== 'deployed' || !deploy.endpoint) continue
 
+    const ct = row.templateConnectorType as { type?: string } | null
+    const isOpenclaw = ct?.type === 'openclaw'
+
     const toolName = `skill_${row.instanceId}`
-    skillMap.set(toolName, { skillId: row.instanceId, endpoint: deploy.endpoint })
+    skillMap.set(toolName, {
+      skillId: row.instanceId,
+      endpoint: deploy.endpoint,
+      ...(isOpenclaw && typeof row.instanceConnectionId === 'string'
+        ? { openclawConnectionId: row.instanceConnectionId }
+        : {}),
+    })
 
     const skillParams = row.skillParameters as ToolParameters | null
 

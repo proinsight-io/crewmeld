@@ -29,6 +29,8 @@ import { useTranslation } from '@/hooks/use-translation'
 import { checkSecurity } from '../security-check'
 import type { SkillPackage } from '../types'
 import { CONN_ENV_PREFIX, configKeyToEnvName, skillEnvName } from '../types'
+import { ManifestInfoPanel } from './manifest-info-panel'
+import { SkillCodeBrowser } from './skill-code-browser'
 
 interface ExecutionResult {
   success: boolean
@@ -86,11 +88,17 @@ export interface AvailableConnection {
 
 export function ToolEditor({
   skill,
+  instanceId,
+  instanceDeploy,
   onClose,
   onSave,
   availableConnections,
 }: {
   skill: SkillPackage
+  /** Instance ID — used for .cmtool tool invocation */
+  instanceId?: string
+  /** Instance deploy info — used to determine if .cmtool tool can be invoked */
+  instanceDeploy?: SkillPackage['deploy']
   onClose: () => void
   onSave: (updated: SkillPackage) => void
   /** Available connected systems list (for filtering by connectorType in instance editing) */
@@ -228,10 +236,85 @@ export function ToolEditor({
     ? envVars.map((e, i) => ({ ...e, _idx: i })).filter((e) => !e.name.startsWith(CONN_ENV_PREFIX))
     : envVars.map((e, i) => ({ ...e, _idx: i }))
 
+  // Dev-studio tools keep their code on NFS (not in `skill.code`) and run via
+  // the instance test-run endpoint. `packageKey` was dropped in the NFS
+  // migration; `source` is the current discriminator.
+  const isDevStudioTool = skill.source === 'dev-studio'
+  const isDeployed = instanceDeploy?.status === 'deployed'
+
   const handleRun = useCallback(async () => {
+    // Validate required input params are filled before running. Secret params
+    // are excluded — they come from the env-vars section, not the input form.
+    const missingRequired = (skill.parameters?.required ?? []).filter((key) => {
+      if (skill.parameters?.properties?.[key]?.secret) return false
+      const v = params[key]
+      return v === undefined || (typeof v === 'string' && v.trim() === '')
+    })
+    if (missingRequired.length > 0) {
+      setResult({
+        success: false,
+        error: t('skills.editorMissingParams', { names: missingRequired.join(', ') }),
+      })
+      setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
+      return
+    }
+
+    // Dev-studio tools: test-run via fresh ephemeral container with current env vars
+    if (isDevStudioTool) {
+      if (!instanceId) {
+        setResult({ success: false, error: t('skills.editorExecFailed') })
+        return
+      }
+      setRunning(true)
+      setResult(null)
+
+      const execParams: Record<string, unknown> = {}
+      for (const [key, value] of Object.entries(params)) {
+        const trimmed = typeof value === 'string' ? value.trim() : value
+        if (trimmed === '' || trimmed === undefined || trimmed === null) continue
+        const prop = skill.parameters?.properties?.[key]
+        if (prop?.type === 'number') {
+          const n = Number(trimmed)
+          if (!Number.isFinite(n)) continue
+          execParams[key] = n
+        } else if (prop?.type === 'boolean') {
+          execParams[key] = trimmed === 'true'
+        } else {
+          execParams[key] = trimmed
+        }
+      }
+
+      const envVarsMap: Record<string, string> = {}
+      for (const e of envVars) {
+        const n = String(e.name ?? '').trim()
+        const v = String(e.value ?? '').trim()
+        if (n && v) envVarsMap[n] = v
+      }
+
+      try {
+        const res = await fetch(`/api/employee/skills/instances/${instanceId}/test-run`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ input: execParams, envVars: envVarsMap }),
+        })
+        const data = await res.json()
+        if (data.success) {
+          setResult({ success: true, output: data.result })
+        } else {
+          setResult({ success: false, error: data.error || t('skills.editorExecFailed') })
+        }
+      } catch (err) {
+        setResult({ success: false, error: err instanceof Error ? err.message : String(err) })
+      } finally {
+        setRunning(false)
+        setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
+      }
+      return
+    }
+
+    // Inline code tools: existing execution path
     if (!skill.code) return
 
-    // Must pass security check before running
     const paramNames = Object.keys(skill.parameters?.properties ?? {})
     const security = checkSecurity(skill.code, paramNames, skill.language ?? 'javascript')
     if (!security.passed) {
@@ -245,9 +328,6 @@ export function ToolEditor({
     setRunning(true)
     setResult(null)
 
-    // Only forward params the user actually filled in. The form pre-fills empty
-    // strings / "0" placeholders for untouched fields; sending those would shadow
-    // env-injected defaults (e.g. CONN_HOST) on the server side.
     const execParams: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(params)) {
       const trimmed = typeof value === 'string' ? value.trim() : value
@@ -264,7 +344,6 @@ export function ToolEditor({
       }
     }
 
-    // Convert env vars array to key-value object
     const envVarsMap: Record<string, string> = {}
     for (const e of envVars) {
       const nameStr = String(e.name ?? '').trim()
@@ -281,11 +360,9 @@ export function ToolEditor({
         body: JSON.stringify({
           code: skill.code,
           params: execParams,
-          timeout: 30000,
+          timeout: 120000,
           envVars: envVarsMap,
           language: skill.language ?? 'javascript',
-          // Send schema + presets so the server can fill connection-bound params
-          // (host/password/etc.) from process.env when the user form omits them.
           parameters: skill.parameters,
           presetParams: skill.presetParams,
           ...(selectedConnId ? { connectionId: selectedConnId } : {}),
@@ -303,7 +380,7 @@ export function ToolEditor({
       setRunning(false)
       setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth' }), 100)
     }
-  }, [skill, params, envVars, selectedConnId])
+  }, [skill, params, envVars, selectedConnId, instanceId, isDeployed, isDevStudioTool])
 
   const handleSave = useCallback(() => {
     const validEnvVars = envVars.filter(
@@ -317,6 +394,25 @@ export function ToolEditor({
     })
   }, [skill, params, envVars, selectedConnId, onSave])
 
+  // Track unsaved edits so an accidental backdrop click doesn't discard them.
+  // CONN_* env vars are derived from the selected connection (not direct user
+  // input), so they're excluded — `selectedConnId` already captures that edit.
+  const currentDirtyKey = JSON.stringify({
+    params,
+    env: envVars.filter((e) => !e.name.startsWith(CONN_ENV_PREFIX)),
+    conn: selectedConnId,
+  })
+  const initialDirtyKeyRef = useRef<string | null>(null)
+  if (initialDirtyKeyRef.current === null) initialDirtyKeyRef.current = currentDirtyKey
+  const isDirty = initialDirtyKeyRef.current !== currentDirtyKey
+
+  // Backdrop click: close immediately when clean, confirm when there are
+  // unsaved edits. Explicit X / Cancel buttons still close without prompting.
+  const handleBackdropClose = useCallback(() => {
+    if (isDirty && !window.confirm(t('skills.editorUnsavedConfirm'))) return
+    onClose()
+  }, [isDirty, onClose, t])
+
   // Only show non-secret params (secret params in env vars section)
   const visibleProperties = skill.parameters?.properties
     ? Object.entries(skill.parameters.properties).filter(([, prop]) => !prop.secret)
@@ -326,7 +422,7 @@ export function ToolEditor({
   return (
     <div
       className='fixed inset-0 z-50 flex items-center justify-center bg-black/40'
-      onClick={onClose}
+      onClick={handleBackdropClose}
     >
       <div
         className='relative flex h-[80vh] w-[640px] max-w-[95vw] flex-col rounded-2xl bg-white shadow-2xl'
@@ -345,12 +441,19 @@ export function ToolEditor({
 
         {/* Body */}
         <div className='flex-1 space-y-5 overflow-y-auto px-6 py-4'>
-          {/* Empty state when no code */}
-          {!skill.code && !hasProperties && (
+          {/* Empty state when no code and no params (inline code tools only) */}
+          {!isDevStudioTool && !skill.code && !hasProperties && (
             <div className='flex h-full flex-col items-center justify-center text-gray-400'>
               <Code2 className='mb-3 h-10 w-10' />
               <p className='font-medium text-sm'>{t('skills.editorNoParams')}</p>
               <p className='mt-1 text-xs'>{t('skills.editorNoParamsHint')}</p>
+            </div>
+          )}
+
+          {/* .cmtool info hint */}
+          {isDevStudioTool && (
+            <div className='rounded-lg border border-blue-200 bg-blue-50 px-4 py-3'>
+              <p className='text-blue-700 text-sm'>{t('skills.editorCmtoolHint')}</p>
             </div>
           )}
 
@@ -398,8 +501,8 @@ export function ToolEditor({
             </div>
           )}
 
-          {/* Env vars (secret params) config */}
-          {skill.code && (
+          {/* Env vars (secret params) config — rendered for all tool types */}
+          {(skill.code || isDevStudioTool || hasConnSelector || needsConnButNone) && (
             <div className='space-y-3'>
               <div className='flex items-center justify-between'>
                 <div className='flex items-center gap-1.5'>
@@ -622,6 +725,23 @@ export function ToolEditor({
             </details>
           )}
 
+          {/* Read-only dev-studio manifest metadata (NFS-backed; editing requires Dev Studio) */}
+          {skill.source === 'dev-studio' && <ManifestInfoPanel toolId={skill.id} />}
+
+          {/* Read-only dev-studio code browser (NFS-backed multi-file source) */}
+          {skill.source === 'dev-studio' && (
+            <details className='group'>
+              <summary className='flex cursor-pointer items-center gap-1.5 font-medium text-gray-500 text-sm hover:text-gray-700'>
+                <Code2 className='h-4 w-4' />
+                {t('skills.codeBrowserTitle')}
+                <ChevronDown className='h-3.5 w-3.5 transition-transform group-open:rotate-180' />
+              </summary>
+              <div className='mt-2'>
+                <SkillCodeBrowser toolId={skill.id} />
+              </div>
+            </details>
+          )}
+
           {/* Execution result */}
           {result && (
             <div ref={resultRef} className='space-y-2'>
@@ -677,7 +797,7 @@ export function ToolEditor({
             ) : (
               <>
                 <Play className='mr-1.5 h-3.5 w-3.5' />
-                {t('skills.editorExecute')}
+                {isDevStudioTool ? t('skills.editorTestRun') : t('skills.editorExecute')}
               </>
             )}
           </Button>

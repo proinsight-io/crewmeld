@@ -38,7 +38,10 @@ import { CodedError } from '@/lib/core/errors'
 import { t } from '@/lib/core/server-i18n'
 import { encodeSSE } from '@/lib/core/utils/sse'
 import { makeLogMetadata } from '@/lib/i18n/log-payload'
-import { buildContextWindow } from './context'
+import { resolveChannelIdentity } from '@/lib/identity/channel-identity'
+import type { ScopeIdentity } from '@/lib/identity/types'
+import { resolveWebIdentity } from '@/lib/identity/web-identity'
+import { buildContextWindow, stripToolStructureFromHistory } from './context'
 import { classifyIntent } from './intent-classifier'
 import { buildWorkflowToolConfigs } from './intent-router'
 import { getEmployeeKnowledgeBaseIds, queryEmployeeKnowledge } from './knowledge-query'
@@ -66,11 +69,7 @@ async function executeWorkflowFromConversation(
 }
 
 import { logModelUsage } from '@/lib/models/usage-logger'
-import {
-  createToolAccessibleUrl,
-  type FileAttachment,
-  uploadConversationFile,
-} from './file-storage'
+import { type FileAttachment, uploadConversationFile } from './file-storage'
 import { querySopExecutionStatus } from './sop-status'
 import { queryUserTasks, type TaskFilter } from './task-query'
 
@@ -90,7 +89,11 @@ export async function processMessage(
   /** Files attached to user message (uploaded to MinIO, written to metadata.files) */
   fileMetadata?: Array<{ key: string; name: string; size: number; mimeType: string }>,
   /** Frontend locale preference, used as fallback when auto-detection is inconclusive */
-  preferredLocale?: string
+  preferredLocale?: string,
+  /** Credentials of the connection that received the message (IM webhooks), threaded to SOP identity resolution so it uses the correct app — not a system default. */
+  channelConfig?: Record<string, unknown>,
+  /** Id of the channel connection that received the message; null/undefined for web/api. */
+  connectionId?: string
 ): Promise<ReadableStream<Uint8Array>> {
   // 1. Load conversation
   const [conv] = await db
@@ -144,23 +147,25 @@ export async function processMessage(
     (!userMessage.trim() || fileOnlyPlaceholder.test(userMessage.trim()))
   let contentForLLM = userMessage
   if (fileMetadata && fileMetadata.length > 0) {
-    // Generate tool-accessible MinIO presigned URL for each attachment
-    // - Copy file to ASCII-safe path, avoid Chinese encoding issues
-    // - Use MINIO_EXTERNAL_ENDPOINT to ensure tool Pod accessibility
-    const fileAnnotations = await Promise.all(
-      fileMetadata.map(async (f) => {
-        try {
-          const url = await createToolAccessibleUrl(f.key, f.name)
-          return `[附件: name=${f.name}, url=${url}, mimeType=${f.mimeType}, size=${f.size}]`
-        } catch (e) {
-          logger.warn('Failed to generate tool file URL, falling back to key', {
-            key: f.key,
-            error: (e as Error).message,
-          })
-          return `[附件: name=${f.name}, key=${f.key}, mimeType=${f.mimeType}, size=${f.size}]`
-        }
-      })
-    )
+    // Unified file IO contract (spec 2026-06-01): files are pre-staged on
+    // NFS at `/root/io/<_sopFileDir>/<name>` before any tool runs.
+    //
+    // Emit ONLY the filename — no URL — so the LLM passes a bare name that
+    // the tool joins onto its `/root/io/<_sopFileDir>/` mount. Telling the
+    // LLM a URL here caused it to pass the URL as `pdf_file`, which the
+    // tool then concatenated into `/root/io/<dir>/<URL>` → FileNotFoundError.
+    //
+    // The name must match the **on-disk filename** in conv-io (sanitized at
+    // upload time in file-storage.ts:67 — `[^a-zA-Z0-9._\-CJK]` → `_`).
+    // FileAttachment.name keeps the original user-facing name for the chat
+    // UI; we re-apply the same regex here so the LLM tells the tool the
+    // exact filesystem name.
+    const sanitizeForNfs = (name: string): string =>
+      name.replace(/[^a-zA-Z0-9._\-一-鿿]/g, '_')
+    const fileAnnotations = fileMetadata.map((f) => {
+      const safeName = sanitizeForNfs(f.name)
+      return `[附件: name=${safeName}, mimeType=${f.mimeType}, size=${f.size}]`
+    })
     contentForLLM = `${userMessage}\n\n${fileAnnotations.join('\n')}`
   }
   await db.insert(conversationMessages).values({
@@ -245,7 +250,7 @@ export async function processMessage(
 
   // Step 3: expire assistant plain text replies (summaries based on tool results) following expired tool chains
   // Message order: ... -> assistant(tool_calls) -> tool(result) -> assistant(summary) -> ...
-  const historyMessages: EngineMessage[] = rawMessages.map((msg, i) => {
+  const expiredMessages: EngineMessage[] = rawMessages.map((msg, i) => {
     if (
       msg.role === 'assistant' &&
       !msg.tool_calls &&
@@ -264,6 +269,15 @@ export async function processMessage(
     }
     return msg
   })
+
+  // Step 4: strip raw tool-call structure (assistant tool_calls + tool results)
+  // from the history sent to the LLM. The expiry above already neutralised stale
+  // summaries (so the model still re-invokes tools when data is old); this only
+  // removes the structural tool-call payloads that would otherwise prime the
+  // model to echo a tool call — e.g. a permission-filtered SOP — back to the
+  // user as raw JSON. DB persistence and the UI (which read conversation_messages
+  // directly) are unaffected.
+  const historyMessages: EngineMessage[] = stripToolStructureFromHistory(expiredMessages)
 
   // Language detection — completed before entering stream, for progress text and system prompt
   const LANGUAGE_LABELS: Record<string, string> = {
@@ -505,13 +519,41 @@ export async function processMessage(
           return
         }
 
+        // Resolve caller identity for SOP-visibility filtering (cached 5min for IM;
+        // the SOP bridge reuses the same cache). IM channels resolve from their
+        // directory; web resolves from the platform user + RBAC roles (gated under
+        // the synthetic 'web' connection). 'api' (and any other non-IM) yield a
+        // null identity and null connectionId → default visibility.
+        let visibilityIdentity: ScopeIdentity | null
+        let visibilityConnectionId: string | null
+        if (conv.channel === 'web') {
+          visibilityIdentity = await resolveWebIdentity(userId)
+          visibilityConnectionId = 'web'
+        } else if (conv.channel && conv.channel !== 'api') {
+          visibilityIdentity = await resolveChannelIdentity({
+            channel: conv.channel,
+            userId,
+            config: channelConfig,
+          })
+          visibilityConnectionId = connectionId ?? null
+        } else {
+          visibilityIdentity = null
+          visibilityConnectionId = null
+        }
+
         // 5-7. Load tool config, model config, knowledge base IDs in parallel (three independent queries)
-        const [{ tools, workflowMap, sopMap, skillMap, sopInfos }, modelConfig, kbIds] =
-          await Promise.all([
-            buildWorkflowToolConfigs(conv.employeeId),
-            resolveModelConfig(conv.employeeId, conv.workspaceId),
-            getEmployeeKnowledgeBaseIds(conv.employeeId),
-          ])
+        const [
+          { tools, workflowMap, sopMap, skillMap, sopInfos, deniedSopInfos, deniedSopMap },
+          modelConfig,
+          kbIds,
+        ] = await Promise.all([
+          buildWorkflowToolConfigs(conv.employeeId, {
+            identity: visibilityIdentity,
+            connectionId: visibilityConnectionId,
+          }),
+          resolveModelConfig(conv.employeeId, conv.workspaceId),
+          getEmployeeKnowledgeBaseIds(conv.employeeId),
+        ])
         const hasKnowledgeBase = kbIds.length > 0
         const hasTools = tools.length > 0
         const sopNames = sopInfos.map((s) => s.name)
@@ -549,7 +591,11 @@ export async function processMessage(
           hasKnowledgeBase
         ) {
           pushProgress(PROGRESS_MESSAGES.queryingKnowledge)
-          const searchQuery = intentResult.searchQuery ?? userMessage
+          // Always retrieve against the user's original wording. The intent
+          // classifier strips signal words ("...的参数", "...怎么用") down to
+          // keyword stubs, which then over-recalls product-overview chunks
+          // instead of the parameter/spec chunk the user actually asked for.
+          const searchQuery = userMessage
           const kbResult = await queryEmployeeKnowledge(conv.employeeId, searchQuery)
 
           if (kbResult.success && kbResult.referenceText) {
@@ -582,7 +628,8 @@ export async function processMessage(
           [],
           sopInfos,
           knowledgeReference,
-          userLanguage
+          userLanguage,
+          deniedSopInfos
         )
 
         logger.info('Tool list', {
@@ -613,12 +660,14 @@ export async function processMessage(
           workflowMap,
           sopMap,
           sopNameMap,
+          deniedSopMap,
           skillMap,
           modelConfig,
           userMessage,
           knowledgeReferences,
           taskId,
-          isZh
+          isZh,
+          channelConfig
         )
         await db
           .update(taskExecutions)
@@ -703,12 +752,16 @@ async function runMessageLoop(
   workflowMap: Map<string, string>,
   sopMap: Map<string, string>,
   sopNameMap: Map<string, string>,
-  skillMap: Map<string, { skillId: string; endpoint: string }>,
+  /** sopToolName (`sop_<id>`) → denied SOP descriptor; calls to these are rejected program-side. */
+  deniedSopMap: Map<string, { id: string; name: string }>,
+  skillMap: Map<string, { skillId: string; endpoint: string; openclawConnectionId?: string }>,
   modelConfig: ModelConfig,
   userMessage: string,
   knowledgeReferences: KnowledgeChunkReference[] = [],
   taskId = '',
-  isZh = true
+  isZh = true,
+  /** Credentials of the connection that received the message — threaded to SOP identity resolution. */
+  channelConfig?: Record<string, unknown>
 ): Promise<{ outputSummary: string | null; totalTokens: number }> {
   const lang = isZh ? 'zh' : 'en'
   const messages: EngineMessage[] = [{ role: 'system', content: systemPrompt }, ...contextMessages]
@@ -847,6 +900,7 @@ async function runMessageLoop(
       const wfId = workflowMap.get(tc.function.name)
       const sopId = sopMap.get(tc.function.name)
       const skillInfo = skillMap.get(tc.function.name)
+      const deniedSop = deniedSopMap.get(tc.function.name)
 
       let args: Record<string, unknown> = {}
       try {
@@ -870,6 +924,16 @@ async function runMessageLoop(
         const limit = typeof args.limit === 'number' ? args.limit : 10
         const taskResult = await queryUserTasks(userId, filter, limit)
         toolResult = taskResult.summary
+      } else if (deniedSop) {
+        // Restricted task: caller lacks permission. Reject program-side without
+        // executing; the message is returned so the LLM relays the refusal.
+        // hasRealToolExecution stays false; no SOP dedup/trigger logic runs.
+        toolResult = t('sopNoPermission', lang, { name: deniedSop.name })
+        logger.warn('Denied SOP invocation blocked program-side', {
+          conversationId,
+          tool: tc.function.name,
+          sopId: deniedSop.id,
+        })
       } else if (wfId) {
         // Workflow call
         hasRealToolExecution = true
@@ -939,10 +1003,8 @@ async function runMessageLoop(
           enqueue(encodeSSE(sopProgressEvent))
 
           // SOP call (with timeout wait)
-          // Inject original user message into input/value fields, ensure workflow start_trigger can access it
-          // - input: start_trigger built-in field
-          // - value: inputFormat common custom field name
-          // LLM-extracted precise params (sopInput) expanded later, same-name fields override above fallback values
+          // Inject original user message into input, ensure SOP start_trigger can access it.
+          // LLM-extracted precise params (sopInput) expanded later; same-name fields override input.
           const sopInput = (args.input as Record<string, unknown>) ?? args
           // Grab the most recent user message with [附件: url=...] from history, take all [附件] annotations
           // append to input end, ensure SOP inner LLM can see real file URLs (prevent hallucinated public URLs)
@@ -958,7 +1020,6 @@ async function runMessageLoop(
           }
           const triggerData: Record<string, unknown> = {
             input: sopInputMessage,
-            value: sopInputMessage,
             ...sopInput,
           }
           const result = await executeSopFromConversation(
@@ -974,7 +1035,8 @@ async function runMessageLoop(
               }
               enqueue(encodeSSE(progressEvent))
             },
-            isZh
+            isZh,
+            channelConfig
           )
 
           if (!result.success) {
@@ -996,22 +1058,43 @@ async function runMessageLoop(
               /* not JSON, use directly */
             }
 
+            // Build human-facing "file generated" note from both sources:
+            //   - result.files          : base64 from non-mount tools
+            //   - result.workspaceFiles : already in conversations/, from mounted tools
+            const fileNames = [
+              ...(result.files?.map((f) => f.name) ?? []),
+              ...(result.workspaceFiles?.map((f) => f.name) ?? []),
+            ]
             const fileNoteText =
-              result.files && result.files.length > 0
-                ? `\n\n[${t('fileGenerated', lang)}: ${result.files.map((f) => f.name).join(', ')}. ${t('fileNote', lang)}]`
+              fileNames.length > 0
+                ? `\n\n[${t('fileGenerated', lang)}: ${fileNames.join(', ')}. ${t('fileNote', lang)}]`
                 : ''
             toolResult = `${t('taskCompleted', lang, { name: result.sopName, id: result.executionId })}\n\n${outputForLLM}${fileNoteText}`
 
-            // SOP execution produced attachments -> upload to MinIO + push message:files event
-            if (result.files && result.files.length > 0) {
-              const filesWithKeys = await uploadFilesToMinio(
-                conversationId,
-                result.files,
-                collectedFileMetadata
-              )
+            // Surface attachments via SSE message:files event:
+            //   - base64 files need uploadFilesToMinio (writes to conversations/)
+            //   - workspaceFiles are already in conversations/ (sop-bridge
+            //     copied them via CopyObject) — use directly
+            const baseFiles =
+              result.files && result.files.length > 0
+                ? await uploadFilesToMinio(conversationId, result.files, collectedFileMetadata)
+                : []
+            // Match the shape uploadFilesToMinio returns so the SSE event
+            // is consistent. Workspace files have no base64 payload.
+            const workspaceFilesForSse = (result.workspaceFiles ?? []).map((f) => ({
+              name: f.name,
+              mimeType: f.mimeType,
+              base64: '',
+              key: f.key,
+            }))
+            if (result.workspaceFiles && result.workspaceFiles.length > 0) {
+              collectedFileMetadata.push(...result.workspaceFiles)
+            }
+            const allFiles = [...baseFiles, ...workspaceFilesForSse]
+            if (allFiles.length > 0) {
               const filesEvent: ConversationEvent = {
                 type: 'message:files',
-                data: { files: filesWithKeys },
+                data: { files: allFiles },
               }
               enqueue(encodeSSE(filesEvent))
             }
@@ -1026,96 +1109,125 @@ async function runMessageLoop(
           }
         }
       } else if (skillInfo) {
-        // Skill tool call — HTTP POST to deployed K8S endpoint
-        try {
-          const skillResponse = await fetch(skillInfo.endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(args.input ?? args),
-          })
-          const skillResult = (await skillResponse.json()) as {
-            success: boolean
-            result?: unknown
-            error?: string
-            files?: Array<{ name: string; mimeType: string; base64: string }>
-          }
-          if (skillResult.success) {
-            toolResult =
-              typeof skillResult.result === 'string'
-                ? skillResult.result
-                : JSON.stringify(skillResult.result ?? null, null, 2)
+        if (skillInfo.openclawConnectionId) {
+          /**
+           * OpenClaw async dispatch — fire-and-forget.
+           * Return immediate ack to the LLM; real result is persisted to
+           * `conversation_messages` + pushed via IM channel by the handler.
+           */
+          hasRealToolExecution = true
+          const openclawTaskId = uuidv4()
 
-            // Tool returned attachments -> upload to MinIO + push message:files event
-            if (skillResult.files && skillResult.files.length > 0) {
-              const filesWithKeys = await uploadFilesToMinio(
-                conversationId,
-                skillResult.files,
-                collectedFileMetadata
-              )
-              const filesEvent: ConversationEvent = {
-                type: 'message:files',
-                data: { files: filesWithKeys },
+          const { dispatchOpenclawAsync } = await import('@/lib/openclaw/async-handler')
+          void dispatchOpenclawAsync({
+            taskId: openclawTaskId,
+            conversationId,
+            connectionId: skillInfo.openclawConnectionId,
+            args: {
+              message: typeof args.message === 'string' ? args.message : '',
+              ...(typeof args.model === 'string' && args.model !== ''
+                ? { model: args.model }
+                : {}),
+            },
+          })
+
+          toolResult = JSON.stringify({
+            status: 'pending',
+            task_id: openclawTaskId,
+            message: 'OpenClaw 已收到任务，正在处理中。结果将稍后追加到对话。',
+          })
+        } else {
+          // Skill tool call — HTTP POST to deployed K8S endpoint
+          try {
+            const skillResponse = await fetch(skillInfo.endpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(args.input ?? args),
+            })
+            const skillResult = (await skillResponse.json()) as {
+              success: boolean
+              result?: unknown
+              error?: string
+              files?: Array<{ name: string; mimeType: string; base64: string }>
+            }
+            if (skillResult.success) {
+              toolResult =
+                typeof skillResult.result === 'string'
+                  ? skillResult.result
+                  : JSON.stringify(skillResult.result ?? null, null, 2)
+
+              // Tool returned attachments -> upload to MinIO + push message:files event
+              if (skillResult.files && skillResult.files.length > 0) {
+                const filesWithKeys = await uploadFilesToMinio(
+                  conversationId,
+                  skillResult.files,
+                  collectedFileMetadata
+                )
+                const filesEvent: ConversationEvent = {
+                  type: 'message:files',
+                  data: { files: filesWithKeys },
+                }
+                enqueue(encodeSSE(filesEvent))
               }
-              enqueue(encodeSSE(filesEvent))
+              if (taskId) {
+                db.insert(workLogs)
+                  .values({
+                    id: uuidv4(),
+                    taskId,
+                    employeeId,
+                    logType: 'tool_call',
+                    content: `Tool "${tc.function.name}" ${t('toolCallSuccess', 'en')}`,
+                    metadata: makeLogMetadata(
+                      { toolName: tc.function.name, skillId: skillInfo.skillId },
+                      { i18nKey: 'toolCallSuccess', i18nParams: { name: tc.function.name } }
+                    ),
+                  })
+                  .catch(() => {})
+              }
+            } else {
+              toolResult = `${t('toolCallFailed', lang)}: ${skillResult.error ?? t('unknownError', lang)}`
+              if (taskId) {
+                const failError = skillResult.error ?? t('unknownError', 'en')
+                db.insert(workLogs)
+                  .values({
+                    id: uuidv4(),
+                    taskId,
+                    employeeId,
+                    logType: 'error',
+                    content: `Tool "${tc.function.name}" ${t('toolCallFailedShort', 'en')}: ${failError}`,
+                    metadata: makeLogMetadata(
+                      { toolName: tc.function.name, skillId: skillInfo.skillId },
+                      {
+                        i18nKey: 'toolCallFailedShort',
+                        i18nParams: { name: tc.function.name, error: failError },
+                      }
+                    ),
+                  })
+                  .catch(() => {})
+              }
             }
+          } catch (e) {
+            const errMsg = e instanceof Error ? e.message : String(e)
+            logger.error(`Skill tool call failed: ${skillInfo.skillId}`, { error: errMsg })
+            toolResult = `${t('convToolCallFailed', lang)}: ${errMsg}`
             if (taskId) {
-              db.insert(workLogs)
-                .values({
-                  id: uuidv4(),
-                  taskId,
-                  employeeId,
-                  logType: 'tool_call',
-                  content: `Tool "${tc.function.name}" ${t('toolCallSuccess', 'en')}`,
-                  metadata: makeLogMetadata(
-                    { toolName: tc.function.name, skillId: skillInfo.skillId },
-                    { i18nKey: 'toolCallSuccess', i18nParams: { name: tc.function.name } }
-                  ),
-                })
-                .catch(() => {})
-            }
-          } else {
-            toolResult = `${t('toolCallFailed', lang)}: ${skillResult.error ?? t('unknownError', lang)}`
-            if (taskId) {
-              const failError = skillResult.error ?? t('unknownError', 'en')
               db.insert(workLogs)
                 .values({
                   id: uuidv4(),
                   taskId,
                   employeeId,
                   logType: 'error',
-                  content: `Tool "${tc.function.name}" ${t('toolCallFailedShort', 'en')}: ${failError}`,
+                  content: t('toolCallError', 'en', { name: tc.function.name, error: errMsg }),
                   metadata: makeLogMetadata(
                     { toolName: tc.function.name, skillId: skillInfo.skillId },
                     {
-                      i18nKey: 'toolCallFailedShort',
-                      i18nParams: { name: tc.function.name, error: failError },
+                      i18nKey: 'toolCallError',
+                      i18nParams: { name: tc.function.name, error: errMsg },
                     }
                   ),
                 })
                 .catch(() => {})
             }
-          }
-        } catch (e) {
-          const errMsg = e instanceof Error ? e.message : String(e)
-          logger.error(`Skill tool call failed: ${skillInfo.skillId}`, { error: errMsg })
-          toolResult = `${t('convToolCallFailed', lang)}: ${errMsg}`
-          if (taskId) {
-            db.insert(workLogs)
-              .values({
-                id: uuidv4(),
-                taskId,
-                employeeId,
-                logType: 'error',
-                content: t('toolCallError', 'en', { name: tc.function.name, error: errMsg }),
-                metadata: makeLogMetadata(
-                  { toolName: tc.function.name, skillId: skillInfo.skillId },
-                  {
-                    i18nKey: 'toolCallError',
-                    i18nParams: { name: tc.function.name, error: errMsg },
-                  }
-                ),
-              })
-              .catch(() => {})
           }
         }
       } else {

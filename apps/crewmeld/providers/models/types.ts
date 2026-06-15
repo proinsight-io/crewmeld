@@ -36,6 +36,8 @@ export interface ModelDefinition {
 }
 
 /** Full definition of a provider including its model list and UI metadata. */
+export type ProviderCategory = 'chat' | 'coding'
+
 export interface ProviderDefinition {
   id: string
   name: string
@@ -46,4 +48,5 @@ export interface ProviderDefinition {
   icon?: React.ComponentType<{ className?: string }>
   capabilities?: ModelCapabilities
   contextInformationAvailable?: boolean
+  category?: ProviderCategory
 }

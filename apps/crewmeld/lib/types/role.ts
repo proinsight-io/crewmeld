@@ -7,7 +7,8 @@ export interface FlatRole {
   id: string
   /** Human-readable role name */
   name: string
-  description: string
+  /** Role description. May be null when the role was created without one. */
+  description: string | null
   persona?: string
   /** Default block type for employees created from this role */
   blockType: string

@@ -5,6 +5,7 @@ import { ChevronDown, ClipboardPaste, Minus, PlayCircle, Plus } from 'lucide-rea
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { parseCurl } from '@/lib/connectors/curl-parser'
+import { formatResponseBody } from '@/lib/connectors/format-response-body'
 import { cn } from '@/lib/core/utils/cn'
 import { useTranslation } from '@/hooks/use-translation'
 
@@ -514,8 +515,10 @@ export function CustomApiEditor({
                 </span>
                 <span className='text-gray-400'>{testResponse.latencyMs}ms</span>
               </div>
-              <pre className='max-h-48 overflow-auto rounded-lg bg-gray-900 p-3 text-green-400 text-xs'>
-                {testResponse.body || t('connections.customApiEmptyResponse')}
+              <pre className='max-h-48 overflow-y-auto whitespace-pre-wrap break-all rounded-lg bg-gray-900 p-3 text-green-400 text-xs'>
+                {testResponse.body
+                  ? formatResponseBody(testResponse.body)
+                  : t('connections.customApiEmptyResponse')}
               </pre>
             </div>
           )}

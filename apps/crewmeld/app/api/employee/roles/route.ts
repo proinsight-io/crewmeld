@@ -1,7 +1,7 @@
 import { db } from '@crewmeld/db'
 import { roles } from '@crewmeld/db/schema'
 import { createLogger } from '@crewmeld/logger'
-import { asc } from 'drizzle-orm'
+import { desc } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import type { NextRequest } from 'next/server'
 import { apiAuthErr, apiErr, apiOk } from '@/lib/api/response'
@@ -31,7 +31,7 @@ export async function GET() {
         blockType: roles.blockType,
       })
       .from(roles)
-      .orderBy(asc(roles.createdAt))
+      .orderBy(desc(roles.createdAt))
 
     logger.info(`Fetched roles list: ${rows.length}`)
 

@@ -53,6 +53,9 @@ export interface WebhookHandlerOptions<TConfig = Record<string, unknown>> {
   /** Workspace ID */
   workspaceId?: string
 
+  /** Id of the systemConnections row that received this message. */
+  connectionId?: string
+
   /** Card callback handler (optional, customizable per channel) */
   onCardAction?: (event: CardActionEvent, config: TConfig) => Promise<void>
 }
@@ -87,7 +90,7 @@ export async function handleChannelWebhook<TConfig>(
   request: Request,
   options: WebhookHandlerOptions<TConfig>
 ): Promise<Response> {
-  const { plugin, config, employeeId, workspaceId = 'default' } = options
+  const { plugin, config, employeeId, workspaceId = 'default', connectionId } = options
   const channelId = plugin.id
 
   try {
@@ -243,15 +246,24 @@ export async function handleChannelWebhook<TConfig>(
       )
     }
 
+    // 8.2 Resolve and log the sender's org directory detail (positions /
+    // employeeNo / department / leader) using this bound connection's creds.
+    logSenderIdentity(
+      channelId,
+      message.externalUserId,
+      conversationId,
+      config as Record<string, unknown>
+    )
+
     // 9. Process message
     if (plugin.outbound.deliveryMode === 'response') {
       // DingTalk mode: synchronously wait for result, return response body
-      return await handleSyncResponse(conversationId, message, plugin, config)
+      return await handleSyncResponse(conversationId, message, plugin, config, connectionId)
     }
 
     // Async mode: return 200 immediately, process in background
     logger.info(`${channelId} entering async processing mode`, { conversationId, employeeId })
-    handleAsyncResponse(conversationId, message, plugin, config).catch((error) => {
+    handleAsyncResponse(conversationId, message, plugin, config, connectionId).catch((error) => {
       const errMsg = error instanceof Error ? error.message : String(error)
       logger.error(`${channelId} async message processing failed`, {
         conversationId,
@@ -274,7 +286,7 @@ export async function handleWeComWebhook<TConfig>(
   request: Request,
   options: WebhookHandlerOptions<TConfig>
 ): Promise<Response> {
-  const { plugin, config, employeeId, workspaceId = 'default' } = options
+  const { plugin, config, employeeId, workspaceId = 'default', connectionId } = options
   const channelId = plugin.id
 
   try {
@@ -335,8 +347,16 @@ export async function handleWeComWebhook<TConfig>(
       message.externalSessionId
     )
 
+    // Resolve + log the sender's org identity (same as the JSON-webhook path)
+    logSenderIdentity(
+      channelId,
+      message.externalUserId,
+      conversationId,
+      config as Record<string, unknown>
+    )
+
     // Async processing
-    handleAsyncResponse(conversationId, message, plugin, config).catch((error) => {
+    handleAsyncResponse(conversationId, message, plugin, config, connectionId).catch((error) => {
       logger.error(`${channelId} message processing failed`, error)
     })
 
@@ -429,6 +449,50 @@ async function persistSenderName(conversationId: string, senderName: string): Pr
   } catch (error) {
     logger.warn('Failed to persist sender name (non-blocking)', { conversationId, error })
   }
+}
+
+/**
+ * Resolve and log the sender's org directory detail (positions / employeeNo /
+ * department / leader) for the IM channels that expose it.
+ *
+ * Uses the credentials of the connection that actually received the message
+ * (the webhook `config`), not the system-default connection — so it reflects
+ * what this bound bot can read and never breaks when a different connection is
+ * the system default. Fire-and-forget and non-blocking.
+ */
+function logSenderIdentity(
+  channelId: string,
+  userId: string,
+  conversationId: string,
+  config: Record<string, unknown>
+): void {
+  const fetchDetail = async () => {
+    if (channelId === 'feishu' && config.appId && config.appSecret) {
+      const { getFeishuUserDetail } = await import('./feishu-client')
+      return getFeishuUserDetail(config.appId as string, config.appSecret as string, userId)
+    }
+    if (channelId === 'dingtalk' && config.appKey && config.appSecret) {
+      const { getDingtalkUserDetail } = await import('./dingtalk-client')
+      return getDingtalkUserDetail(config.appKey as string, config.appSecret as string, userId)
+    }
+    if (channelId === 'wecom' && config.corpId && config.corpSecret) {
+      const { getWecomUserDetail } = await import('./wecom/directory')
+      return getWecomUserDetail(config.corpId as string, config.corpSecret as string, userId)
+    }
+    return null
+  }
+
+  void fetchDetail()
+    .then((detail) => {
+      logger.info('Sender org identity', { conversationId, channel: channelId, userId, detail })
+    })
+    .catch((error) => {
+      logger.warn('Sender identity resolve failed (non-blocking)', {
+        conversationId,
+        channel: channelId,
+        error,
+      })
+    })
 }
 
 /**
@@ -705,7 +769,8 @@ async function handleAsyncResponse<TConfig>(
     messageType?: string
   },
   plugin: ChannelPlugin<TConfig>,
-  config: TConfig
+  config: TConfig,
+  connectionId?: string
 ): Promise<void> {
   const channelId = plugin.id
   // Pre-compute receiver info (needed for both replies and error messages)
@@ -752,7 +817,10 @@ async function handleAsyncResponse<TConfig>(
       conversationId,
       finalContent,
       message.externalUserId,
-      fileMetadata
+      fileMetadata,
+      undefined,
+      config as Record<string, unknown>,
+      connectionId
     )
     logger.info(`[${channelId}] processMessage returned stream, consuming SSE`, { conversationId })
 
@@ -961,10 +1029,19 @@ async function handleSyncResponse<TConfig>(
   conversationId: string,
   message: { externalUserId: string; content: string },
   plugin: ChannelPlugin<TConfig>,
-  _config: TConfig
+  config: TConfig,
+  connectionId?: string
 ): Promise<Response> {
   try {
-    const stream = await processMessage(conversationId, message.content, message.externalUserId)
+    const stream = await processMessage(
+      conversationId,
+      message.content,
+      message.externalUserId,
+      undefined,
+      undefined,
+      config as Record<string, unknown>,
+      connectionId
+    )
     const result = await consumeSSEStream(stream)
 
     if (result.content) {

@@ -34,6 +34,7 @@ import { signOut, useSession } from '@/lib/auth/auth-client'
 import { cn } from '@/lib/core/utils/cn'
 import type { TranslationKey } from '@/hooks/use-translation'
 import { useTranslation } from '@/hooks/use-translation'
+import { NotificationCenter } from './components/notifications/notification-center'
 import { usePermissions } from './hooks/use-permissions'
 import { usePendingCount } from './tasks/hooks/use-pending-count'
 
@@ -245,6 +246,7 @@ export default function EmployeeLayout({ children }: EmployeeLayoutProps) {
         )}
       </aside>
       <main className='ml-56 flex-1 p-6'>{children}</main>
+      <NotificationCenter />
     </div>
   )
 }

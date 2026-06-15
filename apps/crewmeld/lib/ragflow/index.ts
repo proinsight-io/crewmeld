@@ -1,5 +1,7 @@
 export {
+  buildImageProxyUrl,
   createDataset,
+  DEFAULT_PARSER_CONFIG,
   deleteChunks,
   deleteDataset,
   deleteDocument,
@@ -7,6 +9,7 @@ export {
   getDataset,
   getDocument,
   getDocumentChunks,
+  getImage,
   healthCheck,
   listDatasets,
   listDocuments,
@@ -16,6 +19,7 @@ export {
   retrieval,
   stopDocumentsParsing,
   updateChunk,
+  updateDataset,
   updateDocumentEnabled,
   uploadDocument,
 } from './client'
@@ -30,5 +34,6 @@ export type {
   RagflowDocumentChunksData,
   RagflowDocumentInfo,
   RagflowDocumentList,
+  RagflowParserConfig,
   RagflowRetrievalData,
 } from './types'

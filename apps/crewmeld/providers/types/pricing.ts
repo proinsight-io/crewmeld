@@ -9,16 +9,20 @@
  */
 export type ProviderId =
   | 'anthropic'
+  | 'claude-coding'
   | 'deepseek'
   | 'doubao'
   | 'ernie'
   | 'google'
   | 'hunyuan'
+  | 'kimi-coding'
   | 'minimax'
   | 'moonshot'
   | 'ollama'
   | 'openai'
+  | 'qianfan-coding'
   | 'qwen'
+  | 'qwen-coding'
   | 'vllm'
   | 'zhipu'
 

@@ -11,7 +11,7 @@ import { createLogger } from '@crewmeld/logger'
 import { type ConnectionOptions, Queue, Worker } from 'bullmq'
 import { CronExpressionParser } from 'cron-parser'
 import { and, eq } from 'drizzle-orm'
-import { nanoid } from 'nanoid'
+import { generateExecutionId } from '@/lib/core/execution-id'
 import { executeSop, transitionStatus } from './engine'
 import { getSopTimeoutQueue } from './queue'
 
@@ -150,7 +150,7 @@ async function processScheduledTask(data: { scheduledTaskId: string }): Promise<
   }
 
   // Create execution record
-  const executionId = `sopexec_${nanoid(16)}`
+  const executionId = generateExecutionId('sop')
   const triggerData = (task.triggerData as Record<string, unknown>) ?? {}
 
   // Scheduled tasks have no HTTP request context; inject baseUrl from env vars for approval notifications

@@ -29,7 +29,11 @@
     "release": "bun run scripts/create-single-release.ts",
     "license:generate": "bun run scripts/license-generate.ts",
     "check:schema-drift": "bun run scripts/check-schema-drift.ts",
-    "oss:sync": "bun run scripts/oss-sync/sync.ts"
+    "oss:sync": "bun run scripts/oss-sync/sync.ts",
+    "db:generate": "bun run scripts/db.ts generate",
+    "db:migrate": "bun run scripts/db.ts migrate",
+    "db:push": "bun run scripts/db.ts push",
+    "db:studio": "bun run scripts/db.ts studio"
   },
   "overrides": {
     "react": "19.2.1",
@@ -46,6 +50,7 @@
     "@next/env": "16.1.6",
     "@playwright/test": "1.58.2",
     "@tailwindcss/typography": "0.5.19",
+    "critters": "0.0.25",
     "drizzle-kit": "^0.31.4",
     "husky": "9.1.7",
     "jszip": "3.10.1",

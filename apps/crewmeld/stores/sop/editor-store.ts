@@ -87,6 +87,8 @@ interface SopEditorActions {
   /** Save state */
   setIsSaving: (saving: boolean) => void
   markClean: () => void
+  /** Mark the editor dirty without changing a tracked field (e.g. SOP-level settings). */
+  markDirty: () => void
 }
 
 const INITIAL_STATE: SopEditorState = {
@@ -318,6 +320,7 @@ export const useSopEditorStore = create<SopEditorState & SopEditorActions>()(
 
       setIsSaving: (isSaving) => set({ isSaving }),
       markClean: () => set({ isDirty: false }),
+      markDirty: () => set({ isDirty: true }),
     }),
     { name: 'sop-editor-store' }
   )

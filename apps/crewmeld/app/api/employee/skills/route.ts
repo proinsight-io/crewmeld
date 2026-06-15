@@ -6,7 +6,7 @@ import type { NextRequest } from 'next/server'
 import { apiAuthErr, apiErr, apiOk } from '@/lib/api/response'
 import { withAudit } from '@/lib/audit/with-audit'
 import { requirePermission } from '@/lib/auth/rbac/check-permission'
-import type { SkillPackage } from '@/app/(employee)/skills/types'
+import type { DeployInfo, SkillPackage } from '@/app/(employee)/skills/types'
 
 /** Map database row to frontend SkillPackage */
 function rowToSkill(row: typeof tools.$inferSelect): SkillPackage {
@@ -29,6 +29,10 @@ function rowToSkill(row: typeof tools.$inferSelect): SkillPackage {
     envVars: row.envVars as SkillPackage['envVars'],
     apiDoc: row.apiDoc ?? undefined,
     connectorType: row.connectorType as SkillPackage['connectorType'],
+    needsFileMount: row.needsFileMount ?? false,
+    kind: (row.kind as SkillPackage['kind']) ?? 'script',
+    apiSpec: row.apiSpec as SkillPackage['apiSpec'],
+    forwardIdentity: row.forwardIdentity ?? false,
   }
 }
 
@@ -77,6 +81,11 @@ async function _POST(request: NextRequest) {
         envVars: skill.envVars ?? null,
         apiDoc: skill.apiDoc ?? null,
         connectorType: skill.connectorType ?? null,
+        needsFileMount: skill.needsFileMount ?? false,
+        // Preserve kind/apiSpec when provided; default to 'script' to keep legacy rows unchanged.
+        kind: skill.kind ?? 'script',
+        apiSpec: skill.apiSpec ?? null,
+        forwardIdentity: skill.forwardIdentity ?? false,
         updatedAt: now,
       })
       .where(eq(tools.id, skill.id))
@@ -98,18 +107,29 @@ async function _POST(request: NextRequest) {
       envVars: skill.envVars ?? null,
       apiDoc: skill.apiDoc ?? null,
       connectorType: skill.connectorType ?? null,
+      needsFileMount: skill.needsFileMount ?? false,
+      kind: skill.kind ?? 'script',
+      apiSpec: skill.apiSpec ?? null,
+      forwardIdentity: skill.forwardIdentity ?? false,
       createdBy: auth.userId!,
       createdAt: now,
       updatedAt: now,
     })
 
-    if (skill.code) {
+    if (skill.code || skill.kind === 'api') {
+      // API tools run in an in-process JS sandbox and need no K8S deployment, so
+      // mark their instance deployed immediately (mirrors the OpenClaw sentinel in
+      // skills/instances/route.ts). This is what makes them appear in the
+      // employee skill-binding picker, which only lists deployed instances.
+      const deploy: DeployInfo | null =
+        skill.kind === 'api' ? { status: 'deployed', deployedAt: now.toISOString() } : null
       await db.insert(toolInstances).values({
         id: `inst-${randomUUID()}`,
         templateId: skill.id,
         name: skill.name,
         presetParams: skill.presetParams ?? null,
         envVars: skill.envVars ?? null,
+        deploy,
         createdBy: auth.userId!,
         createdAt: now,
         updatedAt: now,

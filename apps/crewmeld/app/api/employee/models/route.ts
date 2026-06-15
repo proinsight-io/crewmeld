@@ -10,6 +10,7 @@ import { getSession } from '@/lib/auth'
 import { requirePermission } from '@/lib/auth/rbac/check-permission'
 import { encryptConfig } from '@/lib/connectors/encryption'
 import type { ModelDefaultParams, ProviderDisplayInfo } from '@/lib/models/types'
+import { PROVIDER_DEFINITIONS } from '@/providers/models'
 import { getAllProviders } from '@/providers/registry'
 
 const logger = createLogger('ModelsAPI')
@@ -24,6 +25,12 @@ export async function GET(request: NextRequest) {
     const url = new URL(request.url)
     const providerIdFilter = url.searchParams.get('providerId')
     const activeOnly = url.searchParams.get('activeOnly') === 'true'
+    // Optional provider-category filter (e.g. ?category=coding for the
+    // dev-studio model selector). Category lives on the provider definition,
+    // not on the model_configs row, so it's applied in-memory below.
+    const categoryFilter = url.searchParams.get('category')
+    const inCategory = (providerId: string): boolean =>
+      !categoryFilter || PROVIDER_DEFINITIONS[providerId]?.category === categoryFilter
 
     const filters = []
     if (providerIdFilter) {
@@ -41,12 +48,13 @@ export async function GET(request: NextRequest) {
 
     const providers = getAllProviders()
 
-    const filteredRows = activeOnly
+    const activeFilteredRows = activeOnly
       ? // `lastTestResult` is written with a `[OK]` / `[FAIL]` prefix by the
         // test route. Legacy rows without prefix are treated as untested (kept
         // in list). See apps/crewmeld/app/api/employee/models/[id]/test/route.ts.
         rows.filter((row) => !row.lastTestResult?.startsWith('[FAIL]'))
       : rows
+    const filteredRows = activeFilteredRows.filter((row) => inCategory(row.providerId))
 
     const configs = filteredRows.map((row) => {
       const provider = providers[row.providerId as keyof typeof providers]
@@ -81,7 +89,9 @@ export async function GET(request: NextRequest) {
     })
 
     const configuredProviderIds = new Set(filteredRows.map((r) => r.providerId))
-    const availableProviders: ProviderDisplayInfo[] = Object.entries(providers).map(([id, p]) => {
+    const availableProviders: ProviderDisplayInfo[] = Object.entries(providers)
+      .filter(([id]) => inCategory(id))
+      .map(([id, p]) => {
       const matchingConfig = rows.find((r) => r.providerId === id)
       return {
         id,
@@ -147,6 +157,14 @@ async function _POST(request: NextRequest) {
       ...(defaultParams?.frequencyPenalty !== undefined
         ? { frequencyPenalty: defaultParams.frequencyPenalty }
         : {}),
+      // Coding-provider model tiers (dev-studio container env). Only persisted
+      // when a non-empty string is supplied so resolveModelEnv can omit the
+      // corresponding ANTHROPIC_* var on an empty value.
+      ...(defaultParams?.codingFastModel ? { codingFastModel: defaultParams.codingFastModel } : {}),
+      ...(defaultParams?.codingSonnetModel
+        ? { codingSonnetModel: defaultParams.codingSonnetModel }
+        : {}),
+      ...(defaultParams?.codingOpusModel ? { codingOpusModel: defaultParams.codingOpusModel } : {}),
     }
 
     const apiKeyEncrypted = apiKey ? encryptConfig(apiKey) : null

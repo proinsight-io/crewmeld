@@ -81,6 +81,13 @@ interface GeneratedTool {
   apiDoc?: string
   /** System connection type required by the tool */
   connectorType?: { type: string; dbType?: string }
+  /**
+   * File handling mode flag from the LLM-generated JSON. When true, the
+   * tool uses the SOP workspace mount (/workspace/inputs + /workspace/outputs)
+   * and bypasses the warm pool. Defaults to false when the field is
+   * omitted (= legacy boto3 + presigned-URL mode).
+   */
+  needsFileMount?: boolean
 }
 
 interface ChatMessage {
@@ -300,9 +307,10 @@ function isDatabaseTool(
   paramProperties: Record<string, { type?: string }> | undefined
 ): boolean {
   if (DB_DRIVER_PATTERNS.some((re) => re.test(code))) return true
-  // Fallback heuristic: parameters look like a DB connection (host + database/port)
+  // Fallback heuristic: parameters look like a DB connection. `host + port` alone
+  // is too broad (matches HTTP/SSH/SMTP/Kafka/etc.), so require a DB-specific key.
   const keys = new Set(Object.keys(paramProperties ?? {}).map((k) => k.toLowerCase()))
-  if (keys.has('host') && (keys.has('database') || keys.has('port') || keys.has('dbname'))) {
+  if (keys.has('host') && (keys.has('database') || keys.has('dbname'))) {
     return true
   }
   return false
@@ -421,10 +429,6 @@ export function AiToolGenerator({
     regenCountRef.current = 0
     setRegenCount(0)
   }, [])
-  // Test Pod: lifecycle tied to dialog (ref ensures idempotency, avoids closure re-creation)
-  const [testPod, setTestPod] = useState<{ podName: string; endpoint: string } | null>(null)
-  const testPodRef = useRef<{ podName: string; endpoint: string } | null>(null)
-  const testPodAllocatingRef = useRef(false)
   // Security confirmation: pending pipeline context awaiting user confirmation
   const pendingConfirmRef = useRef<{
     tool: GeneratedTool
@@ -637,23 +641,6 @@ export function AiToolGenerator({
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [])
 
-  /** Reclaim test Pod */
-  const releaseTestPod = useCallback(async () => {
-    const pod = testPodRef.current
-    if (!pod) return
-    testPodRef.current = null
-    setTestPod(null)
-    try {
-      await fetch('/api/employee/tools/test-pod', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ podName: pod.podName }),
-      })
-    } catch {
-      // Reclaim failure does not block close
-    }
-  }, [])
-
   const [showCloseConfirm, setShowCloseConfirm] = useState(false)
 
   /** Reset all session state (shared by close & open) */
@@ -665,7 +652,6 @@ export function AiToolGenerator({
     setTrialParams({})
     resetFixCount()
     resetRegenCount()
-    setTestPod(null)
     setShowScrollBtn(false)
     setInputHeight(120)
     setModelDropdownOpen(false)
@@ -697,11 +683,10 @@ export function AiToolGenerator({
 
   const handleClose = useCallback(() => {
     abortRef.current?.abort()
-    releaseTestPod()
     resetSessionState()
     setSelectedConnIds(new Set())
     onClose()
-  }, [onClose, releaseTestPod, resetSessionState])
+  }, [onClose, resetSessionState])
 
   /** Request close: show confirmation if chat history exists, otherwise close */
   const requestClose = useCallback(() => {
@@ -796,31 +781,6 @@ export function AiToolGenerator({
 
   const nextId = useCallback(() => ++msgIdRef.current, [])
 
-  /** Allocate test Pod (idempotent: ref ensures no duplicate creation) */
-  const ensureTestPod = useCallback(async (): Promise<{
-    podName: string
-    endpoint: string
-  } | null> => {
-    // ref check to avoid duplicate creation from stale state in React closure
-    if (testPodRef.current) return testPodRef.current
-    if (testPodAllocatingRef.current) return null
-    testPodAllocatingRef.current = true
-    try {
-      const res = await fetch('/api/employee/tools/test-pod', { method: 'POST' })
-      const data = await res.json()
-      if (data.success && data.podName && data.endpoint) {
-        const pod = { podName: data.podName as string, endpoint: data.endpoint as string }
-        testPodRef.current = pod
-        setTestPod(pod)
-        return pod
-      }
-      return null
-    } catch {
-      return null
-    } finally {
-      testPodAllocatingRef.current = false
-    }
-  }, [])
 
   // -------------------------------------------------------------------------
   // Toggle thinking collapse
@@ -1282,7 +1242,7 @@ export function AiToolGenerator({
         return
       }
 
-      // 3. Auto test - try allocating test Pod on first test
+      // 3. Auto test — execute via Job-mode runner on the server
       setPhase('testing')
       const prepMsg: ChatMessage = {
         id: nextId(),
@@ -1291,8 +1251,6 @@ export function AiToolGenerator({
         phaseBadge: t('skills.generatorBadgePrepareTest'),
       }
       setMessages((prev) => [...prev, prepMsg])
-      const pod = await ensureTestPod()
-      // Update status to test in progress
       const testMsg = prepMsg
       setMessages((prev) =>
         prev.map((m) =>
@@ -1356,7 +1314,6 @@ export function AiToolGenerator({
             // Schema is needed server-side so missing connection-bound params get
             // filled from process.env (e.g. CONN_HOST) instead of arriving as undefined.
             parameters: tool.parameters,
-            ...(pod ? { podEndpoint: pod.endpoint } : {}),
             ...(selectedConnId ? { connectionId: selectedConnId } : {}),
           }),
         })
@@ -1578,7 +1535,7 @@ export function AiToolGenerator({
         setPhase('idle')
       }
     },
-    [nextId, bumpFixCount, resetFixCount, bumpRegenCount, streamChat, ensureTestPod]
+    [nextId, bumpFixCount, resetFixCount, bumpRegenCount, streamChat]
   )
 
   // After user confirms security, trigger runPipeline to continue (skipConfirm=true)
@@ -2096,13 +2053,10 @@ export function AiToolGenerator({
     // Get selected connection ID, server resolves real config and injects
     const trialConnId = Array.from(selectedConnIdsRef.current)[0] ?? undefined
 
-    const pod = await ensureTestPod()
     const resultMsg: ChatMessage = {
       id: nextId(),
       role: 'assistant',
-      content: t('skills.generatorTrialRunning', {
-        pod: pod ? t('skills.generatorTrialRunPod') : '',
-      }),
+      content: t('skills.generatorTrialRunning'),
       phaseBadge: t('skills.generatorBadgeTrialRun'),
     }
     setMessages((prev) => [...prev, resultMsg])
@@ -2120,7 +2074,6 @@ export function AiToolGenerator({
           // Schema lets server fill CONN_*/CREWMELD_* env values for params the
           // user form omitted (avoids undefined reaching driver code like mysql2).
           parameters: currentTool.parameters,
-          ...(pod ? { podEndpoint: pod.endpoint } : {}),
           ...(trialConnId ? { connectionId: trialConnId } : {}),
         }),
       })
@@ -2163,7 +2116,7 @@ export function AiToolGenerator({
       )
     }
     setPhase('done')
-  }, [currentTool, trialParams, nextId, apiKeys, ensureTestPod])
+  }, [currentTool, trialParams, nextId, apiKeys])
 
   // -------------------------------------------------------------------------
   // Download package

@@ -19,6 +19,17 @@ interface AddModelWizardProps {
   onCreated: () => void
 }
 
+const CODING_DEFAULT_ENDPOINTS: Record<string, string> = {
+  // Coding providers are driven by Claude Code in dev-studio, which speaks the
+  // Anthropic Messages protocol — so these must be each vendor's
+  // Anthropic-compatible endpoint (ending in /anthropic), NOT their OpenAI
+  // (/v1, /compatible-mode/v1) endpoints.
+  'kimi-coding': 'https://api.moonshot.cn/anthropic',
+  'qianfan-coding': 'https://qianfan.baidubce.com/anthropic/coding',
+  'qwen-coding': 'https://dashscope.aliyuncs.com/apps/anthropic',
+  'claude-coding': 'https://api.anthropic.com/v1',
+}
+
 const PROVIDER_GROUP_IDS = [
   {
     key: 'domestic' as const,
@@ -32,7 +43,11 @@ const PROVIDER_GROUP_IDS = [
       'google' /*, 'azure-openai', 'azure-anthropic', 'xai', 'mistral' */,
     ],
   },
-  // 平台聚合分组暂不展示
+  {
+    key: 'coding' as const,
+    ids: ['kimi-coding', 'qianfan-coding', 'qwen-coding', 'claude-coding'],
+  },
+  // Platform aggregator group is hidden for now
   // { key: 'platform' as const, ids: ['openrouter', 'groq', 'cerebras', 'bedrock', 'vertex'] },
   { key: 'local' as const, ids: ['ollama', 'vllm'] },
 ]
@@ -51,8 +66,9 @@ export function AddModelWizard({
     () => [
       { label: t('connections.modelGroupDomestic'), ids: PROVIDER_GROUP_IDS[0].ids },
       { label: t('connections.modelGroupInternational'), ids: PROVIDER_GROUP_IDS[1].ids },
-      // { label: t('connections.modelGroupPlatform'), ids: ... }, // 平台聚合暂不展示
-      { label: t('connections.modelGroupLocal'), ids: PROVIDER_GROUP_IDS[2].ids },
+      { label: t('connections.modelGroupCoding'), ids: PROVIDER_GROUP_IDS[2].ids },
+      // { label: t('connections.modelGroupPlatform'), ids: ... }, // platform aggregators hidden for now
+      { label: t('connections.modelGroupLocal'), ids: PROVIDER_GROUP_IDS[3].ids },
     ],
     [t]
   )
@@ -68,6 +84,9 @@ export function AddModelWizard({
   const [apiEndpoint, setApiEndpoint] = useState('')
   const [temperature, setTemperature] = useState('0.7')
   const [maxTokens, setMaxTokens] = useState('4096')
+  const [codingFastModel, setCodingFastModel] = useState('')
+  const [codingSonnetModel, setCodingSonnetModel] = useState('')
+  const [codingOpusModel, setCodingOpusModel] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -82,6 +101,9 @@ export function AddModelWizard({
     setApiEndpoint('')
     setTemperature('0.7')
     setMaxTokens('4096')
+    setCodingFastModel('')
+    setCodingSonnetModel('')
+    setCodingOpusModel('')
     setSaving(false)
     setError(null)
   }, [])
@@ -98,6 +120,11 @@ export function AddModelWizard({
   const handleGoStep2 = useCallback(() => {
     if (!selectedProvider) return
     setDisplayName(selectedProvider.name)
+    const def = PROVIDER_DEFINITIONS[selectedProvider.id]
+    if (def?.category === 'coding') {
+      setApiEndpoint(CODING_DEFAULT_ENDPOINTS[selectedProvider.id] ?? '')
+      setModelName(def.defaultModel)
+    }
     setStep(2)
   }, [selectedProvider])
 
@@ -106,6 +133,12 @@ export function AddModelWizard({
     setSaving(true)
     setError(null)
     try {
+      // Claude coding: an empty endpoint falls back to the system default so
+      // the dev-studio container always receives a concrete base URL.
+      const effectiveEndpoint =
+        selectedProvider.id === 'claude-coding' && !apiEndpoint.trim()
+          ? CODING_DEFAULT_ENDPOINTS['claude-coding']
+          : apiEndpoint
       const res = await fetch('/api/employee/models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -114,11 +147,17 @@ export function AddModelWizard({
           displayName: displayName.trim(),
           modelName: modelName.trim() || undefined,
           apiKey: apiKey || undefined,
-          apiEndpoint: apiEndpoint || undefined,
-          defaultParams: {
-            temperature: Number.parseFloat(temperature),
-            maxTokens: Number.parseInt(maxTokens, 10),
-          },
+          apiEndpoint: effectiveEndpoint || undefined,
+          defaultParams: PROVIDER_DEFINITIONS[selectedProvider.id]?.category === 'coding'
+            ? {
+                ...(codingFastModel.trim() ? { codingFastModel: codingFastModel.trim() } : {}),
+                ...(codingSonnetModel.trim() ? { codingSonnetModel: codingSonnetModel.trim() } : {}),
+                ...(codingOpusModel.trim() ? { codingOpusModel: codingOpusModel.trim() } : {}),
+              }
+            : {
+                temperature: Number.parseFloat(temperature),
+                maxTokens: Number.parseInt(maxTokens, 10),
+              },
         }),
       })
       const data = await res.json()
@@ -136,13 +175,31 @@ export function AddModelWizard({
   }, [
     selectedProvider,
     displayName,
+    modelName,
     apiKey,
     apiEndpoint,
     temperature,
     maxTokens,
+    codingFastModel,
+    codingSonnetModel,
+    codingOpusModel,
     handleClose,
     onCreated,
+    t,
   ])
+
+  // Required-field validation applies only to coding-category providers.
+  // Claude coding is exempt on the endpoint: an empty value falls back to the
+  // system default in handleSave.
+  const isCodingProvider = selectedProvider
+    ? PROVIDER_DEFINITIONS[selectedProvider.id]?.category === 'coding'
+    : false
+  const isClaudeCoding = selectedProvider?.id === 'claude-coding'
+  const canSave =
+    !!displayName.trim() &&
+    (!isCodingProvider ||
+      (!!modelName.trim() && !!apiKey.trim() && (isClaudeCoding || !!apiEndpoint.trim())))
+  const requiredMark = <span className='text-red-500'>*</span>
 
   return (
     <Dialog
@@ -151,13 +208,13 @@ export function AddModelWizard({
         if (!v) handleClose()
       }}
     >
-      <DialogContent className='max-w-2xl'>
-        <DialogHeader>
+      <DialogContent className='flex max-h-[85vh] max-w-2xl flex-col'>
+        <DialogHeader className='shrink-0'>
           <DialogTitle>{t('connections.modelWizardTitle')}</DialogTitle>
         </DialogHeader>
 
         {/* Step indicator */}
-        <div className='mb-4 flex items-center justify-center gap-2'>
+        <div className='mb-4 flex shrink-0 items-center justify-center gap-2'>
           {steps.map((label, i) => {
             const s = i + 1
             const isActive = s === step
@@ -195,15 +252,15 @@ export function AddModelWizard({
         </div>
 
         {error && (
-          <div className='mb-3 rounded-lg border border-red-200 bg-red-50 p-2 text-red-600 text-xs'>
+          <div className='mb-3 shrink-0 rounded-lg border border-red-200 bg-red-50 p-2 text-red-600 text-xs'>
             {error}
           </div>
         )}
 
         {/* Step 1: Select provider */}
         {step === 1 && (
-          <div className='flex flex-col gap-4'>
-            <div className='max-h-[400px] space-y-4 overflow-y-auto pr-1'>
+          <div className='flex min-h-0 flex-1 flex-col gap-4'>
+            <div className='flex-1 space-y-4 overflow-y-auto pr-1'>
               {providerGroups.map((group) => {
                 const providers = group.ids
                   .map((id) => providerMap.get(id))
@@ -275,9 +332,12 @@ export function AddModelWizard({
 
         {/* Step 2: Config form */}
         {step === 2 && selectedProvider && (
-          <div className='space-y-4'>
+          <>
+            <div className='-mr-2 flex-1 space-y-4 overflow-y-auto pr-2'>
             <div className='space-y-2'>
-              <Label htmlFor='wiz-displayName'>{t('connections.modelDisplayName')}</Label>
+              <Label htmlFor='wiz-displayName'>
+                {t('connections.modelDisplayName')} {isCodingProvider && requiredMark}
+              </Label>
               <Input
                 id='wiz-displayName'
                 value={displayName}
@@ -287,7 +347,9 @@ export function AddModelWizard({
             </div>
 
             <div className='space-y-2'>
-              <Label htmlFor='wiz-modelName'>{t('connections.modelModelName')}</Label>
+              <Label htmlFor='wiz-modelName'>
+                {t('connections.modelModelName')} {isCodingProvider && requiredMark}
+              </Label>
               <Input
                 id='wiz-modelName'
                 value={modelName}
@@ -302,6 +364,7 @@ export function AddModelWizard({
             <div className='space-y-2'>
               <Label htmlFor='wiz-apiKey'>
                 API Key{' '}
+                {isCodingProvider && requiredMark}
                 {selectedProvider.id === 'ollama' && (
                   <span className='text-gray-400 text-xs'>
                     {t('connections.modelApiKeyOptional')}
@@ -320,9 +383,13 @@ export function AddModelWizard({
             <div className='space-y-2'>
               <Label htmlFor='wiz-apiEndpoint'>
                 {t('connections.modelEndpointLabel')}{' '}
-                <span className='text-gray-400 text-xs'>
-                  {t('connections.modelEndpointOptional')}
-                </span>
+                {isCodingProvider && !isClaudeCoding ? (
+                  requiredMark
+                ) : (
+                  <span className='text-gray-400 text-xs'>
+                    {t('connections.modelEndpointOptional')}
+                  </span>
+                )}
               </Label>
               <Input
                 id='wiz-apiEndpoint'
@@ -346,8 +413,61 @@ export function AddModelWizard({
                   {t('connections.modelEndpointAnthropicHint')}
                 </p>
               )}
+              {isClaudeCoding && (
+                <p className='text-gray-400 text-xs'>
+                  {t('connections.modelEndpointClaudeDefaultHint')}
+                </p>
+              )}
             </div>
 
+            {PROVIDER_DEFINITIONS[selectedProvider.id]?.category === 'coding' && (
+              <div className='space-y-4'>
+                <div className='space-y-2'>
+                  <Label htmlFor='wiz-codingFast'>
+                    {t('connections.modelCodingFast')}{' '}
+                    <span className='text-gray-400 text-xs'>
+                      {t('connections.modelCodingTierOptional')}
+                    </span>
+                  </Label>
+                  <Input
+                    id='wiz-codingFast'
+                    value={codingFastModel}
+                    onChange={(e) => setCodingFastModel(e.target.value)}
+                    placeholder={modelName || selectedProvider.defaultModel}
+                  />
+                </div>
+                <div className='space-y-2'>
+                  <Label htmlFor='wiz-codingSonnet'>
+                    {t('connections.modelCodingSonnet')}{' '}
+                    <span className='text-gray-400 text-xs'>
+                      {t('connections.modelCodingTierOptional')}
+                    </span>
+                  </Label>
+                  <Input
+                    id='wiz-codingSonnet'
+                    value={codingSonnetModel}
+                    onChange={(e) => setCodingSonnetModel(e.target.value)}
+                    placeholder={modelName || selectedProvider.defaultModel}
+                  />
+                </div>
+                <div className='space-y-2'>
+                  <Label htmlFor='wiz-codingOpus'>
+                    {t('connections.modelCodingOpus')}{' '}
+                    <span className='text-gray-400 text-xs'>
+                      {t('connections.modelCodingTierOptional')}
+                    </span>
+                  </Label>
+                  <Input
+                    id='wiz-codingOpus'
+                    value={codingOpusModel}
+                    onChange={(e) => setCodingOpusModel(e.target.value)}
+                    placeholder={modelName || selectedProvider.defaultModel}
+                  />
+                </div>
+              </div>
+            )}
+
+            {PROVIDER_DEFINITIONS[selectedProvider.id]?.category !== 'coding' && (
             <div className='grid grid-cols-2 gap-4'>
               <div className='space-y-2'>
                 <Label htmlFor='wiz-temperature'>Temperature</Label>
@@ -372,17 +492,20 @@ export function AddModelWizard({
                 />
               </div>
             </div>
+            )}
 
-            <div className='flex justify-between pt-2'>
+            </div>
+
+            <div className='flex shrink-0 justify-between pt-2'>
               <Button variant='outline' onClick={() => setStep(1)}>
                 {t('common.previous')}
               </Button>
-              <Button onClick={handleSave} disabled={saving || !displayName.trim()}>
+              <Button onClick={handleSave} disabled={saving || !canSave}>
                 {saving && <Loader2 className='mr-2 h-4 w-4 animate-spin' />}
                 {t('common.save')}
               </Button>
             </div>
-          </div>
+          </>
         )}
       </DialogContent>
     </Dialog>
