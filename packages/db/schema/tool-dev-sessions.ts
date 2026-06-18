@@ -12,6 +12,7 @@ import {
 } from 'drizzle-orm/pg-core'
 import { user } from '../schema'
 import { modelConfigs } from './model-configs'
+import { systemConnections } from './system-connections'
 import { tools } from './tools'
 
 /**
@@ -140,6 +141,16 @@ export const toolDevSessions = pgTable(
     }),
     /** Display label for the resolved model, written by model-resolver. */
     modelName: text('model_name'),
+    /**
+     * Optional system connection driving this dev session. When set, the
+     * studio surfaces the connection's `CONN_*` environment variables to the
+     * model so the generated tool reads credentials from them, and the
+     * test-run sandbox injects the resolved values. `ON DELETE SET NULL` keeps
+     * the session alive when the underlying connection is removed.
+     */
+    connectionId: text('connection_id').references(() => systemConnections.id, {
+      onDelete: 'set null',
+    }),
     totalInputTokens: bigint('total_input_tokens', { mode: 'number' }).notNull().default(0),
     totalOutputTokens: bigint('total_output_tokens', { mode: 'number' }).notNull().default(0),
 

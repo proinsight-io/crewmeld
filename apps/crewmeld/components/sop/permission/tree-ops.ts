@@ -4,6 +4,7 @@
  * added only at the root (path length 0).
  */
 
+import { isRuleRef } from '@/lib/identity/condition-tree'
 import type { VisibilityCondition, VisibilityGroup } from '@/lib/sop/visibility-types'
 import { isGroup } from '@/lib/sop/visibility-types'
 
@@ -29,7 +30,7 @@ function mapGroupAtPath(
   const [head, ...rest] = path
   const child = root.children[head]
   if (!child || !isGroup(child)) return root
-  const updated = mapGroupAtPath(child, rest, fn)
+  const updated = mapGroupAtPath(child as VisibilityGroup, rest, fn)
   const children = root.children.slice()
   children[head] = updated
   return { ...root, children }
@@ -73,7 +74,7 @@ export function updateCondition(
   return mapGroupAtPath(root, parentPath, (g) => {
     const children = g.children.slice()
     const target = children[idx]
-    if (target && !isGroup(target)) children[idx] = { ...target, ...patch }
+    if (target && !isGroup(target) && !isRuleRef(target)) children[idx] = { ...target, ...patch }
     return { ...g, children }
   })
 }

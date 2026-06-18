@@ -30,8 +30,10 @@ function getTransitionEventType(
 ): SopExecutionEvent['type'] | null {
   if (toStatus === 'running' && fromStatus === 'pending') return 'sop:started'
   if (toStatus === 'running' && fromStatus === 'paused_for_human') return 'sop:resumed'
+  if (toStatus === 'running' && fromStatus === 'paused_for_tool') return 'sop:resumed'
   if (toStatus === 'running' && fromStatus === 'error') return 'sop:resumed'
   if (toStatus === 'paused_for_human') return 'sop:paused'
+  if (toStatus === 'paused_for_tool') return 'sop:paused'
   if (toStatus === 'completed') return 'sop:completed'
   if (toStatus === 'error') return 'sop:error'
   if (toStatus === 'timed_out') return 'sop:timed_out'
@@ -45,8 +47,11 @@ const logger = createLogger('SopEngine')
 /** Valid state transition map */
 export const VALID_TRANSITIONS: Record<SopExecutionStatus, SopExecutionStatus[]> = {
   pending: ['running', 'cancelled'],
-  running: ['paused_for_human', 'completed', 'error', 'cancelled'],
+  running: ['paused_for_human', 'paused_for_tool', 'completed', 'error', 'cancelled'],
   paused_for_human: ['running', 'failed', 'timed_out', 'cancelled'],
+  // Async tool suspension: resume to running on callback, or end via watchdog
+  // timeout / error / failure / cancellation.
+  paused_for_tool: ['running', 'failed', 'timed_out', 'error', 'cancelled'],
   error: ['running', 'failed', 'cancelled', 'timed_out'],
   completed: [],
   timed_out: [],
@@ -524,7 +529,8 @@ export async function executeSop(executionId: string): Promise<void> {
       const result = await executeNode(executionId, node, snapshot, nodes)
 
       if (result.paused) {
-        await transitionStatus(executionId, 'running', 'paused_for_human')
+        const pausedStatus = result.pauseKind === 'tool' ? 'paused_for_tool' : 'paused_for_human'
+        await transitionStatus(executionId, 'running', pausedStatus)
         await persistSnapshot(executionId, snapshot)
         return
       }
@@ -866,6 +872,101 @@ export async function resumeSopFromPause(pauseState: {
 }
 
 /**
+ * Resume a SOP suspended on an async tool (paused_for_tool).
+ *
+ * Triggered by the tool-callback handler once every async call in the node's
+ * round has completed. Re-executes the suspended digital-employee node, which
+ * rebuilds its LLM conversation from work_logs and continues the loop: the node
+ * either suspends again (next async round), errors, or finishes — in which case
+ * we advance to the next node and resume the engine, mirroring the human-pause
+ * resume tail.
+ */
+export async function resumeSopFromAsyncTool(executionId: string, taskId: string): Promise<void> {
+  const execRows = await db.select().from(sopExecutions).where(eq(sopExecutions.id, executionId))
+  const execution = execRows[0]
+  if (!execution) {
+    logger.error('Execution not found for async-tool resume', { executionId })
+    return
+  }
+
+  const snapshot = execution.stateSnapshot as unknown as SopStateSnapshot
+  const currentNodeId = snapshot.currentNodeId
+  if (!currentNodeId) {
+    logger.error('Async-tool resume: snapshot has no currentNodeId', { executionId })
+    return
+  }
+
+  // First-Wins: only one resume wins the paused_for_tool → running transition.
+  const transitioned = await transitionStatus(executionId, 'paused_for_tool', 'running')
+  if (!transitioned) return
+
+  const defRows = await db
+    .select()
+    .from(sopDefinitions)
+    .where(eq(sopDefinitions.id, execution.sopDefinitionId as string))
+  const definition = defRows[0]
+  if (!definition) return
+  const nodes = definition.nodes as SopNode[]
+  const nodesMap = buildNodesMap(nodes)
+  const node = nodesMap.get(currentNodeId)
+  if (!node) return
+
+  const meta = (execution.triggerData as Record<string, unknown>)?._meta as
+    | { conversationId?: string }
+    | undefined
+
+  // Re-execute the suspended node, continuing its LLM loop from work_logs.
+  const result = await executeNode(executionId, node, snapshot, nodes, { taskId })
+
+  // Suspended again (next async round) — pause and await the next callbacks.
+  if (result.paused) {
+    const pausedStatus = result.pauseKind === 'tool' ? 'paused_for_tool' : 'paused_for_human'
+    await transitionStatus(executionId, 'running', pausedStatus)
+    await persistSnapshot(executionId, snapshot)
+    return
+  }
+
+  if (result.error) {
+    await transitionStatus(executionId, 'running', 'error', { errorMessage: result.error })
+    return
+  }
+
+  // Node finished: record output, advance to the next node, resume the engine.
+  snapshot.nodeStates[currentNodeId] = {
+    ...snapshot.nodeStates[currentNodeId],
+    status: 'completed',
+    completedAt: new Date().toISOString(),
+    output: result.output ?? {},
+  }
+  if (!snapshot.executionPath.includes(currentNodeId)) {
+    snapshot.executionPath.push(currentNodeId)
+  }
+
+  const exitResult = evaluateExits(
+    node,
+    result,
+    extractIdentityFromTriggerData(execution.triggerData as Record<string, unknown> | undefined)
+  )
+
+  if (!exitResult || exitResult.targetNodeId === null) {
+    await transitionStatus(executionId, 'running', 'completed', { completedAt: new Date() })
+    await persistSnapshot(executionId, snapshot)
+    if (meta?.conversationId && execution.sopDefinitionId) {
+      void notifySopResult(executionId, execution.sopDefinitionId, meta.conversationId)
+    }
+    return
+  }
+
+  snapshot.currentNodeId = exitResult.targetNodeId
+  await persistSnapshot(executionId, snapshot)
+
+  void executeSop(executionId).then(async () => {
+    if (!meta?.conversationId || !execution.sopDefinitionId) return
+    await notifySopResult(executionId, execution.sopDefinitionId, meta.conversationId)
+  })
+}
+
+/**
  * Query SOP final execution result and push to original conversation user
  */
 async function notifySopResult(
@@ -879,6 +980,7 @@ async function notifySopResult(
         status: sopExecutions.status,
         stateSnapshot: sopExecutions.stateSnapshot,
         errorMessage: sopExecutions.errorMessage,
+        pushByEngine: sopExecutions.pushByEngine,
       })
       .from(sopExecutions)
       .where(eq(sopExecutions.id, executionId))
@@ -888,6 +990,12 @@ async function notifySopResult(
 
     const terminalStatuses = ['completed', 'failed', 'timed_out', 'cancelled', 'error']
     if (!terminalStatuses.includes(finalExec.status)) return
+
+    // Delivery gate: the conversation delivered (or will deliver) the result
+    // in-turn within its sync grace window, so the engine must not also push.
+    // Only when the conversation handed off (grace expired / paused) is this
+    // flag true. See sop_executions.pushByEngine.
+    if (finalExec.pushByEngine === false) return
 
     const finalSnapshot = finalExec.stateSnapshot as unknown as SopStateSnapshot
     const meta = (finalSnapshot.triggerData as Record<string, unknown>)?._meta as

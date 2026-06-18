@@ -35,22 +35,25 @@ export function getBaseUrl(): string {
 }
 
 /**
- * Returns the base URL used by server-side internal API calls.
- * Falls back to NEXT_PUBLIC_APP_URL when INTERNAL_API_BASE_URL is not set.
+ * Base URL baked into the callback URL handed to async sandbox tools (pod relay
+ * / api self-post / http relay POST their result back here). MUST be reachable
+ * from wherever the tool runs — for pod tools that means a cluster-reachable
+ * address, NOT localhost. Falls back to NEXT_PUBLIC_APP_URL when
+ * CREWMELD_SANDBOX_CALLBACK_BASE_URL is not set.
  */
-export function getInternalApiBaseUrl(): string {
-  const internalBaseUrl = getEnv('INTERNAL_API_BASE_URL')?.trim()
-  if (!internalBaseUrl) {
+export function getSandboxCallbackBaseUrl(): string {
+  const baseUrl = getEnv('CREWMELD_SANDBOX_CALLBACK_BASE_URL')?.trim()
+  if (!baseUrl) {
     return getBaseUrl()
   }
 
-  if (!hasHttpProtocol(internalBaseUrl)) {
+  if (!hasHttpProtocol(baseUrl)) {
     throw new Error(
-      'INTERNAL_API_BASE_URL must include protocol (http:// or https://), e.g. http://crewmeld-app.default.svc.cluster.local:6100'
+      'CREWMELD_SANDBOX_CALLBACK_BASE_URL must include protocol (http:// or https://), e.g. http://192.168.0.10:6100'
     )
   }
 
-  return internalBaseUrl
+  return baseUrl
 }
 
 /**

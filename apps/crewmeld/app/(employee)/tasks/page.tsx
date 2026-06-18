@@ -60,7 +60,7 @@ export default function TaskCenterPage() {
 
   const statusForTab =
     activeTab === 'running'
-      ? 'pending,running,paused_for_human'
+      ? 'pending,running,paused_for_human,paused_for_tool'
       : filters.status.length > 0
         ? filters.status.join(',')
         : 'completed,failed,timed_out,cancelled,error'

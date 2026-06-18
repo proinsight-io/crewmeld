@@ -43,6 +43,9 @@ export function TaskTable({
       pending: { label: t('tasks.statusPending'), variant: 'secondary' },
       running: { label: t('tasks.statusRunning'), variant: 'default' },
       paused_for_human: { label: t('tasks.statusHitlWaiting'), variant: 'secondary' },
+      // Suspended waiting on an async tool — surface as "running" since the task
+      // is still in progress from the operator's perspective.
+      paused_for_tool: { label: t('tasks.statusRunning'), variant: 'default' },
       completed: { label: t('tasks.statusCompleted'), variant: 'outline' },
       timed_out: { label: t('tasks.statusTimeout'), variant: 'destructive' },
       error: { label: t('tasks.statusError'), variant: 'destructive' },

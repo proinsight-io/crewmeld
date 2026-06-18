@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createLogger } from '@crewmeld/logger'
+import { isAsyncToolsEnabled } from '@/lib/core/config/feature-flags'
 import { generateExecutionId } from '@/lib/core/execution-id'
 import type { ManifestT } from '@/lib/dev-studio/manifest-reader'
 import { readManifestFromTool } from '@/lib/dev-studio/manifest-reader'
@@ -143,13 +144,29 @@ export async function prepareToolSandbox(
   // Network policy follows the admin global egress mode (Model A): unrestricted
   // → reach anything; allowlist → deny-default with manifest domains ∪ admin
   // global allow-lists ∪ system egress.
+  // In async-tools mode the pod POSTs its result back to the BFF callback URL,
+  // so the callback host must be reachable. In allowlist egress mode that means
+  // allow-listing it (no-op in unrestricted mode, which ignores the lists).
+  const callbackEgress: string[] = []
+  if (isAsyncToolsEnabled()) {
+    try {
+      const { getSandboxCallbackBaseUrl } = await import('@/lib/core/utils/urls')
+      const host = new URL(getSandboxCallbackBaseUrl()).hostname
+      if (host) callbackEgress.push(host)
+    } catch (e) {
+      logger.warn('Failed to resolve callback host for egress allow-list', {
+        error: e instanceof Error ? e.message : String(e),
+      })
+    }
+  }
+
   const sandboxSettings = await getSandboxSettings()
   const networkPolicy = buildToolNetworkPolicy(
     sandboxSettings.egressMode,
     manifest.dependencies.domains,
     {
       globalDomains: sandboxSettings.allowedDomains,
-      globalIps: sandboxSettings.allowedIps,
+      globalIps: [...sandboxSettings.allowedIps, ...callbackEgress],
       toolIps: manifest.dependencies.ips,
     }
   )

@@ -3,8 +3,14 @@ import { employeeConnections, sopDefinitions, systemConnections } from '@crewmel
 import { createLogger } from '@crewmeld/logger'
 import { eq, inArray } from 'drizzle-orm'
 import type { NextRequest } from 'next/server'
-import type { BoundConnection } from '@/components/sop/permission/permission-panel'
 import { apiAuthErr, apiErr, apiOk } from '@/lib/api/response'
+
+/** A channel connection bound to a SOP's digital employees. */
+interface BoundConnection {
+  id: string
+  name: string
+  type: string
+}
 import { requirePermission } from '@/lib/auth/rbac/check-permission'
 import type { SopNode } from '@/types/sop'
 

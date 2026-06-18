@@ -59,6 +59,18 @@ export const feishuPlugin: ChannelPlugin<FeishuPluginConfig> = {
   id: 'feishu',
   label: t('channelPluginFeishu'),
   aliases: ['lark', 'bytedance'],
+  identityRawFields: [
+    { path: 'name', label: '姓名' },
+    { path: 'email', label: '邮箱' },
+    { path: 'mobile', label: '手机' },
+    { path: 'employeeNo', label: '工号' },
+    { path: 'employeeType', label: '雇佣类型' },
+    { path: 'jobTitle', label: '职务' },
+    { path: 'departmentIds', label: '部门open_id' },
+    { path: 'departmentNames', label: '部门名' },
+    { path: 'departmentCustomIds', label: '部门自定义ID' },
+    { path: 'leaderId', label: '直属上级ID' },
+  ],
 
   capabilities: {
     direct: true,

@@ -225,7 +225,7 @@ export const env = createEnv({
     SOCKET_SERVER_URL:                     z.string().url().optional(),            // WebSocket server URL for real-time features
     SOCKET_PORT:                           z.number().optional(),                  // Port for WebSocket server
     PORT:                                  z.number().optional(),                  // Main application port
-    INTERNAL_API_BASE_URL:                 z.string().optional(),                  // Optional internal base URL for server-side self-calls; must include protocol if set (e.g., http://crewmeld-app.namespace.svc.cluster.local:3000)
+    CREWMELD_SANDBOX_CALLBACK_BASE_URL:    z.string().optional(),                  // Base URL async sandbox tools POST their callback to; must include protocol and be reachable from where the tool runs (cluster-reachable for pod tools, NOT localhost)
     ALLOWED_ORIGINS:                       z.string().optional(),                  // CORS allowed origins
 
     // OAuth Integration Credentials - All optional, enables third-party integrations

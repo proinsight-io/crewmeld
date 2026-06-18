@@ -10,6 +10,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { isRuleRef } from '@/lib/identity/condition-tree'
 import type { IdentityFieldDef, VisibilityGroup } from '@/lib/sop/visibility-types'
 import { isGroup } from '@/lib/sop/visibility-types'
 import { DeptPicker } from './dept-picker'
@@ -93,6 +94,8 @@ export function ConditionTree({ connectionId, catalog, value, onChange }: Condit
         {group.children.map((child, i) => {
           const childPath = [...path, i]
           if (isGroup(child)) return <div key={i}>{renderGroup(child, childPath)}</div>
+          // RuleRef nodes are managed by ConditionField; skip them in the inline editor.
+          if (isRuleRef(child)) return null
           const field = catalog.find((f) => f.key === child.field) ?? catalog[0]
           return (
             <div

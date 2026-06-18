@@ -1337,6 +1337,22 @@ export const zhCN = {
     wecomWebhookHint: '请将以下 Webhook URL 填入企微管理后台的「API 接收消息」配置中。',
     wecomCreateChannel: '创建渠道',
     wecomDone: '完成',
+    fieldMapping: {
+      title: '身份字段映射',
+      subtitle: '配置各渠道原始字段如何归一为统一身份字段',
+      colLabel: '显示名',
+      colKey: 'ID字段',
+      modeField: '字段',
+      modeConst: '常量',
+      fieldPlaceholder: '原始字段路径，如 raw 字段名或 a.b.0',
+      constPlaceholder: '固定值',
+      addRow: '+ 自定义字段',
+      removeRow: '删除',
+      save: '保存',
+      saved: '已保存',
+      saveFailed: '保存失败',
+      customKeyPlaceholder: '自定义键名',
+    },
   },
 
   // ── SOP 管理 ──
@@ -1870,6 +1886,33 @@ export const zhCN = {
     rechunkOverlapRange: '范围：0 – 500 tokens',
     rechunkProcessing: '处理中...',
     rechunkStart: '开始切片',
+  },
+
+  // ── 访问规则条件组 ──
+  accessRules: {
+    selectPlaceholder: '选择条件组…',
+    custom: '自定义…',
+    manage: '管理条件组',
+    saveAs: '另存为条件组',
+    saveAsPrompt: '为当前条件命名',
+    unbind: '解绑成副本',
+    namedSummary: '引用条件组：{name}',
+    unknownRule: '（条件组已删除）',
+    dialogTitle: '管理条件组',
+    newRule: '新建条件组',
+    name: '条件组名称',
+    description: '描述（可选）',
+    save: '保存',
+    cancel: '取消',
+    edit: '编辑',
+    delete: '删除',
+    empty: '暂无条件组',
+    inUse: '该条件组被 {n} 处使用，无法删除',
+    liveWarning: '改动将实时影响引用此条件组的位置',
+    field: {
+      roles: '平台角色',
+      employeeId: '平台用户',
+    },
   },
 
   // ── 日志审计 ──
@@ -3927,6 +3970,21 @@ export const zhCN = {
       contactValueEmpty: '联系方式值不能为空',
       hasPendingApprovals: '该员工有待处理的审批任务，无法删除',
       fetchAvailabilityFailed: '获取渠道可用性失败',
+    },
+    channelFieldMap: {
+      readFailed: '读取渠道字段映射失败',
+      invalidBody: '请求体格式无效',
+      invalidConfig: '字段映射配置无效',
+      catalogFailed: '获取字段目录失败',
+    },
+    accessRules: {
+      invalidBody: '请求体格式错误',
+      invalidRule: '访问规则格式错误',
+      missingId: '缺少规则 ID',
+      inUse: '规则被引用，无法删除',
+      readFailed: '读取访问规则失败',
+      writeFailed: '保存访问规则失败',
+      deleteFailed: '删除访问规则失败',
     },
   },
 

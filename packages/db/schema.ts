@@ -406,6 +406,7 @@ export const permissionGroupMember = pgTable(
   })
 )
 
+export { accessRules } from './schema/access-rules'
 export type { AlertCategory, AlertSeverity, AlertStatus } from './schema/audit-alerts'
 export {
   alertCategoryEnum,
@@ -453,6 +454,7 @@ export {
   platformRoleEnum,
 } from './schema/platform-roles'
 export { platformSettings } from './schema/platform-settings'
+export { channelFieldMappings } from './schema/channel-field-mappings'
 // ===== Digital Employee Platform Schema =====
 export { roles } from './schema/roles'
 export type {

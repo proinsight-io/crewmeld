@@ -33,4 +33,10 @@ export interface ChannelUserDetail {
   orgUnitCustomIds?: string[]
   /** Direct leader's channel-native id, in the same id space as `userId`. Undefined when the channel does not expose it. */
   leaderId?: string
+  /**
+   * Channel-declared custom directory fields, passed through verbatim for policy
+   * rowFilters to reference via `raw.attributes.<field>`. Only fields named in the
+   * binding's `channelAttributePassthrough` are included; undeclared fields are omitted.
+   */
+  attributes?: Record<string, unknown>
 }

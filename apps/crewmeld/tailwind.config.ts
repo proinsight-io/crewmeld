@@ -12,6 +12,10 @@ const config = {
     '!./app/api/**',
     '!./app/node_modules/**',
     '!**/node_modules/**',
+    // Test files have no meaningful Tailwind classes; excluding them also avoids
+    // a stale-reference ENOENT when tests are deleted while the dev server runs.
+    '!**/__tests__/**',
+    '!**/*.test.{ts,tsx,js,jsx}',
   ],
 
   theme: {

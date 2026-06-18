@@ -50,4 +50,11 @@ export interface ChannelIdentityInput {
    * / wecom {corpId,corpSecret}.
    */
   config?: Record<string, unknown>
+  /**
+   * Channel directory field names to passthrough into `raw.attributes` so
+   * data-access-policy rowFilters can bind to them via `raw.attributes.<field>`.
+   * Sourced from the binding's `channelAttributePassthrough`. Only the named
+   * fields are picked; undeclared fields are never copied. Omit to passthrough none.
+   */
+  attributePassthrough?: string[]
 }

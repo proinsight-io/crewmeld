@@ -183,6 +183,12 @@ export interface NodeExecutionResult {
   output?: Record<string, unknown>
   exitId?: string
   paused?: boolean
+  /**
+   * Why the node paused. 'human' (default) waits for a human approval decision;
+   * 'tool' waits for an async tool callback. The engine maps these to the
+   * paused_for_human / paused_for_tool execution statuses respectively.
+   */
+  pauseKind?: 'human' | 'tool'
   error?: string
   /** Flag for error exit path (set by engine after retries exhausted) */
   errorExit?: boolean
@@ -194,6 +200,12 @@ export interface TimeoutJobPayload {
   nodeId?: string
   pauseId?: string
   type: 'node' | 'sop'
+}
+
+/** BullMQ async-tool watchdog payload — fails a call that never called back. */
+export interface AsyncToolWatchdogPayload {
+  executionId: string
+  callId: string
 }
 
 /**

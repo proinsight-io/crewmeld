@@ -1,7 +1,7 @@
 /**
  * Environment utility functions for consistent environment detection across the application
  */
-import { env, getEnv, isTruthy } from './env'
+import { env, getEnv, isFalsy, isTruthy } from './env'
 
 /**
  * Is the application running in production mode
@@ -161,4 +161,21 @@ export function getAllowedMcpDomainsFromEnv(): string[] | null {
  */
 export function getCostMultiplier(): number {
   return isProd ? (env.COST_MULTIPLIER ?? 1) : 1
+}
+
+/**
+ * Are async tools enabled.
+ *
+ * When on, every SOP tool call (script / service / api) is dispatched and the
+ * SOP suspends (`paused_for_tool`) until the tool's callback — or, for api
+ * tools, in-process completion — wakes it. When off, tools run synchronously
+ * inline (the legacy path).
+ *
+ * Default ON: the async path is now the validated default. Set
+ * `CREWMELD_ASYNC_TOOLS=0` (or false) to fall back to the synchronous inline
+ * path as an escape hatch. Read at call time so it can be flipped without a
+ * rebuild.
+ */
+export function isAsyncToolsEnabled(): boolean {
+  return !isFalsy(getEnv('CREWMELD_ASYNC_TOOLS'))
 }

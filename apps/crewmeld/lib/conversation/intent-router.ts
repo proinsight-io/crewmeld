@@ -15,6 +15,7 @@ import {
 import { createLogger } from '@crewmeld/logger'
 import { eq } from 'drizzle-orm'
 import { t } from '@/lib/core/server-i18n'
+import type { RuleResolver } from '@/lib/identity/condition-tree'
 import type { ScopeIdentity } from '@/lib/identity/types'
 import { resolveSopAccess } from '@/lib/sop/visibility-matcher'
 import type { SopVisibilityRules } from '@/lib/sop/visibility-types'
@@ -59,8 +60,25 @@ export async function buildWorkflowToolConfigs(
 
   // 1a. Bucket by tri-state access when a caller identity is available.
   // allow → visible (tools + prompt), deny → restricted task, hide → dropped.
+
+  // Load the named-access-rule resolver once (only when bucketing runs) so
+  // `{ ruleRef }` nodes in a SOP's visibility tree resolve live. Fail-closed: if it
+  // cannot load, it stays undefined and any rule reference evaluates to false.
+  let resolveRule: RuleResolver | undefined
+  if (visibility) {
+    try {
+      const { loadRuleResolver } = await import('@/lib/access-rules/store')
+      resolveRule = await loadRuleResolver()
+    } catch (err) {
+      logger.warn('failed to load access-rule resolver for SOP visibility', {
+        employeeId,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
   const { visible: visibleSops, denied: deniedSops } = visibility
-    ? bucketSopsByAccess(sopInfos, visibility.identity, visibility.connectionId)
+    ? bucketSopsByAccess(sopInfos, visibility.identity, resolveRule)
     : { visible: sopInfos, denied: [] as SopInfo[] }
 
   // 1b. Build the denied-SOP descriptor map (program-level rejection safety net).
@@ -210,16 +228,21 @@ export interface SopInfo {
  * - `allow` → visible (becomes a tool + Available Tasks entry).
  * - `deny` → denied (surfaced as a restricted task; rejected if actually called).
  * - `hide` → neither (silently dropped).
+ *
+ * @param resolveRule - Optional resolver for named access-rule references (`{ ruleRef }`
+ *   nodes). When omitted (or when the resolver returns `undefined` for a given id),
+ *   the reference fails closed to `false` — the SOP is hidden/denied rather than
+ *   wrongly allowed. SOPs with no rule references are unaffected.
  */
 export function bucketSopsByAccess(
   sops: SopInfo[],
   identity: ScopeIdentity | null,
-  connectionId: string | null
+  resolveRule?: RuleResolver
 ): { visible: SopInfo[]; denied: SopInfo[] } {
   const visible: SopInfo[] = []
   const denied: SopInfo[] = []
   for (const sop of sops) {
-    const access = resolveSopAccess(sop.visibilityRules, identity, connectionId)
+    const access = resolveSopAccess(sop.visibilityRules, identity, resolveRule)
     if (access === 'allow') visible.push(sop)
     else if (access === 'deny') denied.push(sop)
     // 'hide' → dropped

@@ -9,7 +9,7 @@ import {
   workLogs,
 } from '@crewmeld/db/schema'
 import { createLogger } from '@crewmeld/logger'
-import { and, asc, eq, inArray, ne } from 'drizzle-orm'
+import { and, asc, desc, eq, inArray, ne } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import { resolveModelConfig } from '@/lib/conversation/model-config'
 import type { ConversationModelConfig, OpenAITool } from '@/lib/conversation/types'
@@ -19,7 +19,14 @@ import type { ScopeIdentity } from '@/lib/identity/types'
 import { buildImageProxyUrl, loadRagflowConfig, retrieval } from '@/lib/ragflow'
 import type { ApiToolSpec } from '@/lib/tools/api-tool-types'
 import type { NodeExecutionResult, SopNode, SopStateSnapshot } from '@/types/sop'
-import { executeLLMWithTools, type ToolCallLogEntry } from './llm-tool-executor'
+import { isAsyncToolsEnabled } from '@/lib/core/config/feature-flags'
+import {
+  executeLLMWithTools,
+  type LLMToolExecutionResult,
+  runAsyncToolLoop,
+  type ToolCallLogEntry,
+} from './llm-tool-executor'
+import { loadNodeToolResults, rebuildNodeToolExchange } from './rebuild-messages-from-worklogs'
 import { getSopNotificationQueue, getSopTimeoutQueue } from './queue'
 import {
   buildToolDefinitionsFromIds,
@@ -266,11 +273,13 @@ export async function executeNode(
   executionId: string,
   node: SopNode,
   snapshot: SopStateSnapshot,
-  allNodes?: SopNode[]
+  allNodes?: SopNode[],
+  /** Present when resuming a digital-employee node after an async tool callback. */
+  resume?: { taskId: string }
 ): Promise<NodeExecutionResult> {
   switch (node.type) {
     case 'digital_employee':
-      return executeDigitalEmployeeNode(executionId, node, snapshot, allNodes)
+      return executeDigitalEmployeeNode(executionId, node, snapshot, allNodes, resume)
     case 'human_employee':
       return executeHumanEmployeeNode(executionId, node, snapshot)
     case 'human_confirm':
@@ -828,12 +837,13 @@ async function executeDigitalEmployeeNode(
   executionId: string,
   node: SopNode,
   snapshot: SopStateSnapshot,
-  allNodes?: SopNode[]
+  allNodes?: SopNode[],
+  resume?: { taskId: string }
 ): Promise<NodeExecutionResult> {
   // Has tools or digital employee bound to knowledge base, use LLM Agent path
   // Knowledge base determined by digital employee config, no longer depends on node.useKnowledgeBase toggle
   if ((node.toolIds && node.toolIds.length > 0) || node.executorId) {
-    return executeDigitalEmployeeWithLLMTools(executionId, node, snapshot, allNodes)
+    return executeDigitalEmployeeWithLLMTools(executionId, node, snapshot, allNodes, resume)
   }
 
   const nodeExecId = nanoid()
@@ -875,19 +885,49 @@ async function executeDigitalEmployeeWithLLMTools(
   executionId: string,
   node: SopNode,
   snapshot: SopStateSnapshot,
-  allNodes?: SopNode[]
+  allNodes?: SopNode[],
+  resume?: { taskId: string }
 ): Promise<NodeExecutionResult> {
-  const nodeExecId = nanoid()
+  // Async suspend/resume splits one logical node execution into two function
+  // calls (dispatch→suspend, then callback→resume). On resume, reuse the
+  // sop_node_executions row the suspending call left in 'running' instead of
+  // inserting a second one — otherwise a single-node SOP accrues two node rows
+  // (the first stranded in 'running'), which double-counts node progress in the
+  // task center and emits a duplicate node_started timeline event.
+  let nodeExecId: string
+  let nodeExecStartedAt: Date
+  const [resumedNodeExec] = resume
+    ? await db
+        .select({ id: sopNodeExecutions.id, startedAt: sopNodeExecutions.startedAt })
+        .from(sopNodeExecutions)
+        .where(
+          and(
+            eq(sopNodeExecutions.executionId, executionId),
+            eq(sopNodeExecutions.nodeId, node.id),
+            eq(sopNodeExecutions.status, 'running')
+          )
+        )
+        .orderBy(desc(sopNodeExecutions.startedAt))
+        .limit(1)
+    : []
 
-  await db.insert(sopNodeExecutions).values({
-    id: nodeExecId,
-    executionId,
-    nodeId: node.id,
-    nodeName: node.name,
-    nodeType: node.type,
-    status: 'running',
-    startedAt: new Date(),
-  })
+  if (resumedNodeExec) {
+    nodeExecId = resumedNodeExec.id
+    nodeExecStartedAt = resumedNodeExec.startedAt ?? new Date()
+  } else {
+    // Fresh run, or a resume whose suspend row vanished — start a new record.
+    nodeExecId = nanoid()
+    nodeExecStartedAt = new Date()
+    await db.insert(sopNodeExecutions).values({
+      id: nodeExecId,
+      executionId,
+      nodeId: node.id,
+      nodeName: node.name,
+      nodeType: node.type,
+      status: 'running',
+      startedAt: nodeExecStartedAt,
+    })
+  }
 
   if (!node.executorId) {
     const errorMessage = `Digital employee node "${node.name}" has no assigned digital employee (required for model resolution)`
@@ -1220,22 +1260,29 @@ async function executeDigitalEmployeeWithLLMTools(
 
     // This node execution shares a single taskExecution, all tool call workLogs are attached to it
     // This way one SOP node execution = 1 task record, consistent with list page statistics granularity
-    const nodeTaskId = `task_${nanoid()}`
-    const nodeTaskStart = Date.now()
-    try {
-      await db.insert(taskExecutions).values({
-        id: nodeTaskId,
-        employeeId,
-        sopExecutionId: executionId,
-        triggerType: 'sop',
-        status: 'running',
-        input: { executionId, nodeId: node.id, nodeName: node.name },
-        inputSummary: node.description || node.name || t('sopExecuteTask'),
-        durationMs: 0,
-        startedAt: new Date(),
-      })
-    } catch (e) {
-      logger.warn('SOP node taskExecution creation failed', { error: e })
+    // On resume, reuse the suspended node's task so its journaled tool calls
+    // (the rebuild key) stay attached to one task; only a fresh run creates one.
+    const nodeTaskId = resume?.taskId ?? `task_${nanoid()}`
+    // Measure from the node-execution row's start so a resumed run's duration
+    // spans the whole node (including the async-tool suspend window), not just
+    // the post-callback tail.
+    const nodeTaskStart = nodeExecStartedAt.getTime()
+    if (!resume) {
+      try {
+        await db.insert(taskExecutions).values({
+          id: nodeTaskId,
+          employeeId,
+          sopExecutionId: executionId,
+          triggerType: 'sop',
+          status: 'running',
+          input: { executionId, nodeId: node.id, nodeName: node.name },
+          inputSummary: node.description || node.name || t('sopExecuteTask'),
+          durationMs: 0,
+          startedAt: new Date(),
+        })
+      } catch (e) {
+        logger.warn('SOP node taskExecution creation failed', { error: e })
+      }
     }
 
     // Started workLog intentionally not written: it duplicated the full node.description
@@ -1243,7 +1290,58 @@ async function executeDigitalEmployeeWithLLMTools(
     // Legacy rows in old executions are still tolerated by the reader-side filter in
     // buildHistoryFromWorkLogs and the i18n key remains defined in locale files.
 
-    const result = await executeLLMWithTools({
+    // Async tools mode: dispatch each round's tool calls and suspend the SOP
+    // until their callbacks land. On resume the loop continues from the
+    // conversation rebuilt out of work_logs.
+    let result: LLMToolExecutionResult
+    const asyncToolsMode = isAsyncToolsEnabled()
+    if (asyncToolsMode) {
+      let resumeMiddleMessages: Awaited<ReturnType<typeof rebuildNodeToolExchange>>['messages'] | undefined
+      let startRound = 0
+      if (resume) {
+        const rebuilt = await rebuildNodeToolExchange(nodeTaskId)
+        resumeMiddleMessages = rebuilt.messages
+        startRound = rebuilt.lastRound + 1
+      }
+      const outcome = await runAsyncToolLoop({
+        modelConfig,
+        tools,
+        toolEndpoints: endpointMap,
+        systemPrompt,
+        userMessage,
+        maxRounds: 5,
+        sopExecutionId: executionId,
+        sopFileUrlPrefix,
+        apiTools,
+        identity: identityMeta,
+        nodeId: node.id,
+        taskId: nodeTaskId,
+        employeeId,
+        resumeMiddleMessages,
+        startRound,
+      })
+      if (outcome.kind === 'suspended') {
+        logger.info('[SOP Node] Suspended on async tool dispatch', {
+          executionId,
+          nodeId: node.id,
+          round: outcome.round,
+          dispatched: outcome.dispatched,
+        })
+        return { paused: true, pauseKind: 'tool' }
+      }
+      // Done: map the loop outcome onto the shared post-processing path below.
+      // Async tool results live in work_logs, not in-memory — reconstruct them so
+      // downstream consumers (approval gate tool-usage check, completion log
+      // counts) see which tools actually ran instead of an empty list.
+      result = {
+        summary: outcome.summary,
+        toolResults: await loadNodeToolResults(nodeTaskId),
+        rounds: outcome.rounds,
+        totalTokens: outcome.totalTokens,
+        error: outcome.error,
+      }
+    } else {
+      result = await executeLLMWithTools({
       modelConfig,
       tools,
       toolEndpoints: endpointMap,
@@ -1284,10 +1382,13 @@ async function executeDigitalEmployeeWithLLMTools(
           logger.warn('SOP tool call log write failed', { error: logErr })
         }
       },
-    })
+      })
+    }
 
     // ── Execution layer fallback: check if all bound tools were called, auto-supplement uncalled ones ──
-    if (tools.length > 0 && !result.error) {
+    // Skipped in async mode: tool results are journaled to work_logs, not held
+    // in result.toolResults, so the "uncalled" detection would misfire.
+    if (!asyncToolsMode && tools.length > 0 && !result.error) {
       const calledToolNames = new Set(result.toolResults.map((tr) => tr.toolName))
       const uncalledTools = tools.filter((t) => !calledToolNames.has(t.function.name))
 

@@ -7,6 +7,8 @@
 import { createLogger } from '@crewmeld/logger'
 import { t } from '@/lib/core/server-i18n'
 import type { ChannelUserDetail } from '@/lib/channels/directory-types'
+import { DEFAULT_CHANNEL_FIELD_MAP } from '@/lib/identity/field-map-defaults'
+import { normalizeIdentityFromRaw } from '@/lib/identity/normalize'
 
 const logger = createLogger('DingtalkClient')
 
@@ -283,18 +285,19 @@ export async function downloadRobotFile(
 }
 
 /**
- * [IM-DIRECTORY · MERGE→dev0.0.1] Fetch a DingTalk user's personal info from IM.
+ * [IM-DIRECTORY · MERGE→dev0.0.1] Fetch a DingTalk user's raw directory record.
  *
- * Fetch a DingTalk user's directory detail by staffId (userId). Standalone IM
- * capability — no ontology dependency; merges to dev0.0.1. Best-effort:
- * returns null when the lookup fails. Dept names resolved best-effort via
- * topapi/v2/department/get; failures omit the name.
+ * Returns the channel-native user.get result enriched with best-effort resolved
+ * `deptNames` and a non-empty `attributes` pick. Field→identity mapping is applied
+ * separately by {@link normalizeIdentityFromRaw}. Returns null when lookup fails.
+ * Dept names resolved best-effort via topapi/v2/department/get; failures omit the name.
  */
-export async function getDingtalkUserDetail(
+export async function getDingtalkRawRecord(
   appKey: string,
   appSecret: string,
-  userId: string
-): Promise<ChannelUserDetail | null> {
+  userId: string,
+  passthroughFields?: string[]
+): Promise<Record<string, unknown> | null> {
   const result = await callDingtalkApi<
     DingtalkApiResult & {
       result?: {
@@ -311,6 +314,14 @@ export async function getDingtalkUserDetail(
   >(appKey, appSecret, `${DINGTALK_OAPI_BASE}/topapi/v2/user/get`, { userid: userId })
   if (result.errcode !== 0 || !result.result) return null
   const u = result.result
+  const rawUser = u as Record<string, unknown>
+
+  // Pick only the declared custom fields from the raw user object. Custom fields
+  // live alongside the known fields, so read it as a record for the by-name pick.
+  const attributes: Record<string, unknown> = {}
+  for (const f of passthroughFields ?? []) {
+    if (f in rawUser) attributes[f] = rawUser[f]
+  }
 
   const deptNames: string[] = []
   for (const deptId of u.dept_id_list ?? []) {
@@ -328,15 +339,25 @@ export async function getDingtalkUserDetail(
   }
 
   return {
-    name: u.name,
-    email: u.email,
-    mobile: u.mobile,
-    employeeNo: u.job_number,
+    ...rawUser,
     deptNames,
-    positions: u.title ? [u.title] : [],
-    orgUnitIds: (u.dept_id_list ?? []).map(String),
-    leaderId: u.manager_userid,
+    // Omit the key entirely when no declared field matched (keeps identity lean).
+    attributes: Object.keys(attributes).length > 0 ? attributes : undefined,
   }
+}
+
+/**
+ * [IM-DIRECTORY · MERGE→dev0.0.1] Fetch a DingTalk user's normalized directory detail.
+ * Thin wrapper: raw record → {@link normalizeIdentityFromRaw} with the default map.
+ */
+export async function getDingtalkUserDetail(
+  appKey: string,
+  appSecret: string,
+  userId: string,
+  passthroughFields?: string[]
+): Promise<ChannelUserDetail | null> {
+  const raw = await getDingtalkRawRecord(appKey, appSecret, userId, passthroughFields)
+  return raw ? normalizeIdentityFromRaw(raw, DEFAULT_CHANNEL_FIELD_MAP, 'dingtalk') : null
 }
 
 /**

@@ -11,12 +11,13 @@ import {
   conversationMessages,
   conversations,
   db,
+  SOP_TERMINAL_STATUSES,
   sopDefinitions,
   sopExecutions,
   user,
 } from '@crewmeld/db'
 import { createLogger } from '@crewmeld/logger'
-import { and, desc, eq } from 'drizzle-orm'
+import { and, desc, eq, notInArray } from 'drizzle-orm'
 import { generateExecutionId } from '@/lib/core/execution-id'
 import { t } from '@/lib/core/server-i18n'
 import { getBaseUrl } from '@/lib/core/utils/urls'
@@ -39,8 +40,23 @@ import { notifyChannelOnSopCompletion } from './sop-completion-notifier'
 
 const logger = createLogger('SopBridge')
 
-/** SOP execution wait timeout (ms) — LLM Agent multi-tool calls require longer time */
-const SOP_WAIT_TIMEOUT_MS = 180_000
+/**
+ * Synchronous grace window (ms): how long the conversation holds its (SSE) turn
+ * open hoping the SOP finishes so it can deliver the result in-turn (one clean
+ * LLM reply). SOPs are LLM-bound — a node runs ~2 LLM rounds on a large model
+ * plus pod startup, so even the fastest SOP floors around 15-20s; the bound tool
+ * itself is rarely the bottleneck. A window shorter than that would push EVERY
+ * SOP onto the async path (an "executing" ack now + a pushed result later), so
+ * the default is 60s: a typical multi-node SOP completes in-turn, and only
+ * genuinely long ones (many rounds, slow tools) exceed it and hand delivery to
+ * the engine's completion notifier. The connection is an SSE stream with
+ * periodic progress events, so holding it for the window is not an idle hold.
+ * Override with CREWMELD_SOP_SYNC_GRACE_MS.
+ */
+const SOP_SYNC_GRACE_MS =
+  Number(process.env.CREWMELD_SOP_SYNC_GRACE_MS) > 0
+    ? Number(process.env.CREWMELD_SOP_SYNC_GRACE_MS)
+    : 60_000
 
 /** Polling interval (ms) */
 const POLL_INTERVAL_MS = 500
@@ -316,6 +332,15 @@ export async function executeSopFromConversation(
       }
     }
 
+    // This SOP is triggered from a conversation that will deliver the result
+    // in-turn within the sync grace window, so suppress the engine's completion
+    // push (default true) — unless we later hand off (grace expired / paused),
+    // which flips it back. Set before the engine can complete (next line).
+    await db
+      .update(sopExecutions)
+      .set({ pushByEngine: false })
+      .where(eq(sopExecutions.id, executionId))
+
     // 4. Start SOP engine (do not await, but track Promise)
     const sopPromise = executeSop(executionId).catch((error) => {
       logger.error(`SOP execution error: ${executionId}`, error)
@@ -334,13 +359,37 @@ export async function executeSopFromConversation(
     // 5. Wait for SOP completion or timeout
     //    Has collaborator -> return immediately on paused_for_human
     //    No collaborator -> wait up to 180 seconds
-    const result = await waitForCompletion(
+    let result = await waitForCompletion(
       executionId,
       sopPromise,
       onProgress,
       hasCollaborator,
       isZh
     )
+
+    // Not delivered in-turn within the grace window: hand result delivery to the
+    // engine's completion notifier by flipping pushByEngine back on. The
+    // `status NOT terminal` guard makes this atomic against a SOP that just
+    // reached terminal in the poll gap — if it already finished, the flip
+    // matches nothing and we deliver in-turn after all (engine stays gated off).
+    if (!result.completed) {
+      const handed = await db
+        .update(sopExecutions)
+        .set({ pushByEngine: true })
+        .where(
+          and(
+            eq(sopExecutions.id, executionId),
+            eq(sopExecutions.pushByEngine, false),
+            notInArray(sopExecutions.status, SOP_TERMINAL_STATUSES)
+          )
+        )
+        .returning({ id: sopExecutions.id })
+
+      if (handed.length === 0) {
+        const final = await queryExecutionResult(executionId)
+        if (final.completed) result = final
+      }
+    }
 
     if (result.completed) {
       logger.info(`SOP completed synchronously: execution=${executionId}, status=${result.status}`)
@@ -501,7 +550,11 @@ async function waitForCompletion(
 
   const startTime = Date.now()
 
-  while (!done && Date.now() - startTime < SOP_WAIT_TIMEOUT_MS) {
+  // The `!done` guard is intentionally NOT in the loop condition: an async-tool
+  // suspension resolves sopPromise but the SOP may resume and complete via a
+  // callback within the wait window, so we must keep polling. Other resolved
+  // states are handled explicitly below.
+  while (Date.now() - startTime < SOP_SYNC_GRACE_MS) {
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS))
 
     // Check if terminal state reached
@@ -516,6 +569,17 @@ async function waitForCompletion(
         `SOP entered human confirmation phase, returning immediately: execution=${executionId}`
       )
       return { completed: false, status: current.status }
+    }
+
+    // sopPromise resolved but the execution is still non-terminal. `running`,
+    // `pending` and `paused_for_tool` are all ACTIVE states — a fast async-tool
+    // callback flips paused_for_tool→running→completed within this window, so we
+    // must keep polling (a too-fast callback used to be misread here as "resolved
+    // in another state" and bailed out, emitting a spurious "still processing"
+    // even though the SOP finished a moment later). Only a human pause won't
+    // self-resume, so that is the sole reason to stop early.
+    if (done && current.status === 'paused_for_human') {
+      return current
     }
 
     // Push step progress (once every PROGRESS_INTERVAL_MS)

@@ -1,4 +1,4 @@
-import { index, integer, jsonb, pgEnum, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
+import { boolean, index, integer, jsonb, pgEnum, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
 import { sopDefinitions } from './sop-definitions'
 
 /**
@@ -8,6 +8,11 @@ export const sopExecutionStatusEnum = pgEnum('sop_execution_status', [
   'pending',
   'running',
   'paused_for_human',
+  // Suspended mid-node waiting for an async tool to complete and wake the SOP
+  // (via HTTP callback for pod tools, or in-process resume for api tools).
+  // Distinct from paused_for_human so the human-approval resume path never
+  // matches it.
+  'paused_for_tool',
   'completed',
   'timed_out',
   'error',
@@ -98,6 +103,18 @@ export const sopExecutions = pgTable(
 
     /** Error message */
     errorMessage: text('error_message'),
+
+    /**
+     * Whether the engine's completion notifier should push the final result to
+     * the channel. Default true (fire-and-forget triggers — schedules, webhooks —
+     * have no in-turn waiter). A conversation trigger sets this false: it will
+     * deliver the result in-turn (the LLM's reply) within the sync grace window,
+     * so the engine must NOT also push. If the conversation gives up waiting
+     * (grace expired / paused), it atomically flips this back to true, handing
+     * delivery to the engine. The status-guarded flip + the notifier's gate
+     * guarantee exactly-once delivery.
+     */
+    pushByEngine: boolean('push_by_engine').notNull().default(true),
 
     /**
      * i18n metadata for errorMessage — written by engine.ts when a structured
