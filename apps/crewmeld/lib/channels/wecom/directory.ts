@@ -1,6 +1,8 @@
 import { createLogger } from '@crewmeld/logger'
 import { callWeComApiWithRetry } from '@/lib/channels/wecom/auth'
 import type { ChannelUserDetail } from '@/lib/channels/directory-types'
+import { DEFAULT_CHANNEL_FIELD_MAP } from '@/lib/identity/field-map-defaults'
+import { normalizeIdentityFromRaw } from '@/lib/identity/normalize'
 
 const logger = createLogger('WecomDirectory')
 
@@ -22,25 +24,26 @@ interface WeComDeptFields {
 }
 
 /**
- * [IM-DIRECTORY · MERGE→dev0.0.1] Fetch a WeCom user's personal info from IM.
+ * [IM-DIRECTORY · MERGE→dev0.0.1] Fetch a WeCom user's raw directory record (+ deptNames, attributes).
  *
- * Fetch a WeCom user's directory detail by userid. Standalone IM capability —
- * no ontology dependency; merges to dev0.0.1.
- *
- * WeCom has no standard job-number field; the userid is the enterprise-unique
- * key and is commonly set to the employee number, so it is reported as
- * employeeNo. Department names are resolved best-effort via department/get.
+ * Returns the channel-native user.get result enriched with best-effort resolved
+ * `deptNames` and a non-empty `attributes` pick. Field→identity mapping is applied
+ * separately by {@link normalizeIdentityFromRaw}; e.g. employeeNo ← userid (WeCom has
+ * no standard job-number field). Department names are resolved best-effort via
+ * department/get. Returns null when the user is not found or on error.
  *
  * @param corpId - WeCom corp ID
  * @param corpSecret - WeCom app secret
  * @param userId - WeCom userid to look up
- * @returns Mapped ChannelUserDetail, or null if the user is not found or on error
+ * @param passthroughFields - Declared custom field names to pick into `attributes`
+ * @returns Raw record with deptNames + attributes, or null if not found / on error
  */
-export async function getWecomUserDetail(
+export async function getWecomRawRecord(
   corpId: string,
   corpSecret: string,
-  userId: string
-): Promise<ChannelUserDetail | null> {
+  userId: string,
+  passthroughFields?: string[]
+): Promise<Record<string, unknown> | null> {
   try {
     const user = await callWeComApiWithRetry<WeComUserFields>(
       corpId,
@@ -54,6 +57,14 @@ export async function getWecomUserDetail(
     )
 
     if (user.errcode !== 0) return null
+    const rawUser = user as unknown as Record<string, unknown>
+
+    // Pick only the declared custom fields from the raw user object. Custom fields
+    // live alongside the known fields, so read it as a record for the by-name pick.
+    const attributes: Record<string, unknown> = {}
+    for (const f of passthroughFields ?? []) {
+      if (f in rawUser) attributes[f] = rawUser[f]
+    }
 
     const deptNames: string[] = []
     for (const deptId of user.department ?? []) {
@@ -76,17 +87,27 @@ export async function getWecomUserDetail(
     }
 
     return {
-      name: user.name,
-      email: user.email,
-      mobile: user.mobile,
-      employeeNo: user.userid,
+      ...rawUser,
       deptNames,
-      positions: user.position ? [user.position] : [],
-      orgUnitIds: (user.department ?? []).map(String),
-      leaderId: user.direct_leader?.[0],
+      // Omit the key entirely when no declared field matched (keeps identity lean).
+      attributes: Object.keys(attributes).length > 0 ? attributes : undefined,
     }
   } catch (error) {
     logger.warn('WeCom user detail failed', { userId, error })
     return null
   }
+}
+
+/**
+ * [IM-DIRECTORY · MERGE→dev0.0.1] Fetch a WeCom user's normalized directory detail.
+ * Thin wrapper: raw record → {@link normalizeIdentityFromRaw} with the default map.
+ */
+export async function getWecomUserDetail(
+  corpId: string,
+  corpSecret: string,
+  userId: string,
+  passthroughFields?: string[]
+): Promise<ChannelUserDetail | null> {
+  const raw = await getWecomRawRecord(corpId, corpSecret, userId, passthroughFields)
+  return raw ? normalizeIdentityFromRaw(raw, DEFAULT_CHANNEL_FIELD_MAP, 'wecom') : null
 }

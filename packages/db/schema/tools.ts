@@ -46,6 +46,12 @@ export const tools = pgTable(
      * its mount to the running execution's prefix.
      */
     needsFileMount: boolean('needs_file_mount').notNull().default(false),
+    /** Tool kind: 'script' (container) | 'api' (in-process JS sandbox). */
+    kind: text('kind').notNull().default('script'),
+    /** API-tool spec JSONB (only when kind='api'): { pre, request, post }. */
+    apiSpec: jsonb('api_spec'),
+    /** When true, the platform forwards resolved caller identity to this tool (all kinds). */
+    forwardIdentity: boolean('forward_identity').notNull().default(false),
     /** SHA-256 hex digest of the .cmtool zip bytes */
     packageSha256: text('package_sha256'),
     /** Creator user ID */

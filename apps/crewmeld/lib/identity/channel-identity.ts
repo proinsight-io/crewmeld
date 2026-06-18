@@ -18,6 +18,9 @@ import { createLogger } from '@crewmeld/logger'
 import type { ChannelUserDetail } from '@/lib/channels/directory-types'
 import { env } from '@/lib/core/config/env'
 import { getRedisClient } from '@/lib/core/config/redis'
+import { loadActiveFieldMap } from './field-map-store'
+import type { ChannelFieldMapping } from './field-map-types'
+import { normalizeIdentityFromRaw } from './normalize'
 import type { ChannelIdentityInput, ScopeIdentity } from './types'
 
 const logger = createLogger('ChannelIdentity')
@@ -92,6 +95,27 @@ async function writeL2(key: string, value: ScopeIdentity | null): Promise<void> 
 }
 
 /**
+ * IM channels that {@link resolveChannelIdentity} can resolve a directory identity
+ * for. These are the only channels with a directory fetcher in `fetchDetail`; all
+ * other channel values (e.g. 'web', 'telegram', 'discord', 'email') have no
+ * internal directory and would always fail-closed to a null identity.
+ */
+const IM_CHANNELS: ReadonlySet<string> = new Set(['feishu', 'dingtalk', 'wecom'])
+
+/**
+ * Whether `channel` is a real IM channel with a resolvable directory identity.
+ *
+ * Callers use this to decide between the channel-direct identity path (IM
+ * channels) and a policy-aware fallback (web / anonymous / other channels).
+ * Returns false for `undefined`.
+ *
+ * @param channel - Channel kind from the conversation, or undefined.
+ */
+export function isImChannel(channel: string | null | undefined): boolean {
+  return channel !== null && channel !== undefined && IM_CHANNELS.has(channel)
+}
+
+/**
  * Clears the identity cache.
  *
  * @internal Test-only — do not call from production code.
@@ -127,7 +151,14 @@ export async function resolveChannelIdentity(
   }
 
   try {
-    const detail = await fetchDetail(input.channel, input.userId, input.config)
+    const fieldMap = await loadActiveFieldMap()
+    const detail = await fetchDetail(
+      input.channel,
+      input.userId,
+      fieldMap,
+      input.config,
+      input.attributePassthrough
+    )
     // fetchDetail returns null for stable non-retry conditions (unknown channel,
     // missing credentials, user-not-found).  Both the non-null and null return
     // paths represent definite facts worth caching.
@@ -137,6 +168,13 @@ export async function resolveChannelIdentity(
           positions: detail.positions ?? [],
           employeeNo: detail.employeeNo,
           leaderId: detail.leaderId,
+          // orgUnitIds here is the channel-direct open_department_id space (used by SOP
+          // dept-permission matching at the visibility gate). scope.storeIds is NOT populated
+          // here: channel-sourced output fields are routed from binding-configured channel
+          // fields (e.g. the tenant custom department id, or any `raw.<path>` into the
+          // directory detail below) by applyChannelFieldRouting at the data-tool gate / SOP
+          // enrichment, which runs AFTER the gate. `raw` carries the full detail so routing
+          // can reach any field.
           scope: { orgUnitIds: detail.orgUnitIds ?? [] },
           raw: detail,
         }
@@ -174,7 +212,9 @@ export async function resolveChannelIdentity(
 async function fetchDetail(
   channel: string,
   userId: string,
-  config?: Record<string, unknown>
+  fieldMap: ChannelFieldMapping,
+  config?: Record<string, unknown>,
+  passthroughFields?: string[]
 ): Promise<ChannelUserDetail | null> {
   if (!config) {
     logger.warn('channel identity: no connection config supplied; skipping (no fallback)', {
@@ -183,6 +223,7 @@ async function fetchDetail(
     return null
   }
 
+  let raw: Record<string, unknown> | null = null
   switch (channel) {
     case 'feishu': {
       const appId = config.appId as string | undefined
@@ -191,8 +232,9 @@ async function fetchDetail(
         logger.warn('feishu credentials missing or incomplete', { channel })
         return null
       }
-      const { getFeishuUserDetail } = await import('@/lib/channels/feishu-client')
-      return getFeishuUserDetail(appId, appSecret, userId)
+      const { getFeishuRawRecord } = await import('@/lib/channels/feishu-client')
+      raw = await getFeishuRawRecord(appId, appSecret, userId, passthroughFields)
+      break
     }
 
     case 'dingtalk': {
@@ -202,8 +244,9 @@ async function fetchDetail(
         logger.warn('dingtalk credentials missing or incomplete', { channel })
         return null
       }
-      const { getDingtalkUserDetail } = await import('@/lib/channels/dingtalk-client')
-      return getDingtalkUserDetail(appKey, appSecret, userId)
+      const { getDingtalkRawRecord } = await import('@/lib/channels/dingtalk-client')
+      raw = await getDingtalkRawRecord(appKey, appSecret, userId, passthroughFields)
+      break
     }
 
     case 'wecom': {
@@ -213,12 +256,15 @@ async function fetchDetail(
         logger.warn('wecom credentials missing or incomplete', { channel })
         return null
       }
-      const { getWecomUserDetail } = await import('@/lib/channels/wecom/directory')
-      return getWecomUserDetail(corpId, corpSecret, userId)
+      const { getWecomRawRecord } = await import('@/lib/channels/wecom/directory')
+      raw = await getWecomRawRecord(corpId, corpSecret, userId, passthroughFields)
+      break
     }
 
     default:
       logger.warn('unsupported channel for identity resolution', { channel })
       return null
   }
+
+  return raw ? normalizeIdentityFromRaw(raw, fieldMap, channel) : null
 }

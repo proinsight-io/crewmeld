@@ -41,6 +41,16 @@ export const dingtalkPlugin: ChannelPlugin<DingtalkPluginConfig> = {
   id: 'dingtalk',
   label: t('channelPluginDingtalk'),
   aliases: ['ding', 'dingtalk-robot'],
+  identityRawFields: [
+    { path: 'name', label: '姓名' },
+    { path: 'email', label: '邮箱' },
+    { path: 'mobile', label: '手机' },
+    { path: 'job_number', label: '工号' },
+    { path: 'title', label: '职务' },
+    { path: 'dept_id_list', label: '部门ID列表' },
+    { path: 'deptNames', label: '部门名' },
+    { path: 'manager_userid', label: '直属主管userid' },
+  ],
 
   capabilities: {
     direct: true,

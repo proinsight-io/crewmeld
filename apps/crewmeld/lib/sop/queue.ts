@@ -1,6 +1,10 @@
 import { createLogger } from '@crewmeld/logger'
 import { type ConnectionOptions, Queue, Worker } from 'bullmq'
-import type { NotificationJobPayload, TimeoutJobPayload } from '@/types/sop'
+import type {
+  AsyncToolWatchdogPayload,
+  NotificationJobPayload,
+  TimeoutJobPayload,
+} from '@/types/sop'
 
 const logger = createLogger('SopQueue')
 
@@ -40,6 +44,7 @@ function getConnection(): ConnectionOptions | null {
 
 let sopTimeoutQueue: Queue | null = null
 let sopNotificationQueue: Queue | null = null
+let asyncToolWatchdogQueue: Queue | null = null
 
 const DEFAULT_JOB_OPTIONS = {
   attempts: 3,
@@ -83,6 +88,37 @@ export function getSopNotificationQueue(): Queue | null {
 }
 
 /**
+ * Get the async-tool watchdog queue (lazy initialization).
+ *
+ * Holds a delayed job per dispatched async tool call; if the call never calls
+ * back, the job fires and fails it so the SOP does not hang forever.
+ *
+ * @returns Queue instance, null when Redis unavailable
+ */
+export function getAsyncToolWatchdogQueue(): Queue | null {
+  if (asyncToolWatchdogQueue) return asyncToolWatchdogQueue
+  const conn = getConnection()
+  if (!conn) return null
+
+  asyncToolWatchdogQueue = new Queue('sop-async-tool-watchdog', {
+    connection: conn,
+    defaultJobOptions: DEFAULT_JOB_OPTIONS,
+  })
+  return asyncToolWatchdogQueue
+}
+
+/** Cancel a watchdog job once its tool call has called back (best-effort). */
+export async function cancelAsyncToolWatchdog(jobId: string): Promise<void> {
+  const queue = getAsyncToolWatchdogQueue()
+  if (!queue) return
+  try {
+    await queue.remove(jobId)
+  } catch {
+    // Already removed or currently firing — nothing to do.
+  }
+}
+
+/**
  * Initialize SOP Workers — called on process startup
  *
  * SSR guard: do not initialize in browser environment.
@@ -114,6 +150,18 @@ export function initSopWorkers(): void {
     async (job) => {
       const mod = await import('@/lib/sop/workers/notification-worker')
       await mod.processNotification(job.data as NotificationJobPayload)
+    },
+    {
+      connection: conn,
+      concurrency: 5,
+    }
+  )
+
+  new Worker(
+    'sop-async-tool-watchdog',
+    async (job) => {
+      const mod = await import('@/lib/sop/workers/async-tool-watchdog-worker')
+      await mod.processAsyncToolWatchdog(job.data as AsyncToolWatchdogPayload)
     },
     {
       connection: conn,

@@ -76,10 +76,20 @@ export interface ApprovalDoneCardParams {
   language?: string
 }
 
+/** A known raw directory field a channel exposes, for the field-map combobox dropdown. */
+export interface RawFieldDef {
+  /** Path into the channel's raw record. */
+  path: string
+  /** zh-CN label for display. */
+  label: string
+}
+
 export interface ChannelPlugin<TConfig = Record<string, unknown>> {
   id: ConversationChannel
   label: string
   aliases?: string[]
+  /** Known raw directory field paths for the identity field-map editor dropdown. */
+  identityRawFields?: RawFieldDef[]
   capabilities: ChannelCapabilities
   configSchema: z.ZodType<TConfig>
   inbound: {

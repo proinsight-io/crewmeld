@@ -1,16 +1,17 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { AlertCircle, ArrowLeft, Loader2, Play, Save } from 'lucide-react'
 import { useParams, useRouter } from 'next/navigation'
 import { ReactFlowProvider } from 'reactflow'
 import { SopCanvas } from '@/components/sop/editor/sop-canvas'
 import { SopTriggerBar } from '@/components/sop/editor/sop-trigger-bar'
-import { type BoundConnection, PermissionPanel } from '@/components/sop/permission/permission-panel'
+import { PermissionPanel } from '@/components/sop/permission/permission-panel'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { buildRuleEditorCatalog } from '@/lib/access-rules/rule-editor-catalog'
 import { serializeSopToPayload } from '@/lib/sop/serialize'
-import type { SopVisibilityRules } from '@/lib/sop/visibility-types'
+import type { IdentityFieldDef, SopVisibilityRules } from '@/lib/sop/visibility-types'
 import { useTranslation } from '@/hooks/use-translation'
 import { useSopEditorStore } from '@/stores/sop/editor-store'
 import { SopNodeConfigPanel } from './node-config-panel'
@@ -24,7 +25,17 @@ export default function SopEditPage() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [toast, setToast] = useState<{ type: 'error' | 'success'; message: string } | null>(null)
   const [visibilityRules, setVisibilityRules] = useState<SopVisibilityRules | null>(null)
-  const [boundConnections, setBoundConnections] = useState<BoundConnection[]>([])
+  const [unifiedFields, setUnifiedFields] = useState<Array<{ key: string; label: string }>>([])
+
+  /** Channel-agnostic identity-field catalog forwarded to the permission panel. */
+  const catalog = useMemo<IdentityFieldDef[]>(
+    () =>
+      buildRuleEditorCatalog(unifiedFields, {
+        roles: t('accessRules.field.roles'),
+        employeeId: t('accessRules.field.employeeId'),
+      }),
+    [unifiedFields, t]
+  )
 
   const showToast = useCallback((type: 'error' | 'success', message: string) => {
     setToast({ type, message })
@@ -92,18 +103,21 @@ export default function SopEditPage() {
             : null
         setVisibilityRules(validVis)
 
-        // Fetch bound channel connections for the permission panel tabs
-        const connRes = await fetch(`/api/employee/sops/${id}/bound-connections`)
-        if (connRes.ok) {
-          const connJson = await connRes.json()
-          if (!cancelled) {
-            setBoundConnections((connJson.data?.connections as BoundConnection[]) ?? [])
+        // Fetch the unified identity-field map for the channel-agnostic permission editor.
+        const fieldRes = await fetch('/api/employee/channel-field-mappings')
+        if (fieldRes.ok) {
+          const fieldJson = (await fieldRes.json()) as {
+            success?: boolean
+            data?: { fields?: Array<{ key: string; label?: string }> }
           }
-        } else {
-          if (!cancelled) {
-            showToast('error', '渠道列表加载失败，请重试')
+          if (!cancelled && fieldJson?.success && Array.isArray(fieldJson.data?.fields)) {
+            setUnifiedFields(
+              fieldJson.data.fields.map((f) => ({ key: f.key, label: f.label ?? f.key }))
+            )
           }
         }
+        // A missing/failed field map is non-fatal: the catalog degrades to
+        // the built-in roles + employeeId pickers supplied by buildRuleEditorCatalog.
       } catch (err) {
         if (!cancelled) setLoadError(err instanceof Error ? err.message : t('sops.editLoadError'))
       } finally {
@@ -292,9 +306,9 @@ export default function SopEditPage() {
         ) : (
           <div className='w-80 shrink-0 overflow-y-auto'>
             <PermissionPanel
-              connections={boundConnections}
-              value={visibilityRules}
+              rules={visibilityRules}
               onChange={handleVisibilityChange}
+              catalog={catalog}
             />
           </div>
         )}

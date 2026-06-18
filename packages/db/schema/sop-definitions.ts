@@ -64,6 +64,13 @@ export const sopDefinitions = pgTable(
     /** Whether this is the active version */
     isActive: boolean('is_active').notNull().default(true),
 
+    /**
+     * Per-connection visibility rules (SopVisibilityRules). Null/absent ⇒ SOP
+     * visible to everyone. Evaluated by the conversation engine before exposing
+     * the SOP to the LLM.
+     */
+    visibilityRules: jsonb('visibility_rules').$type<Record<string, unknown> | null>(),
+
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

@@ -41,7 +41,7 @@ CREATE TYPE "public"."permission_type" AS ENUM('admin', 'write', 'read');--> sta
 CREATE TYPE "public"."platform_role" AS ENUM('super_admin', 'admin', 'member');--> statement-breakpoint
 CREATE TYPE "public"."sandbox_run_status" AS ENUM('pending', 'running', 'waiting_for_input', 'completed', 'failed', 'cancelled', 'timeout');--> statement-breakpoint
 CREATE TYPE "public"."sandbox_run_type" AS ENUM('node_test', 'workflow_run', 'sop_run');--> statement-breakpoint
-CREATE TYPE "public"."sop_execution_status" AS ENUM('pending', 'running', 'paused_for_human', 'completed', 'timed_out', 'error', 'failed', 'cancelled');--> statement-breakpoint
+CREATE TYPE "public"."sop_execution_status" AS ENUM('pending', 'running', 'paused_for_human', 'paused_for_tool', 'completed', 'timed_out', 'error', 'failed', 'cancelled');--> statement-breakpoint
 CREATE TYPE "public"."sop_node_status" AS ENUM('pending', 'running', 'completed', 'skipped', 'error');--> statement-breakpoint
 CREATE TYPE "public"."sop_pause_decision" AS ENUM('approved', 'rejected', 'timeout');--> statement-breakpoint
 CREATE TYPE "public"."sop_pause_status" AS ENUM('waiting', 'decided', 'timeout');--> statement-breakpoint
@@ -470,6 +470,7 @@ CREATE TABLE "sop_executions" (
 	"retry_count" integer DEFAULT 0 NOT NULL,
 	"rejection_count" integer DEFAULT 0 NOT NULL,
 	"error_message" text,
+	"push_by_engine" boolean DEFAULT true NOT NULL,
 	"metadata" jsonb DEFAULT '{}',
 	"started_at" timestamp with time zone,
 	"completed_at" timestamp with time zone,
@@ -1126,3 +1127,25 @@ CREATE TABLE IF NOT EXISTS tool_executions (
 CREATE INDEX IF NOT EXISTS tool_executions_user_idx ON tool_executions(user_id, created_at);
 CREATE INDEX IF NOT EXISTS tool_executions_session_idx ON tool_executions(session_id);
 CREATE INDEX IF NOT EXISTS tool_executions_instance_idx ON tool_executions(instance_id);
+
+-- Global channel->normalized identity field map. See packages/db/schema/channel-field-mappings.ts.
+CREATE TABLE IF NOT EXISTS channel_field_mappings (
+  field_key text PRIMARY KEY,
+  label text NOT NULL,
+  is_custom boolean NOT NULL DEFAULT false,
+  target text NOT NULL DEFAULT 'scope',
+  value_type text NOT NULL DEFAULT 'string',
+  paths jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Named, reusable access rule: identity-condition tree addressable by id.
+-- See packages/db/schema/access-rules.ts.
+CREATE TABLE IF NOT EXISTS access_rules (
+  id text PRIMARY KEY,
+  name text NOT NULL,
+  description text,
+  tree jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);

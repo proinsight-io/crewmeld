@@ -577,6 +577,7 @@ const messages = {
   sopStartExecution: { zh: '开始执行：{name}节点任务', en: 'Starting execution: {name} node task' },
   sopToolCallSuccess: { zh: '调用工具「{name}」成功', en: 'Tool "{name}" called successfully' },
   sopToolCallFailed: { zh: '调用工具「{name}」失败', en: 'Tool "{name}" call failed' },
+  sopToolCallRunning: { zh: '调用工具「{name}」中', en: 'Tool "{name}" running' },
   sopToolRetrySuccess: { zh: '补调工具「{name}」成功', en: 'Retry tool "{name}" succeeded' },
   sopToolRetryFailed: { zh: '补调工具「{name}」失败', en: 'Retry tool "{name}" failed' },
   sopExecFailed: { zh: '执行失败：{error}', en: 'Execution failed: {error}' },

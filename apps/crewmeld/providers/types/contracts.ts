@@ -94,6 +94,14 @@ type ModelIdentityConfig = {
   model: string
   apiKey?: string
   isBYOK?: boolean
+  /**
+   * Per-request base URL override for OpenAI-compatible providers — the custom
+   * "API endpoint" set on a model config. When present it takes precedence over the
+   * provider's static `defaultBaseURL`, mirroring how the conversation runtime
+   * already resolves the endpoint (`lib/conversation/model-config.ts`
+   * `resolveBaseUrl`). Leaving it unset preserves the provider default.
+   */
+  apiEndpoint?: string
 }
 
 /** Fields controlling LLM generation parameters. */

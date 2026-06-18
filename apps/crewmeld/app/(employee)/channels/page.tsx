@@ -10,6 +10,7 @@ import { PermissionGuard } from '../components/permission-guard'
 import { AddChannelWizard } from './components/add-channel-wizard'
 import { ChannelCard } from './components/channel-card'
 import { EditChannelDialog } from './components/edit-channel-dialog'
+import { FieldMappingEditor } from './components/field-mapping-editor'
 import { type ChannelRecord, useChannels } from './hooks/use-channels'
 
 export default function ChannelsPage() {
@@ -197,6 +198,13 @@ export default function ChannelsPage() {
           </>
         )}
       </div>
+
+      {/* Global field mapping matrix */}
+      <PermissionGuard requires='channel:list'>
+        <div className='mt-8 rounded-lg border p-4'>
+          <FieldMappingEditor />
+        </div>
+      </PermissionGuard>
 
       {/* Add wizard */}
       <AddChannelWizard open={wizardOpen} onOpenChange={setWizardOpen} onCreated={refresh} />

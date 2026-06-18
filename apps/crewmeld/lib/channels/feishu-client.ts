@@ -7,6 +7,8 @@
 import { createLogger } from '@crewmeld/logger'
 import { t } from '@/lib/core/server-i18n'
 import type { ChannelUserDetail } from '@/lib/channels/directory-types'
+import { DEFAULT_CHANNEL_FIELD_MAP } from '@/lib/identity/field-map-defaults'
+import { normalizeIdentityFromRaw } from '@/lib/identity/normalize'
 
 const logger = createLogger('FeishuClient')
 
@@ -230,6 +232,12 @@ export interface FeishuUserProfile {
   leaderId: string | null
   /** Id type of `leaderId` and the queried user; matches the input id's format */
   leaderIdType: 'open_id' | 'union_id' | 'user_id'
+  /**
+   * Declared custom directory fields picked verbatim from the raw Contact API
+   * user object. Present (non-empty) only when the caller passed `passthroughFields`
+   * and at least one named field was found on the raw user; otherwise undefined.
+   */
+  attributes?: Record<string, unknown>
 }
 
 /**
@@ -350,7 +358,8 @@ async function getFeishuUserCustomDepartmentIds(
 export async function getFeishuUserProfile(
   appId: string,
   appSecret: string,
-  userId: string
+  userId: string,
+  passthroughFields?: string[]
 ): Promise<FeishuUserProfile | null> {
   const token = await getTenantAccessToken(appId, appSecret)
   const userIdType = inferUserIdType(userId)
@@ -392,6 +401,14 @@ export async function getFeishuUserProfile(
   }
 
   const user = result.data.user
+  // Pick only the declared custom fields from the raw user object. The typed
+  // `user` shape lists known fields; custom fields live on the same object, so
+  // read it as a record for the by-name pick. Undeclared fields are never copied.
+  const attributes: Record<string, unknown> = {}
+  const rawUser = user as Record<string, unknown>
+  for (const f of passthroughFields ?? []) {
+    if (f in rawUser) attributes[f] = rawUser[f]
+  }
   const departmentIds = user.department_ids ?? []
   // "0" is the tenant root department, not a real org unit — skip its name lookup.
   const departmentNames = (
@@ -415,6 +432,8 @@ export async function getFeishuUserProfile(
     departmentCustomIds,
     leaderId: user.leader_user_id ?? null,
     leaderIdType: userIdType,
+    // Omit the key entirely when no declared field matched (keeps identity lean).
+    attributes: Object.keys(attributes).length > 0 ? attributes : undefined,
   }
 }
 
@@ -599,34 +618,34 @@ export async function updateMessageCard(
 }
 
 /**
- * [IM-DIRECTORY · MERGE→dev0.0.1] Fetch a Feishu user's personal info from IM.
- *
- * Thin adapter over {@link getFeishuUserProfile}: one Contact API call yields
- * every directory field, so this maps the richer profile down to the
- * cross-channel {@link ChannelUserDetail} shape (positions ← job title,
- * orgUnitIds ← department ids, leaderId ← direct leader).
+ * [IM-DIRECTORY · MERGE→dev0.0.1] Fetch a Feishu user's raw directory record.
+ * The Feishu profile already carries every directory field, so it IS the raw record
+ * the field map indexes (keys: name/email/mobile/employeeNo/employeeType/jobTitle/
+ * departmentIds/departmentNames/departmentCustomIds/leaderId/attributes).
  *
  * Best-effort: returns null when the Contact API does not return a user (e.g.
  * missing contact permission).
  */
+export async function getFeishuRawRecord(
+  appId: string,
+  appSecret: string,
+  openId: string,
+  passthroughFields?: string[]
+): Promise<Record<string, unknown> | null> {
+  const profile = await getFeishuUserProfile(appId, appSecret, openId, passthroughFields)
+  return profile ? (profile as unknown as Record<string, unknown>) : null
+}
+
+/**
+ * [IM-DIRECTORY · MERGE→dev0.0.1] Fetch a Feishu user's normalized directory detail.
+ * Thin wrapper: raw record → {@link normalizeIdentityFromRaw} with the default map.
+ */
 export async function getFeishuUserDetail(
   appId: string,
   appSecret: string,
-  openId: string
+  openId: string,
+  passthroughFields?: string[]
 ): Promise<ChannelUserDetail | null> {
-  const profile = await getFeishuUserProfile(appId, appSecret, openId)
-  if (!profile) return null
-
-  return {
-    name: profile.name ?? undefined,
-    email: profile.email ?? undefined,
-    mobile: profile.mobile ?? undefined,
-    employeeNo: profile.employeeNo ?? undefined,
-    employeeType: profile.employeeType != null ? String(profile.employeeType) : undefined,
-    deptNames: profile.departmentNames,
-    positions: profile.jobTitle ? [profile.jobTitle] : [],
-    orgUnitIds: profile.departmentIds,
-    orgUnitCustomIds: profile.departmentCustomIds,
-    leaderId: profile.leaderId ?? undefined,
-  }
+  const raw = await getFeishuRawRecord(appId, appSecret, openId, passthroughFields)
+  return raw ? normalizeIdentityFromRaw(raw, DEFAULT_CHANNEL_FIELD_MAP, 'feishu') : null
 }

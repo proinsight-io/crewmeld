@@ -13,6 +13,8 @@ import type { ConversationModelConfig } from '@/lib/conversation/types'
 import { t } from '@/lib/core/server-i18n'
 import type { ScopeIdentity } from '@/lib/identity/types'
 import type { ApiToolSpec } from '@/lib/tools/api-tool-types'
+import { dispatchAsyncToolCall } from './async-tool-dispatch'
+import type { ToolLoopOutcome } from './tool-loop-types'
 import type { ToolEndpointInfo } from './tool-builder'
 
 const logger = createLogger('SopLLMToolExecutor')
@@ -813,6 +815,173 @@ export async function executeLLMWithTools({
   }
 
   return maxRoundResult
+}
+
+interface RunAsyncToolLoopParams {
+  modelConfig: ConversationModelConfig
+  tools: OpenAIToolDef[]
+  toolEndpoints: Map<string, ToolEndpointInfo>
+  systemPrompt: string
+  userMessage: string
+  maxRounds?: number
+  /** SOP execution id (= dispatch executionId). Required in async mode. */
+  sopExecutionId: string
+  sopFileUrlPrefix?: string
+  apiTools?: Map<string, { spec: ApiToolSpec; forwardIdentity?: boolean }>
+  identity?: ScopeIdentity
+  /** Node + task identity for journaling dispatched calls. */
+  nodeId: string
+  taskId: string
+  employeeId: string
+  /** On resume: the rebuilt assistant/tool message pairs from earlier rounds. */
+  resumeMiddleMessages?: ChatMessage[]
+  /** On resume: the round to continue from (lastRound + 1). */
+  startRound?: number
+}
+
+/**
+ * Async variant of {@link executeLLMWithTools}: instead of running tool calls
+ * inline, every tool_call in a round is DISPATCHED (api in-process / script in a
+ * pod / http endpoint), then the loop SUSPENDS — the SOP pauses until the
+ * callbacks land and {@link resumeSopFromAsyncTool} resumes by rebuilding the
+ * conversation from `work_logs` and calling this again with a higher startRound.
+ *
+ * Returns `{ kind: 'done' }` when the model emits a final answer, or
+ * `{ kind: 'suspended' }` after dispatching a round's tool calls.
+ */
+export async function runAsyncToolLoop(p: RunAsyncToolLoopParams): Promise<ToolLoopOutcome> {
+  const maxRounds = p.maxRounds ?? 5
+  const messages: ChatMessage[] = [
+    { role: 'system', content: p.systemPrompt },
+    { role: 'user', content: p.userMessage },
+    ...(p.resumeMiddleMessages ?? []),
+  ]
+  let totalTokens = 0
+
+  for (let round = p.startRound ?? 0; round < maxRounds; round++) {
+    const response = await callLLMNonStreaming(messages, p.tools, p.modelConfig)
+    totalTokens += response.usage?.total_tokens ?? 0
+
+    const choice = response.choices[0]
+    if (!choice) {
+      return { kind: 'done', summary: null, rounds: round + 1, totalTokens }
+    }
+    const msg = choice.message
+
+    // Final answer — no tool calls — end the loop (same error detection as sync).
+    if (!msg.tool_calls || msg.tool_calls.length === 0) {
+      const error = detectLLMErrorMarker(msg.content) ?? undefined
+      return { kind: 'done', summary: msg.content, rounds: round + 1, totalTokens, error }
+    }
+
+    // Dispatch every tool call in this round, then suspend.
+    const attachmentUrls = extractAttachmentUrls(p.userMessage)
+    for (const tc of msg.tool_calls) {
+      let args: Record<string, unknown> = {}
+      try {
+        args = JSON.parse(tc.function.arguments)
+      } catch {
+        args = { raw: tc.function.arguments }
+      }
+
+      const endpointInfo = p.toolEndpoints.get(tc.function.name)
+      if (attachmentUrls.length > 0 && !endpointInfo?.needsFileMount) {
+        const overridden = overrideFileUrlArgs(args, attachmentUrls)
+        if (overridden.changed) args = overridden.args
+      }
+
+      const callId = `call_${randomUUID().slice(0, 12)}`
+      const apiEntry = p.apiTools?.get(tc.function.name)
+      const base = {
+        executionId: p.sopExecutionId,
+        nodeId: p.nodeId,
+        taskId: p.taskId,
+        employeeId: p.employeeId,
+        round,
+        callId,
+        toolName: tc.function.name,
+        args,
+      }
+
+      if (apiEntry) {
+        await dispatchAsyncToolCall({
+          ...base,
+          kind: 'api',
+          toolId: tc.function.name,
+          instanceName: tc.function.name,
+          apiSpec: apiEntry.spec,
+          apiForwardIdentity: apiEntry.forwardIdentity,
+          identity: p.identity,
+        })
+        continue
+      }
+
+      if (!endpointInfo) {
+        await dispatchAsyncToolCall({
+          ...base,
+          kind: 'immediate',
+          toolId: tc.function.name,
+          instanceName: tc.function.name,
+          error: `Unknown tool: ${tc.function.name}`,
+        })
+        continue
+      }
+
+      if (endpointInfo.forwardIdentity && !p.identity) {
+        await dispatchAsyncToolCall({
+          ...base,
+          kind: 'immediate',
+          toolId: endpointInfo.toolId,
+          instanceName: endpointInfo.instanceName,
+          error: 'forwardIdentity identity unresolved (fail-closed)',
+        })
+        continue
+      }
+
+      // Build the request body the tool receives (identity + file-mount context).
+      const requestBody: Record<string, unknown> = { ...args }
+      if (endpointInfo.forwardIdentity && p.identity) {
+        requestBody.identity = p.identity
+      }
+      if (endpointInfo.needsFileMount && p.sopExecutionId) {
+        requestBody._sopExecutionId = p.sopExecutionId
+        const { paths: devStudioPaths } = await import('@/lib/dev-studio/paths')
+        requestBody._sopFileDir = devStudioPaths.sopFiles.relPath(p.sopExecutionId)
+        requestBody._callId = callId
+        if (p.sopFileUrlPrefix) requestBody._sopFileUrlPrefix = p.sopFileUrlPrefix
+      }
+
+      if (endpointInfo.deployType === 'opensandbox-script') {
+        const userEnv = Object.fromEntries(
+          (endpointInfo.envVars ?? []).map((e) => [e.name, String(e.value ?? '')])
+        )
+        await dispatchAsyncToolCall({
+          ...base,
+          kind: 'script',
+          toolId: endpointInfo.toolId,
+          instanceName: endpointInfo.instanceName,
+          templateId: endpointInfo.templateId,
+          userEnv,
+          requestBody,
+        })
+      } else {
+        await dispatchAsyncToolCall({
+          ...base,
+          kind: 'http',
+          toolId: endpointInfo.toolId,
+          instanceName: endpointInfo.instanceName,
+          endpoint: endpointInfo.endpoint,
+          requestBody,
+          useProxy: endpointInfo.useProxy,
+          envelopeMode: endpointInfo.deployType === 'opensandbox' ? 'opensandbox' : 'standard',
+        })
+      }
+    }
+
+    return { kind: 'suspended', round, dispatched: msg.tool_calls.length }
+  }
+
+  return { kind: 'done', summary: 'Max tool call rounds reached, execution terminated', rounds: maxRounds, totalTokens }
 }
 
 /** SOP error prefix marker */

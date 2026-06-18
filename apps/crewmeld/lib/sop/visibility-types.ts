@@ -1,11 +1,14 @@
 /**
  * SOP visibility-rule types.
  *
- * A SOP's visibility is gated per bound channel connection. Each connection has
- * one {@link VisibilityGroup} tree (max two levels of nesting). The matcher
- * ({@link resolveSopAccess}) evaluates the tree against the caller's resolved
- * identity. Storage: `sop_definitions.visibility_rules` jsonb column.
+ * A SOP's visibility is controlled by a single channel-agnostic condition tree.
+ * The matcher ({@link resolveSopAccess}) evaluates the tree against the caller's
+ * resolved identity regardless of which channel the message arrived on.
+ * Storage: `sop_definitions.visibility_rules` jsonb column.
  */
+
+import type { ConditionGroup, ConditionTree, LeafCondition, RuleRef } from '@/lib/identity/condition-tree'
+import { isConditionGroup } from '@/lib/identity/condition-tree'
 
 /**
  * Tri-state access decision for a SOP relative to a caller.
@@ -26,25 +29,15 @@ export type SopAccess = 'allow' | 'hide' | 'deny'
  * matcher always performs set-membership regardless of the stored operator, so
  * `contains` degrades to `equals` for those fields.
  */
-export type VisibilityOperator = 'equals' | 'contains'
+export type VisibilityOperator = LeafCondition['operator']
 
-/** A leaf condition: a field compared against one or more candidate values. */
-export interface VisibilityCondition {
-  /** Field catalog key, e.g. 'orgUnitIds' | 'employeeNo' | 'positions' | 'email'. */
-  field: string
-  operator: VisibilityOperator
-  /** Candidate values; OR semantics among them. Dept/user store ids, others store text. */
-  values: string[]
-}
+/** @deprecated Shape merged into the shared-core LeafCondition; alias kept for compatibility. */
+export type VisibilityCondition = LeafCondition
 
-/** A boolean group combining child conditions / sub-groups. */
-export interface VisibilityGroup {
-  op: 'and' | 'or'
-  /** Root group may contain sub-groups; a sub-group may contain only leaf conditions. */
-  children: Array<VisibilityCondition | VisibilityGroup>
-}
+/** @deprecated Shape merged into the shared-core ConditionGroup; alias kept for compatibility. */
+export type VisibilityGroup = ConditionGroup
 
-/** Per-connection rule tree (the root of a channel tab). */
+/** @deprecated Use {@link SopVisibilityRules.tree} instead. Kept for legacy type compatibility. */
 export type ChannelRuleTree = VisibilityGroup
 
 /** Full visibility config persisted on a SOP definition. */
@@ -53,7 +46,7 @@ export interface SopVisibilityRules {
   enabled: boolean
   /**
    * Action when a caller does NOT pass permission — i.e. the rule tree did not
-   * match, the caller's connection has no tab, or the identity is unresolved.
+   * match or the identity is unresolved.
    * `hide` silently withholds the SOP; `deny` exposes it as a restricted task so
    * the LLM can tell the user they lack permission (a program-level safety net
    * still rejects any actual call).
@@ -64,8 +57,13 @@ export interface SopVisibilityRules {
    * `'deny'` value opts into the no-permission message behaviour.
    */
   onNoPermission?: 'hide' | 'deny'
-  /** key = systemConnections.id (bound channel instance). */
-  channels: Record<string, ChannelRuleTree>
+  /**
+   * Channel-agnostic visibility condition tree. Evaluated against the caller's
+   * resolved identity regardless of channel. Supports `{ruleRef}` named-rule refs.
+   * When absent and no legacy `channels` map is present, the matcher returns
+   * `onNoPermission` (default `'hide'`).
+   */
+  tree?: ConditionTree
 }
 
 /**
@@ -96,7 +94,7 @@ export interface IdentityFieldDef {
   valueSource: IdentityFieldValueSource
 }
 
-/** Narrow a tree node to a group. */
-export function isGroup(node: VisibilityCondition | VisibilityGroup): node is VisibilityGroup {
-  return 'op' in node
+/** Narrow a tree node to a group. Accepts RuleRef nodes too (returns false for them). */
+export function isGroup(node: VisibilityCondition | VisibilityGroup | RuleRef): node is VisibilityGroup {
+  return isConditionGroup(node)
 }

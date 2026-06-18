@@ -38,3 +38,27 @@ const CATALOG: Record<string, IdentityFieldDef[]> = {
 export function getIdentityFieldCatalog(channelType: string): IdentityFieldDef[] {
   return CATALOG[channelType] ?? []
 }
+
+/**
+ * Channel directory fields that are valid identity-output SOURCES but are NOT SOP
+ * permission-matchable, keyed by channel type. Kept OUT of {@link CATALOG} so they
+ * never appear in the SOP permission matcher (whose getFieldValue would not resolve
+ * them, silently failing any rule). Currently: Feishu tenant custom department ids,
+ * which a db-mode data tool can clamp store-scoped types by (see channel-identity's
+ * scope.storeIds wiring).
+ */
+const BINDING_ONLY_FIELDS: Record<string, string[]> = {
+  feishu: ['orgUnitCustomIds'],
+}
+
+/**
+ * Channel directory field keys the identity-binding editor may route an output key
+ * from: the SOP matcher catalog plus binding-only source fields (see
+ * {@link BINDING_ONLY_FIELDS}). Use this — not {@link getIdentityFieldCatalog} — for
+ * the binding editor's channel-field dropdown so storeIds can be sourced from the
+ * Feishu custom department id.
+ */
+export function getBindingChannelFields(channelType: string): string[] {
+  const base = (CATALOG[channelType] ?? []).map((f) => f.key)
+  return [...base, ...(BINDING_ONLY_FIELDS[channelType] ?? [])]
+}

@@ -1348,6 +1348,22 @@ export const en: LooseMessages = {
       'Enter the following Webhook URL in WeCom Admin Console under "API Message Receiving".',
     wecomCreateChannel: 'Create Channel',
     wecomDone: 'Done',
+    fieldMapping: {
+      title: 'Identity Field Mapping',
+      subtitle: "Configure how each channel's raw fields map to unified identity fields",
+      colLabel: 'Label',
+      colKey: 'ID Field',
+      modeField: 'Field',
+      modeConst: 'Constant',
+      fieldPlaceholder: 'Raw field path, e.g. a field name or a.b.0',
+      constPlaceholder: 'Constant value',
+      addRow: '+ Custom field',
+      removeRow: 'Remove',
+      save: 'Save',
+      saved: 'Saved',
+      saveFailed: 'Save failed',
+      customKeyPlaceholder: 'Custom key',
+    },
   },
 
   // ── SOPs ──
@@ -1875,6 +1891,33 @@ export const en: LooseMessages = {
     rechunkOverlapRange: 'Range: 0 – 500 tokens',
     rechunkProcessing: 'Processing...',
     rechunkStart: 'Start Chunking',
+  },
+
+  // ── Access Rule condition groups ──
+  accessRules: {
+    selectPlaceholder: 'Select a condition group…',
+    custom: 'Custom…',
+    manage: 'Manage groups',
+    saveAs: 'Save as group',
+    saveAsPrompt: 'Name this condition',
+    unbind: 'Unbind to copy',
+    namedSummary: 'References group: {name}',
+    unknownRule: '(group deleted)',
+    dialogTitle: 'Manage condition groups',
+    newRule: 'New group',
+    name: 'Group name',
+    description: 'Description (optional)',
+    save: 'Save',
+    cancel: 'Cancel',
+    edit: 'Edit',
+    delete: 'Delete',
+    empty: 'No condition groups yet',
+    inUse: 'This group is used in {n} place(s) and cannot be deleted',
+    liveWarning: 'Changes apply live to every place referencing this group',
+    field: {
+      roles: 'Platform role',
+      employeeId: 'Platform user',
+    },
   },
 
   // ── Audit Logs ──
@@ -3969,6 +4012,21 @@ You are a general-purpose intelligent assistant that can handle various daily wo
       contactValueEmpty: 'Contact method value cannot be empty',
       hasPendingApprovals: 'Cannot delete: this employee has pending approvals',
       fetchAvailabilityFailed: 'Failed to fetch channel availability',
+    },
+    channelFieldMap: {
+      readFailed: 'Failed to read channel field mapping',
+      invalidBody: 'Invalid request body',
+      invalidConfig: 'Invalid field mapping configuration',
+      catalogFailed: 'Failed to fetch field catalog',
+    },
+    accessRules: {
+      invalidBody: 'Invalid request body',
+      invalidRule: 'Invalid access rule shape',
+      missingId: 'Missing rule ID',
+      inUse: 'Rule is referenced and cannot be deleted',
+      readFailed: 'Failed to read access rules',
+      writeFailed: 'Failed to save access rule',
+      deleteFailed: 'Failed to delete access rule',
     },
   },
 

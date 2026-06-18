@@ -39,6 +39,16 @@ export const wecomPlugin: ChannelPlugin<WeComPluginConfig> = {
   id: 'wecom',
   label: t('channelPluginWecom'),
   aliases: ['wechat-work', 'wxwork'],
+  identityRawFields: [
+    { path: 'name', label: '姓名' },
+    { path: 'email', label: '邮箱' },
+    { path: 'mobile', label: '手机' },
+    { path: 'userid', label: '成员UserID' },
+    { path: 'position', label: '职务' },
+    { path: 'department', label: '部门ID列表' },
+    { path: 'deptNames', label: '部门名' },
+    { path: 'direct_leader.0', label: '直属上级UserID' },
+  ],
 
   capabilities: {
     direct: true,

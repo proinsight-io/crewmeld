@@ -13,6 +13,7 @@ const VALID_STATUSES: SopExecutionStatus[] = [
   'pending',
   'running',
   'paused_for_human',
+  'paused_for_tool',
   'completed',
   'timed_out',
   'error',

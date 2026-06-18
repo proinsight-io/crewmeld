@@ -401,7 +401,10 @@ export function createOpenAICompatibleProvider(opts: OpenAICompatProviderOptions
     const t0Iso = new Date(t0).toISOString()
 
     try {
-      const client = new OpenAI({ apiKey: effectiveApiKey, baseURL: opts.defaultBaseURL })
+      // Per-request endpoint override (custom "API endpoint" from the model config)
+      // wins over the provider's static default; unset falls back to the default.
+      const baseURL = req.apiEndpoint?.trim() || opts.defaultBaseURL
+      const client = new OpenAI({ apiKey: effectiveApiKey, baseURL })
       const initialHistory = buildInitialHistory(req)
       const fnDefs = toFunctionDefs(req)
 
