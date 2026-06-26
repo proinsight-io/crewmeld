@@ -20,6 +20,14 @@ export interface ModelDefaultParams {
    * `ANTHROPIC_DEFAULT_OPUS_MODEL`. Empty/undefined → env var omitted.
    */
   codingOpusModel?: string
+  /**
+   * User-defined passthrough parameters merged verbatim into the
+   * OpenAI-compatible `/chat/completions` request body (e.g.
+   * `{ enable_thinking: false }`). Lets operators toggle vendor-specific
+   * options such as thinking mode without code changes. Reserved request keys
+   * (model/messages/stream/tools/...) are ignored when the body is assembled.
+   */
+  extraParams?: Record<string, unknown>
 }
 
 export interface ModelConfigData {

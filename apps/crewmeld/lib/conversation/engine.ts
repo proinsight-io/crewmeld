@@ -45,7 +45,7 @@ import { buildContextWindow, stripToolStructureFromHistory } from './context'
 import { classifyIntent } from './intent-classifier'
 import { buildWorkflowToolConfigs } from './intent-router'
 import { getEmployeeKnowledgeBaseIds, queryEmployeeKnowledge } from './knowledge-query'
-import { resolveModelConfig } from './model-config'
+import { mergeExtraParams, resolveModelConfig } from './model-config'
 import { buildSystemPrompt } from './persona'
 import { executeSopFromConversation } from './sop-bridge'
 import type {
@@ -735,6 +735,8 @@ interface ModelConfig {
   model: string
   apiKey: string
   baseUrl: string
+  /** User-defined passthrough params merged into the request body (e.g. enable_thinking). */
+  extraParams?: Record<string, unknown>
 }
 
 /**
@@ -1311,6 +1313,8 @@ async function callLLM(
     body.tools = tools
     body.tool_choice = 'auto'
   }
+
+  mergeExtraParams(body, config.extraParams)
 
   const response = await fetch(`${config.baseUrl}/chat/completions`, {
     method: 'POST',

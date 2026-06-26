@@ -165,6 +165,11 @@ async function _POST(request: NextRequest) {
         ? { codingSonnetModel: defaultParams.codingSonnetModel }
         : {}),
       ...(defaultParams?.codingOpusModel ? { codingOpusModel: defaultParams.codingOpusModel } : {}),
+      // User-defined passthrough params (e.g. enable_thinking) merged verbatim
+      // into the LLM request body at call time. See mergeExtraParams.
+      ...(defaultParams?.extraParams && typeof defaultParams.extraParams === 'object'
+        ? { extraParams: defaultParams.extraParams }
+        : {}),
     }
 
     const apiKeyEncrypted = apiKey ? encryptConfig(apiKey) : null
