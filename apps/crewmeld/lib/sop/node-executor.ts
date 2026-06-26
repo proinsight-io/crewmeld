@@ -20,6 +20,7 @@ import { buildImageProxyUrl, loadRagflowConfig, retrieval } from '@/lib/ragflow'
 import type { ApiToolSpec } from '@/lib/tools/api-tool-types'
 import type { NodeExecutionResult, SopNode, SopStateSnapshot } from '@/types/sop'
 import { isAsyncToolsEnabled } from '@/lib/core/config/feature-flags'
+import { getBaseUrl } from '@/lib/core/utils/urls'
 import {
   executeLLMWithTools,
   type LLMToolExecutionResult,
@@ -982,11 +983,7 @@ async function executeDigitalEmployeeWithLLMTools(
 
     // URL prefix the tool will get as `_sopFileUrlPrefix` for output
     // links it returns. Must point at the project's proxy route.
-    const appBaseUrl = (
-      process.env.APP_BASE_URL ??
-      process.env.NEXT_PUBLIC_APP_URL ??
-      'http://localhost:6100'
-    ).replace(/\/$/, '')
+    const appBaseUrl = getBaseUrl().replace(/\/$/, '')
     const sopFileUrlPrefix = `${appBaseUrl}/api/sop/${executionId}/files`
 
     logger.info('[SOP Node] Resources ready - digital employee/model/tools', {
@@ -1327,7 +1324,7 @@ async function executeDigitalEmployeeWithLLMTools(
           round: outcome.round,
           dispatched: outcome.dispatched,
         })
-        return { paused: true, pauseKind: 'tool' }
+        return { paused: true, pauseKind: 'tool', taskId: nodeTaskId }
       }
       // Done: map the loop outcome onto the shared post-processing path below.
       // Async tool results live in work_logs, not in-memory — reconstruct them so

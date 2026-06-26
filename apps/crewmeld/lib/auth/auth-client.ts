@@ -8,15 +8,22 @@ import {
 import { createAuthClient } from 'better-auth/react'
 import type { auth } from '@/lib/auth'
 import { isBillingEnabled } from '@/lib/core/config/feature-flags'
-import { getBaseUrl } from '@/lib/core/utils/urls'
 import { SessionContext, type SessionHookResult } from '@/app/_shell/providers/session-provider'
 
 /** Conditional plugin list — organization plugin only loaded when billing is active. */
 const conditionalPlugins = isBillingEnabled ? [organizationClient()] : []
 
-/** Shared better-auth browser client for all auth operations. */
+/**
+ * Shared better-auth browser client for all auth operations.
+ *
+ * No `baseURL` is passed on purpose: better-auth then resolves it from
+ * `window.location.origin`, so auth requests stay same-origin with whatever
+ * host the page was loaded from (any LAN IP / domain). Hardcoding it to
+ * `getBaseUrl()` (NEXT_PUBLIC_APP_URL) would force cross-origin requests —
+ * e.g. a page on http://192.168.x.x:6100 posting to http://localhost:6100 —
+ * which strips credentials and breaks login.
+ */
 export const client = createAuthClient({
-  baseURL: getBaseUrl(),
   plugins: [
     emailOTPClient(),
     genericOAuthClient(),

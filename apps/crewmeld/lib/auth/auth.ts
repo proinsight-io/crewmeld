@@ -35,6 +35,7 @@ import { sendEmail } from '@/lib/messaging/email/mailer'
 import { getFromEmailAddress, getPersonalEmailFrom } from '@/lib/messaging/email/utils'
 import { quickValidateEmail } from '@/lib/messaging/email/validation'
 import { createAnonymousSession, ensureAnonymousUserExists } from './anonymous'
+import { resolveAuthTrustedOrigins } from './trusted-origins'
 
 const logger = createLogger('Auth')
 
@@ -42,10 +43,9 @@ import { getMicrosoftRefreshTokenExpiry, isMicrosoftProvider } from '@/lib/oauth
 
 export const auth = betterAuth({
   baseURL: getBaseUrl(),
-  trustedOrigins: [
-    getBaseUrl(),
-    ...(env.NEXT_PUBLIC_SOCKET_URL ? [env.NEXT_PUBLIC_SOCKET_URL] : []),
-  ].filter(Boolean),
+  // Driven by ALLOWED_ORIGINS so CORS and better-auth's origin check share one knob.
+  // better-auth trusts the baseURL origin automatically on top of this.
+  trustedOrigins: resolveAuthTrustedOrigins,
   database: drizzleAdapter(db, {
     provider: 'pg',
     schema,

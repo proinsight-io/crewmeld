@@ -17,7 +17,7 @@ export const env = createEnv({
   server: {
     // Core Database & Authentication
     DATABASE_URL:                          z.string().url(),                       // Primary database connection string
-    BETTER_AUTH_URL:                       z.string().url(),                       // Base URL for Better Auth service
+    BETTER_AUTH_URL:                       z.string().url().optional(),            // DEPRECATED: ignored at runtime — better-auth baseURL comes from getBaseUrl(); kept optional to avoid breaking deployments that still set it
     BETTER_AUTH_SECRET:                    z.string().min(32),                     // Secret key for Better Auth JWT signing
     DISABLE_AUTH:                          z.boolean().optional(),                 // Bypass authentication entirely (self-hosted only, creates anonymous session)
     ENCRYPTION_KEY:                        z.string().min(32),                     // Key for encrypting sensitive data
@@ -26,6 +26,7 @@ export const env = createEnv({
 
     // Database & Storage
     REDIS_URL:                             z.string().url().optional(),            // Redis connection string for caching/sessions
+    MQ_QUEUE_PREFIX:                       z.string().optional(),                  // BullMQ key namespace prefix; defaults to "bull" when unset. Set a distinct value per isolated deployment sharing one Redis
     IDENTITY_CACHE_TTL_SECONDS:            z.string().optional().default('300'),   // Channel identity cache TTL in seconds (L1 in-process + L2 Redis); default 5 minutes
 
     // Payment & Billing
@@ -226,6 +227,8 @@ export const env = createEnv({
     SOCKET_PORT:                           z.number().optional(),                  // Port for WebSocket server
     PORT:                                  z.number().optional(),                  // Main application port
     CREWMELD_SANDBOX_CALLBACK_BASE_URL:    z.string().optional(),                  // Base URL async sandbox tools POST their callback to; must include protocol and be reachable from where the tool runs (cluster-reachable for pod tools, NOT localhost)
+    APP_BASE_URL:                          z.string().optional(),                  // Optional server-side override for the canonical base URL (back-compat); normally unnecessary since NEXT_PUBLIC_APP_URL is runtime-injected via next-runtime-env
+    WEBHOOK_BASE_URL:                       z.string().optional(),                  // Externally-reachable base URL for inbound third-party webhooks; falls back to getBaseUrl() when unset
     ALLOWED_ORIGINS:                       z.string().optional(),                  // CORS allowed origins
 
     // OAuth Integration Credentials - All optional, enables third-party integrations

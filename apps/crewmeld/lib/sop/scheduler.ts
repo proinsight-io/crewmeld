@@ -12,8 +12,9 @@ import { type ConnectionOptions, Queue, Worker } from 'bullmq'
 import { CronExpressionParser } from 'cron-parser'
 import { and, eq } from 'drizzle-orm'
 import { generateExecutionId } from '@/lib/core/execution-id'
+import { getBaseUrl } from '@/lib/core/utils/urls'
 import { executeSop, transitionStatus } from './engine'
-import { getSopTimeoutQueue } from './queue'
+import { getQueuePrefix, getSopTimeoutQueue } from './queue'
 
 const logger = createLogger('SopScheduler')
 
@@ -41,6 +42,7 @@ function getSchedulerQueue(): Queue | null {
   if (!conn) return null
   schedulerQueue = new Queue('sop-scheduler', {
     connection: conn,
+    prefix: getQueuePrefix(),
     defaultJobOptions: {
       attempts: 1,
       removeOnComplete: { count: 200 },
@@ -154,7 +156,7 @@ async function processScheduledTask(data: { scheduledTaskId: string }): Promise<
   const triggerData = (task.triggerData as Record<string, unknown>) ?? {}
 
   // Scheduled tasks have no HTTP request context; inject baseUrl from env vars for approval notifications
-  const baseUrl = process.env.APP_BASE_URL || process.env.NEXT_PUBLIC_APP_URL
+  const baseUrl = getBaseUrl()
   if (baseUrl) {
     triggerData._meta = { ...((triggerData._meta as Record<string, unknown>) ?? {}), baseUrl }
   }
@@ -229,6 +231,7 @@ export function initSchedulerWorker(): void {
     },
     {
       connection: conn,
+      prefix: getQueuePrefix(),
       concurrency: 3,
     }
   )

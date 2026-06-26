@@ -1,4 +1,5 @@
 import { createLogger } from '@crewmeld/logger'
+import { getBaseUrl } from '@/lib/core/utils/urls'
 import { generateApprovalToken } from '@/lib/human-employees/approval-token'
 import { buildNotificationContent } from '@/lib/human-employees/notification-content'
 import {
@@ -37,11 +38,7 @@ export async function processNotification(payload: NotificationJobPayload): Prom
     // Prefer baseUrl captured from request headers at SOP trigger time (dynamic domain)
     // Then APP_BASE_URL (server-side only, modifiable at runtime)
     // NEXT_PUBLIC_APP_URL is inlined at build time and cannot be changed at runtime
-    const baseUrl =
-      contextData.baseUrl ||
-      process.env.APP_BASE_URL ||
-      process.env.NEXT_PUBLIC_APP_URL ||
-      'http://localhost:6100'
+    const baseUrl = contextData.baseUrl || getBaseUrl()
 
     const content = buildNotificationContent(
       {

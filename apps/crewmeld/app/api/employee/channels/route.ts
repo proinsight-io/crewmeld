@@ -5,6 +5,7 @@ import { and, desc, eq, inArray, like, sql } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
 import type { NextRequest } from 'next/server'
 import { apiAuthErr, apiErr, apiOk } from '@/lib/api/response'
+import { getBaseUrl } from '@/lib/core/utils/urls'
 import { withAudit } from '@/lib/audit/with-audit'
 import { requirePermission } from '@/lib/auth/rbac/check-permission'
 import { tryConnectDiscordGateway } from '@/lib/channels/plugins/discord/auto-connect'
@@ -164,7 +165,7 @@ async function _POST(request: NextRequest) {
     }
 
     const id = nanoid()
-    const baseUrl = process.env.WEBHOOK_BASE_URL || process.env.NEXT_PUBLIC_APP_URL
+    const baseUrl = process.env.WEBHOOK_BASE_URL || getBaseUrl()
     const boundEmployeeId = body.config.boundEmployeeId as string | undefined
 
     // Only inbound-webhook channels need webhookUrl persisted on config
