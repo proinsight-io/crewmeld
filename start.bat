@@ -5,8 +5,8 @@ rem Crewmeld one-click startup
 rem Usage: start.bat [docker compose flags]
 rem Examples:
 rem   start.bat
-rem   start.bat --profile k3s --profile minio
-rem   start.bat --profile k3s --profile minio --profile ragflow --profile ollama
+rem   start.bat --profile opensandbox --profile minio
+rem   start.bat --profile opensandbox --profile minio --profile ragflow --profile ollama
 
 rem Ensure .env exists (only copy if missing)
 if not exist .env (
@@ -19,6 +19,9 @@ if not exist .env (
 ) else (
     echo [INFO] .env already exists, skipping copy.
 )
+
+rem Generate OPENSANDBOX_API_KEY at first deploy (host-side; NOT baked into the image).
+powershell -NoProfile -Command "$p='.env'; $c=Get-Content $p -Raw; if($c -notmatch '(?m)^OPENSANDBOX_API_KEY=.+'){$r=[System.Security.Cryptography.RandomNumberGenerator]::Create();$b=New-Object byte[] 32;$r.GetBytes($b);$k=($b|ForEach-Object{$_.ToString('x2')}) -join '';if($c -match '(?m)^OPENSANDBOX_API_KEY='){Set-Content $p -Value ($c -replace '(?m)^OPENSANDBOX_API_KEY=.*',('OPENSANDBOX_API_KEY='+$k)) -NoNewline}else{Add-Content $p -Value ('OPENSANDBOX_API_KEY='+$k)};Write-Host '[INFO] Generated OPENSANDBOX_API_KEY (first deploy).'}"
 
 rem Phase 1: Generate secrets (idempotent)
 echo [INFO] Ensuring secrets (docker compose --profile init run --rm setup)...

@@ -33,6 +33,27 @@ services:
     volumes:
       - ./.env:/app/.env
 
+  # Make the host volume root writable by the non-root crewmeld user (uid != 0).
+  # The bind source (CREWMELD_BFF_VOLUME_ROOT) is root-owned on first creation;
+  # on Windows/macOS Docker Desktop it lives INSIDE the Docker VM and can only be
+  # chmod'd from a root container like this — not from the Windows/macOS host.
+  # crewmeld depends_on this so Dev Studio can mkdir per-session dirs.
+  host-prep:
+    image: busybox:1.36
+    pull_policy: if_not_present
+    restart: "no"
+    logging: *default-logging
+    volumes:
+      - ${CREWMELD_BFF_VOLUME_ROOT:-/data/opensandbox-deploy}:/voldata
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        mkdir -p /voldata
+        chmod -R 1777 /voldata
+        echo "Prepared host volume root (mode 1777)."
+
   db:
     image: pgvector/pgvector:pg17
     pull_policy: if_not_present
@@ -105,8 +126,41 @@ services:
 
   crewmeld:
     <<: *crewmeld-app
+    # Run as root: the shared session/workspace volume is also written by the
+    # (root) OpenSandbox sandbox containers, and Docker auto-creates bind-mount
+    # subdirs as root. The image default user (nextjs) then hits EACCES on those
+    # root-owned subdirs. Running root keeps ownership uniform across writers.
+    user: "0:0"
     restart: unless-stopped
     logging: *default-logging
+    # Override the image CMD (`bunx concurrently ...`). bunx fetched
+    # concurrently@latest into /tmp at container start — concurrently is a
+    # devDependency absent from the production runner image — and a corrupt
+    # cache download bricked startup ("Cannot find module '../lib/defaults.js'").
+    # This bash supervisor launches both servers with no runtime network
+    # dependency: it forwards SIGTERM/SIGINT for graceful `docker stop`, and
+    # exits with the first dead child's code so the restart policy recovers the
+    # whole container instead of leaving it half-up.
+    command:
+      - bash
+      - -c
+      - |
+        bun apps/crewmeld/server.js &
+        app=$$!
+        bun apps/crewmeld/socket-bundled.js &
+        sock=$$!
+        trap 'kill -TERM $$app $$sock 2>/dev/null' TERM INT
+        wait -n
+        code=$$?
+        kill -TERM $$app $$sock 2>/dev/null
+        wait
+        exit $$code
+    # Reach a host-run OpenSandbox server (and host-published MinIO) at
+    # host.docker.internal. Docker Desktop resolves this automatically; the
+    # host-gateway mapping makes it work on Linux engines too (miniStart points
+    # OPENSANDBOX_SERVER_URL / MINIO_EXTERNAL_ENDPOINT there).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "${APP_PORT:-6100}:6100"
       - "${SOCKET_PORT:-6102}:6102"
@@ -125,16 +179,22 @@ services:
       - OLLAMA_URL=${OLLAMA_URL:-}
     volumes:
       - crewmeld_k3s_shared:/shared
+      # Dev Studio fresh-sandbox: extracted tool code + shared pip libs cache.
+      # Must be a bind mount (not a named volume) so the host daemon can re-bind
+      # these real paths into the sandbox containers it spawns (DooD).
+      - ${CREWMELD_BFF_VOLUME_ROOT:-/data/opensandbox-deploy}:${CREWMELD_BFF_VOLUME_ROOT:-/data/opensandbox-deploy}
     depends_on:
+      # Ensure the volume root is world-writable before the non-root app starts.
+      host-prep:
+        condition: service_completed_successfully
       migrations:
         condition: service_completed_successfully
-      # Optional: when --profile k3s is active, wait for k3s-init to write
-      # /shared/autogen.env (K8s API token + endpoint) AND finish prepulling
-      # skill base images. Without this, crewmeld starts too early and the
-      # deploy API silently returns "undefined".
-      # required: false lets `docker compose up` work without --profile k3s.
-      k3s-init:
-        condition: service_completed_successfully
+      # Optional: when --profile opensandbox-docker is active, wait for the
+      # OpenSandbox server to start before crewmeld (which reaches it at
+      # http://opensandbox-server:30080). required: false keeps plain
+      # `docker compose up` working without the profile.
+      opensandbox-server:
+        condition: service_started
         required: false
       db:
         condition: service_healthy
@@ -152,76 +212,181 @@ services:
           memory: 8G
           cpus: "4"
 
-  # =============== PROFILE: k3s ===============
-
-  k3s:
+  # =============== PROFILE: opensandbox ===============
+  # OpenSandbox (alibaba/OpenSandbox) sandbox-execution runtime on a dedicated
+  # k3s node. The OpenSandbox server itself is NOT a compose service — it is
+  # installed INTO this k3s via helm (see the opensandbox-deploy dir's
+  # install-existing-*.sh) and exposed on NodePort 30080. crewmeld reaches it
+  # through OPENSANDBOX_SERVER_URL (set in .env), so there is no compose-level
+  # dependency between this service and the crewmeld app.
+  #
+  # Dependency files (registries.yaml / shared-libs / sandbox-data) live in the
+  # opensandbox-deploy directory, which defaults to a sibling of this repo.
+  # Override OPENSANDBOX_DEPLOY_DIR in .env if it lives elsewhere.
+  opensandbox-k3s:
     image: rancher/k3s:v1.33.0-k3s1
     pull_policy: if_not_present
-    profiles: [k3s]
+    profiles: [opensandbox]
+    container_name: opensandbox-k3s
     restart: unless-stopped
     logging: *default-logging
     privileged: true
-    # Pin hostname so the k3s node name is stable across container recreations.
-    # Without this the node name = container ID, which changes on every recreate
-    # and invalidates the nodeAffinity on local-path PersistentVolumes.
-    hostname: crewmeld-k3s
-    command: server --disable traefik --disable servicelb --disable metrics-server --tls-san=k3s --node-name=crewmeld-k3s
+    hostname: opensandbox-k3s
+    command:
+      - server
+      - --disable=traefik
+      - --disable=servicelb
+      - --disable=metrics-server
+      - --tls-san=127.0.0.1
+      - --tls-san=localhost
+      - --node-name=opensandbox-k3s
+      - --write-kubeconfig-mode=644
     environment:
-      - K3S_KUBECONFIG_OUTPUT=/output/kubeconfig.yaml
+      - K3S_KUBECONFIG_OUTPUT=/output/config
       - K3S_KUBECONFIG_MODE=644
-      # Optional: route containerd image pulls through a proxy to bypass GFW.
-      # Set HTTP_PROXY / HTTPS_PROXY / NO_PROXY in .env when needed (Go's
-      # net/http supports socks5://, so socks5://host:port works directly).
-      # Empty values are inert — leave unset for direct egress.
-      - HTTP_PROXY=${HTTP_PROXY:-}
-      - HTTPS_PROXY=${HTTPS_PROXY:-}
-      - NO_PROXY=${NO_PROXY:-}
     tmpfs:
       - /run
       - /var/run
-    expose:
-      - "6443"
     ports:
-      # Map k3s NodePort range to host so skill Pods are reachable from host / crewmeld container
-      - "${K8S_NODEPORT_MIN:-30000}-${K8S_NODEPORT_MAX:-32767}:30000-32767"
+      - "6443:6443"
+      - "30000-32767:30000-32767"
     volumes:
-      - crewmeld_k3s_data:/var/lib/rancher/k3s
-      - crewmeld_k3s_shared:/output
+      # Fresh named volume (v2): the original crewmeld_opensandbox_k3s_data left
+      # stale CNI/route state on disk that drove a "no default routes" restart
+      # loop. A clean volume gives k3s a pristine datastore on first boot.
+      - crewmeld_opensandbox_k3s_v2:/var/lib/rancher/k3s
+      - ${OPENSANDBOX_DEPLOY_DIR:-../opensandbox-deploy}/.kube:/output
+      - ${OPENSANDBOX_DEPLOY_DIR:-../opensandbox-deploy}/registries.yaml:/etc/rancher/k3s/registries.yaml:ro
+      # Bundled-mode persistence for sandbox hostPath mounts.
+      # k3s sees /data/opensandbox-deploy/{shared-libs,sandbox-data}; they are
+      # bind-mounted from the deploy dir so the data lives next to the install
+      # scripts (easy to inspect / backup / wipe).
+      - ${OPENSANDBOX_DEPLOY_DIR:-../opensandbox-deploy}/shared-libs:/data/opensandbox-deploy/shared-libs
+      - ${OPENSANDBOX_DEPLOY_DIR:-../opensandbox-deploy}/sandbox-data:/data/opensandbox-deploy/sandbox-data
     healthcheck:
-      test: ["CMD-SHELL", "test -f /output/kubeconfig.yaml && kubectl get nodes --no-headers 2>/dev/null | grep -q ' Ready'"]
+      test:
+        - CMD-SHELL
+        - test -f /output/config && kubectl get nodes --no-headers 2>/dev/null | grep -q ' Ready'
       interval: 15s
       timeout: 5s
       retries: 20
       start_period: 60s
 
-  k3s-init:
-    image: bitnami/kubectl
-    profiles: [k3s]
+  # =============== PROFILE: opensandbox-docker ===============
+  # OpenSandbox "docker" runtime mode (see .sandbox.toml: [runtime] type="docker").
+  # The server runs containerized here and spawns sandbox containers (execd /
+  # egress / base image) via the HOST Docker daemon (docker-out-of-docker).
+  # Three pieces, all under --profile opensandbox-docker:
+  #   opensandbox-config  one-shot: renders /etc/opensandbox/config.toml from the
+  #                       committed template .sandbox.toml.example, substituting
+  #                       CREWMELD_SANDBOX_VOLUME_ROOT + OPENSANDBOX_API_KEY
+  #   opensandbox-images  one-shot: pre-pulls the images the server will spawn
+  #   opensandbox-server  the server. crewmeld reaches it via the compose network
+  #                       at OPENSANDBOX_SERVER_URL=http://opensandbox-server:30080
+  # CREWMELD_SANDBOX_VOLUME_ROOT must be a HOST path: it is bind-mounted into the
+  # server at the IDENTICAL path so bind mounts the server asks the host daemon to
+  # create resolve on both sides, and it is the allowed_host_paths allowlist.
+  opensandbox-config:
+    image: busybox:1.36
+    pull_policy: if_not_present
+    profiles: [opensandbox-docker]
     restart: "no"
     logging: *default-logging
-    user: root
-    entrypoint: ["/bin/sh", "/scripts/k3s-init.sh"]
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     environment:
-      - HOST_IP=${HOST_IP:-}
-      - K8S_DEPLOY_NAMESPACE=${K8S_DEPLOY_NAMESPACE:-crewmeld-skills}
-      - K8S_WARM_POOL_SIZE=${K8S_WARM_POOL_SIZE:-3}
-      # Skill base images to pre-pull via in-cluster `kubectl run` probe pod.
-      # Override in .env to add custom runtimes (e.g. node:20, python:3.11).
-      # Default matches IMAGE_MAP in apps/crewmeld/lib/k8s/deploy-skill.ts.
-      - K8S_PREPULL_IMAGES=${K8S_PREPULL_IMAGES:-node:22-bookworm python:3.12-bookworm}
-      - MINIO_API_PORT=${MINIO_API_PORT:-9000}
-      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-rag_flow}
-      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-infini_rag_flow}
-      - MINIO_BUCKET=${MINIO_BUCKET:-tool-files}
+      - CREWMELD_SANDBOX_VOLUME_ROOT=${CREWMELD_SANDBOX_VOLUME_ROOT:-/data/opensandbox-deploy}
+      - OPENSANDBOX_API_KEY=${OPENSANDBOX_API_KEY:-}
     volumes:
-      - crewmeld_k3s_shared:/shared
-      - ./scripts/k3s-init.sh:/scripts/k3s-init.sh:ro
-      - ./scripts/k8s-rbac.yaml:/app/scripts/k8s-rbac.yaml:ro
+      - ./.sandbox.toml.example:/template/.sandbox.toml:ro
+      - crewmeld_opensandbox_config:/etc/opensandbox
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        sed -e "s#\$${CREWMELD_SANDBOX_VOLUME_ROOT}#$${CREWMELD_SANDBOX_VOLUME_ROOT}#g" \
+            -e "s#\$${OPENSANDBOX_API_KEY}#$${OPENSANDBOX_API_KEY}#g" \
+          /template/.sandbox.toml > /etc/opensandbox/config.toml
+        echo "Rendered /etc/opensandbox/config.toml (volume root: $${CREWMELD_SANDBOX_VOLUME_ROOT})"
+
+  opensandbox-images:
+    image: docker:cli
+    pull_policy: if_not_present
+    profiles: [opensandbox-docker]
+    restart: "no"
+    logging: *default-logging
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        for img in \
+          ${OPENSANDBOX_EXECD_IMAGE:-opensandbox/execd:v1.0.16} \
+          ${OPENSANDBOX_EGRESS_IMAGE:-opensandbox/egress:v1.0.12} \
+          ${OPENSANDBOX_BASE_IMAGE:-python:3.12-slim} \
+          ${CREWMELD_SANDBOX_IMAGE:-proinsight/crewmeld-coder:latest}; do
+          echo "pulling $$img"
+          docker pull "$$img"
+        done
+        echo "OpenSandbox docker-mode images ready."
+
+  opensandbox-server:
+    image: ${OPENSANDBOX_SERVER_IMAGE:-opensandbox/server:v0.1.14}
+    pull_policy: if_not_present
+    profiles: [opensandbox-docker]
+    restart: unless-stopped
+    logging: *default-logging
+    # Load the rendered docker-runtime config explicitly via --config (matches the
+    # upstream helm chart). Without this the server falls back to its built-in
+    # default (kubernetes runtime) and crashes looking for a kubeconfig.
+    command: ["--config", "/etc/opensandbox/config.toml"]
+    environment:
+      - SANDBOX_CONFIG_PATH=/etc/opensandbox/config.toml
+    ports:
+      - "${OPENSANDBOX_PORT:-30080}:30080"
+    volumes:
+      # docker-out-of-docker: the server drives the HOST daemon to spawn sandboxes.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Rendered config (written by opensandbox-config).
+      - crewmeld_opensandbox_config:/etc/opensandbox:ro
+      # Home volume holds the sqlite store (~/.opensandbox).
+      - crewmeld_opensandbox_home:/root
+      # Volume root mounted at the identical host path (see section comment).
+      - ${CREWMELD_SANDBOX_VOLUME_ROOT:-/data/opensandbox-deploy}:${CREWMELD_SANDBOX_VOLUME_ROOT:-/data/opensandbox-deploy}
     depends_on:
-      k3s:
-        condition: service_healthy
+      opensandbox-config:
+        condition: service_completed_successfully
+      opensandbox-images:
+        condition: service_completed_successfully
+
+  # Attach opensandbox-server to the legacy `bridge` network so it can reach the
+  # sandboxes it spawns (OpenSandbox only supports network_mode bridge/host/none,
+  # so sandboxes live on `bridge`; the server lives on crewmeld-network for the
+  # crewmeld<->server hop). compose can't add a service to `bridge` (network-scoped
+  # aliases are unsupported there), so we use `docker network connect` which adds
+  # no alias. Idempotent; re-runs on every recreate.
+  opensandbox-net-bridge:
+    image: docker:cli
+    pull_policy: if_not_present
+    profiles: [opensandbox-docker]
+    restart: "no"
+    logging: *default-logging
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      opensandbox-server:
+        condition: service_started
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        sid=$$(docker ps -q -f label=com.docker.compose.project=crewmeld -f label=com.docker.compose.service=opensandbox-server)
+        if [ -n "$$sid" ]; then
+          docker network connect bridge "$$sid" 2>/dev/null || true
+          echo "opensandbox-server ($$sid) connected to bridge"
+        else
+          echo "opensandbox-server container not found; skipping bridge connect" >&2
+        fi
 
   # =============== PROFILE: minio ===============
 
@@ -501,7 +666,9 @@ volumes:
   crewmeld_pg_data:
   crewmeld_redis_data:
   crewmeld_k3s_shared:
-  crewmeld_k3s_data:
+  crewmeld_opensandbox_k3s_v2:
+  crewmeld_opensandbox_config:
+  crewmeld_opensandbox_home:
   crewmeld_minio_data:
   crewmeld_ragflow_data:
   crewmeld_ragflow_es_data:

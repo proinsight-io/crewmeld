@@ -13,7 +13,7 @@
 .EXAMPLE
     .\reset.ps1
     .\reset.ps1 -Yes
-    .\reset.ps1 -Yes --profile k3s --profile minio --profile ragflow --profile ollama
+    .\reset.ps1 -Yes --profile opensandbox --profile minio --profile ragflow --profile ollama
 #>
 
 [CmdletBinding()]
@@ -30,7 +30,7 @@ Write-Host ""
 Write-Host "============================================================" -ForegroundColor Yellow
 Write-Host " WARNING: This will permanently delete all Crewmeld data:" -ForegroundColor Yellow
 Write-Host "   - all containers in this compose project" -ForegroundColor Yellow
-Write-Host "   - all named volumes (postgres / redis / minio / k3s / ragflow / ollama)" -ForegroundColor Yellow
+Write-Host "   - all named volumes (postgres / redis / minio / opensandbox / ragflow / ollama)" -ForegroundColor Yellow
 Write-Host "   - local .env (regenerated on next start)" -ForegroundColor Yellow
 Write-Host "   - local autogen state (./shared, ./temp)" -ForegroundColor Yellow
 Write-Host "============================================================" -ForegroundColor Yellow
@@ -48,7 +48,7 @@ if (-not $Yes) {
 Write-Host "[INFO] Stopping containers and removing volumes..."
 $allProfiles = @(
     '--profile', 'init',
-    '--profile', 'k3s',
+    '--profile', 'opensandbox',
     '--profile', 'minio',
     '--profile', 'ragflow',
     '--profile', 'ollama',

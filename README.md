@@ -96,9 +96,7 @@ Template sources:
 
 ZIP import/export (cross-environment migration): environment variables marked as "secret" are cleared on export and must be filled in manually after import to prevent credential leakage.
 
-K8s sandbox deployment: tool instance code runs in isolated Kubernetes Pods, separated from the main platform process; supports JavaScript and Python; Pod failures do not affect platform stability.
-
-Warm pool: the platform pre-creates idle Pods, and when a new tool instance comes online it is taken from the pool and code is dynamically injected, reducing deployment latency. Dependencies are reused via shared cache.
+OpenSandbox deployment: tool instance code runs in isolated OpenSandbox containers (Docker or Kubernetes runtime), separated from the main platform process; supports JavaScript and Python; sandbox failures do not affect platform stability.
 
 ### 4. Channel Integration
 
@@ -147,6 +145,8 @@ The platform supports the following LLM providers, selectable and switchable dir
 
 OpenAI, Anthropic, Google, Tongyi Qianwen, DeepSeek, ERNIE, Hunyuan, Moonshot (Kimi), Zhipu, Doubao, MiniMax, Ollama (local inference), vLLM (self-hosted high-performance inference).
 
+Coding models — dedicated to the tool dev-studio's Claude Code–style authoring: Claude Coding, Kimi Coding, Tongyi (Qwen) Coding, Qianfan Coding.
+
 Credentials are stored encrypted; different employees can be assigned different models and different accounts.
 
 ### 8. Scheduled Jobs
@@ -189,7 +189,7 @@ Visual scheduled-job management with configurable timezones.
 └─────────────────────────────────────────────────────────────┘
                           ↓ LLM decides + invokes tools
 ┌─────────────────────────────────────────────────────────────┐
-│  Tool Layer │ K8s sandbox isolated Node.js / Python         │
+│  Tool Layer │ OpenSandbox-isolated Node.js / Python         │
 │             │ processes, code-isolated. AI writes programs  │
 │             │ that operate external systems via user-added  │
 │             │ "connections"                                 │
@@ -220,6 +220,7 @@ Visual scheduled-job management with configurable timezones.
 | Real-time | Socket.IO + Redis Adapter |
 | Object Storage | MinIO (S3-compatible) |
 | Knowledge Base | RAGFlow v0.23.1 (standalone service) |
+| Tool Sandbox | OpenSandbox (Docker / Kubernetes runtime) |
 | Auth | better-auth |
 | Deployment | Docker Compose / Helm / Kubernetes |
 | Testing | Vitest unit tests + Playwright E2E |
@@ -253,9 +254,9 @@ crewmeld/
 ### One-shot launch (Docker bundle + app)
 
 ```bash
-./start.sh --profile k3s --profile minio --profile ragflow --profile ollama
-# Windows cmd:  start.bat --profile k3s --profile minio --profile ragflow --profile ollama
-# PowerShell:   .\start.ps1 --profile k3s --profile minio --profile ragflow --profile ollama
+./start.sh --profile opensandbox-docker --profile minio --profile ragflow --profile ollama
+# Windows cmd:  start.bat --profile opensandbox-docker --profile minio --profile ragflow --profile ollama
+# PowerShell:   .\start.ps1 --profile opensandbox-docker --profile minio --profile ragflow --profile ollama
 ```
 
 The `start` script handles `.env` initialization, secret generation, and `docker compose up` automatically. Profiles can be combined freely.
@@ -289,14 +290,15 @@ Secrets (auto-generated and written to `.env` when launching via `start.sh` / `s
 
 `POSTGRES_PASSWORD` / `BETTER_AUTH_SECRET` / `ENCRYPTION_KEY` / `INTERNAL_API_SECRET`
 
-Tool sandbox dependencies (only required when the `--profile k3s` tool sandbox is enabled):
+Tool sandbox dependencies (only required when the OpenSandbox tool sandbox is enabled):
 
 | Variable | Description |
 |----------|-------------|
-| `K8S_API_SERVER` | Kubernetes API server address |
-| `K8S_API_TOKEN` | Kubernetes Bearer Token |
-| `K8S_NODE_IP` | Node IP used for NodePort access |
-| `K8S_DEPLOY_NAMESPACE` | Namespace for tool Pods (default `crewmeld-skills`) |
+| `OPENSANDBOX_SERVER_URL` | OpenSandbox server address (e.g. `http://opensandbox-server:30080`) |
+| `OPENSANDBOX_API_KEY` | OpenSandbox API key |
+| `CREWMELD_SANDBOX_IMAGE` | Sandbox image (default `proinsight/crewmeld-coder:latest`) |
+| `CREWMELD_SANDBOX_VOLUME_ROOT` / `CREWMELD_BFF_VOLUME_ROOT` | Shared sandbox volume roots |
+| `DEV_STUDIO_ENABLED` | Enable tool dev-studio startup validation |
 
 ### Test Users (E2E seed)
 
@@ -354,10 +356,10 @@ Two deployment shapes are provided: Docker Compose (suited to development and sm
 The `start.sh` / `start.bat` / `start.ps1` wrapper scripts auto-generate secrets and bring services up:
 
 ```bash
-./start.sh                                                   # Minimal stack (default profile)
-./start.sh --profile minio --profile k3s                     # Add tool sandbox
-./start.sh --profile ragflow                                 # Add knowledge base
-./start.sh --profile k3s --profile minio --profile ragflow   # All components
+./start.sh                                                                    # Minimal stack (default profile)
+./start.sh --profile opensandbox-docker --profile minio                       # Add tool sandbox
+./start.sh --profile ragflow                                                  # Add knowledge base
+./start.sh --profile opensandbox-docker --profile minio --profile ragflow     # All components
 ```
 
 On Windows, swap `./start.sh` for `start.bat` (cmd) or `.\start.ps1` (PowerShell).
@@ -368,8 +370,9 @@ Direct `docker compose` (skip the wrapper):
 # Minimal stack (default profile)
 docker compose up -d
 
-# Full bundle (MinIO + RAGFlow + k3s tool sandbox)
-docker compose --profile minio --profile ragflow --profile k3s up -d
+# Full bundle (MinIO + RAGFlow + OpenSandbox tool sandbox, docker runtime)
+docker compose --profile minio --profile ragflow --profile opensandbox-docker up -d
+# OpenSandbox also ships a k3s runtime — swap in --profile opensandbox
 
 # Add local Ollama (combinable with the full bundle)
 docker compose --profile ollama up -d                  # NVIDIA GPU (default)
@@ -393,9 +396,9 @@ Minimum memory measured 2026-04-23 (app image 510MB, idle). Real production usag
 | Scenario | Command | Min Memory |
 |----------|---------|------------|
 | Minimal (app + DB + Redis only) | `docker compose up -d` | ~500 MB |
-| With tool sandbox | `--profile k3s --profile minio` | ~1.5 GB |
+| With tool sandbox | `--profile opensandbox-docker --profile minio` | ~1.5 GB |
 | With knowledge base | `--profile ragflow` | ~6 GB |
-| All components | `--profile k3s --profile minio --profile ragflow` | ~7 GB |
+| All components | `--profile opensandbox-docker --profile minio --profile ragflow` | ~7 GB |
 | All components + local Ollama | above + `--profile ollama` or `--profile ollama-cpu` | ~7 GB + model size |
 
 ### Helm
