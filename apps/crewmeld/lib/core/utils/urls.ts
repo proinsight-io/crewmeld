@@ -15,15 +15,23 @@ function normalizeBaseUrl(url: string): string {
 }
 
 /**
- * Returns the base URL of the application from NEXT_PUBLIC_APP_URL
- * This ensures webhooks, callbacks, and other integrations always use the correct public URL
+ * Returns the base URL of the application.
+ * Resolution order: APP_BASE_URL (optional server-side override) > NEXT_PUBLIC_APP_URL.
  * @returns The base URL string (e.g., 'http://localhost:6100' or 'https://example.com')
- * @throws Error if NEXT_PUBLIC_APP_URL is not configured
+ * @throws Error if no base URL is configured
  */
 export function getBaseUrl(): string {
-  // getEnv depends on next-runtime-env and may not be injected yet when evaluated at the top level of client modules,
-  // in which case fall back to process.env (Next.js inlines NEXT_PUBLIC_ variables at build time).
-  const baseUrl = (getEnv('NEXT_PUBLIC_APP_URL') ?? process.env.NEXT_PUBLIC_APP_URL)?.trim()
+  // APP_BASE_URL is a server-only override. It MUST be read via process.env, not getEnv:
+  // next-runtime-env's env() throws for any non-NEXT_PUBLIC_ key in the browser, so routing
+  // APP_BASE_URL through getEnv would crash every client call of getBaseUrl(). In the client
+  // bundle process.env.APP_BASE_URL is undefined, so client reads fall through to the public URL.
+  // NEXT_PUBLIC_APP_URL is public and read at runtime via getEnv (next-runtime-env), with a
+  // process.env fallback for when injection has not happened yet at module top level.
+  const baseUrl = (
+    process.env.APP_BASE_URL ??
+    getEnv('NEXT_PUBLIC_APP_URL') ??
+    process.env.NEXT_PUBLIC_APP_URL
+  )?.trim()
 
   if (!baseUrl) {
     throw new Error(

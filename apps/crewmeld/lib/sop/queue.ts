@@ -17,6 +17,18 @@ let cachedConnection: ConnectionOptions | null = null
  * BullMQ requires Redis. Returns null when no REDIS_URL,
  * queue factory returning null means SOP features unavailable.
  */
+/**
+ * BullMQ key namespace prefix.
+ *
+ * Reads `MQ_QUEUE_PREFIX`; falls back to BullMQ's own default (`bull`) when
+ * unset or empty, so deployments that don't set it keep their existing keys.
+ * Must be applied consistently to every Queue (producer) and Worker (consumer)
+ * — a mismatch leaves jobs enqueued under one namespace and consumed from none.
+ */
+export function getQueuePrefix(): string {
+  return process.env.MQ_QUEUE_PREFIX || 'bull'
+}
+
 function getConnection(): ConnectionOptions | null {
   if (typeof window !== 'undefined') return null
   if (cachedConnection) return cachedConnection
@@ -65,6 +77,7 @@ export function getSopTimeoutQueue(): Queue | null {
 
   sopTimeoutQueue = new Queue('sop-timeout', {
     connection: conn,
+    prefix: getQueuePrefix(),
     defaultJobOptions: DEFAULT_JOB_OPTIONS,
   })
   return sopTimeoutQueue
@@ -82,6 +95,7 @@ export function getSopNotificationQueue(): Queue | null {
 
   sopNotificationQueue = new Queue('sop-notification', {
     connection: conn,
+    prefix: getQueuePrefix(),
     defaultJobOptions: DEFAULT_JOB_OPTIONS,
   })
   return sopNotificationQueue
@@ -102,6 +116,7 @@ export function getAsyncToolWatchdogQueue(): Queue | null {
 
   asyncToolWatchdogQueue = new Queue('sop-async-tool-watchdog', {
     connection: conn,
+    prefix: getQueuePrefix(),
     defaultJobOptions: DEFAULT_JOB_OPTIONS,
   })
   return asyncToolWatchdogQueue
@@ -141,6 +156,7 @@ export function initSopWorkers(): void {
     },
     {
       connection: conn,
+      prefix: getQueuePrefix(),
       concurrency: 5,
     }
   )
@@ -153,6 +169,7 @@ export function initSopWorkers(): void {
     },
     {
       connection: conn,
+      prefix: getQueuePrefix(),
       concurrency: 5,
     }
   )
@@ -165,6 +182,7 @@ export function initSopWorkers(): void {
     },
     {
       connection: conn,
+      prefix: getQueuePrefix(),
       concurrency: 5,
     }
   )

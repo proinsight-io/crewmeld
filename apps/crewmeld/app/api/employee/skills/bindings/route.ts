@@ -128,13 +128,17 @@ async function _POST(request: NextRequest) {
       return apiErr('api.skill.bindingInstanceNotDeployed', { status: 400 })
     }
 
+    // Dedup by instance, not template: a template may have several instances
+    // (distinct presetParams/env), and an employee may bind more than one of
+    // them. Matches the (employee_id, instance_id) unique index; only re-binding
+    // the SAME instance is a duplicate.
     const [existing] = await db
       .select({ id: employeeSkillBindings.id })
       .from(employeeSkillBindings)
       .where(
         and(
           eq(employeeSkillBindings.employeeId, employeeId),
-          eq(employeeSkillBindings.skillId, instance.templateId)
+          eq(employeeSkillBindings.instanceId, instanceId)
         )
       )
       .limit(1)

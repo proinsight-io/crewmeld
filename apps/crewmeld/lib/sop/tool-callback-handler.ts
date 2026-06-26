@@ -9,6 +9,7 @@
  * Idempotent: a duplicate / late callback finds no pending row and is a no-op.
  */
 import { createLogger } from '@crewmeld/logger'
+import { getBaseUrl } from '@/lib/core/utils/urls'
 import { completeToolCallLog, type TerminalApplyResult } from './async-tool-log'
 import { finalizeToolResult, type RawToolEnvelope } from './finalize-tool-result'
 import { cancelAsyncToolWatchdog } from './queue'
@@ -70,11 +71,7 @@ export interface ToolCallbackOutcome {
 
 /** Derive the public download-url prefix the same way the node executor does. */
 function sopFileUrlPrefix(executionId: string): string {
-  const appBaseUrl = (
-    process.env.APP_BASE_URL ??
-    process.env.NEXT_PUBLIC_APP_URL ??
-    'http://localhost:6100'
-  ).replace(/\/$/, '')
+  const appBaseUrl = getBaseUrl().replace(/\/$/, '')
   return `${appBaseUrl}/api/sop/${executionId}/files`
 }
 

@@ -12,7 +12,7 @@
     "dev:webpack": "next dev --webpack",
     "dev:sockets": "bun run socket/index.ts",
     "dev:full": "bunx concurrently -n \"App,Realtime\" -c \"cyan,magenta\" \"bun run dev\" \"bun run dev:sockets\"",
-    "build": "next build",
+    "build": "next build --webpack",
     "build:socket": "bun build ./socket/index.ts --target=bun --outfile=./socket-bundled.js --external=sharp '--external=@img/*' '--external=@opentelemetry/*' --external=unpdf --external=iconv-lite --external=ws --external=tiktoken",
     "start": "next start --port 6100 --hostname 0.0.0.0",
     "start:full": "bunx concurrently -n \"App,Realtime\" -c \"cyan,magenta\" \"bun run start\" \"bun run dev:sockets\"",

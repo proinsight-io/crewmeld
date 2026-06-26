@@ -74,6 +74,10 @@ const nextConfig: NextConfig = {
     'iconv-lite',
     // Kept: WebSocket implementation; socket.io may fall back to it
     'ws',
+    // Kept: AWS S3 client + presigner (MinIO storage, import-cmtool, SOP files).
+    // Without this Turbopack emits a broken external stub dir -> EISDIR at runtime.
+    '@aws-sdk/client-s3',
+    '@aws-sdk/s3-request-presigner',
   ],
 
   outputFileTracingIncludes: {
@@ -107,23 +111,6 @@ const nextConfig: NextConfig = {
 
   async headers() {
     return [
-      // API routes — CORS
-      {
-        source: '/api/:path*',
-        headers: [
-          { key: 'Access-Control-Allow-Credentials', value: 'true' },
-          {
-            key: 'Access-Control-Allow-Origin',
-            value: env.NEXT_PUBLIC_APP_URL || 'http://localhost:3001',
-          },
-          { key: 'Access-Control-Allow-Methods', value: 'GET,POST,OPTIONS,PUT,DELETE' },
-          {
-            key: 'Access-Control-Allow-Headers',
-            value:
-              'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, X-API-Key',
-          },
-        ],
-      },
       // Workflow execution API
       {
         source: '/api/workflows/:id/execute',
@@ -189,8 +176,9 @@ const nextConfig: NextConfig = {
           { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
         ],
       },
-      // Security headers for routes not handled by middleware CSP
-      // Middleware handles: /, /workspace/*, /chat/*
+      // Security headers (CSP, X-Frame-Options, etc.) for routes not covered by
+      // next.config per-route headers. Note: the root middleware.ts handles ONLY
+      // CORS for /api/* — it does NOT set CSP or any security headers here.
       // Excludes form routes which have their own permissive headers
       {
         source: '/((?!workspace|chat$|form).*)',

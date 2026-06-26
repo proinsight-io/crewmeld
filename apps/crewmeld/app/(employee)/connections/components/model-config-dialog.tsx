@@ -16,6 +16,12 @@ import { Label } from '@/components/ui/label'
 import type { ModelConfigData, ModelTestResult } from '@/lib/models/types'
 import { type TranslationKey, useTranslation } from '@/hooks/use-translation'
 import { PROVIDER_DEFINITIONS } from '@/providers/models'
+import {
+  type ExtraParamRow,
+  ExtraParamsEditor,
+  extraParamsToRows,
+  rowsToExtraParams,
+} from './extra-params-editor'
 
 /**
  * Fallback endpoint for the Claude coding provider. When the user leaves the
@@ -43,6 +49,7 @@ export function ModelConfigDialog({ open, onOpenChange, config, onSaved }: Model
   const [codingFastModel, setCodingFastModel] = useState('')
   const [codingSonnetModel, setCodingSonnetModel] = useState('')
   const [codingOpusModel, setCodingOpusModel] = useState('')
+  const [extraParams, setExtraParams] = useState<ExtraParamRow[]>([])
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<ModelTestResult | null>(null)
@@ -58,6 +65,7 @@ export function ModelConfigDialog({ open, onOpenChange, config, onSaved }: Model
       setCodingFastModel(config.defaultParams.codingFastModel ?? '')
       setCodingSonnetModel(config.defaultParams.codingSonnetModel ?? '')
       setCodingOpusModel(config.defaultParams.codingOpusModel ?? '')
+      setExtraParams(extraParamsToRows(config.defaultParams.extraParams))
     }
     setTestResult(null)
   }, [config])
@@ -136,6 +144,9 @@ export function ModelConfigDialog({ open, onOpenChange, config, onSaved }: Model
         : {
             temperature: Number.parseFloat(temperature),
             maxTokens: Number.parseInt(maxTokens, 10),
+            // Sent every save so params cleared in the editor are overwritten
+            // by PATCH's spread merge.
+            extraParams: rowsToExtraParams(extraParams),
           }
       await fetch(`/api/employee/models/${config.id}`, {
         method: 'PATCH',
@@ -158,6 +169,7 @@ export function ModelConfigDialog({ open, onOpenChange, config, onSaved }: Model
     codingFastModel,
     codingSonnetModel,
     codingOpusModel,
+    extraParams,
     onSaved,
     onOpenChange,
   ])
@@ -351,6 +363,10 @@ export function ModelConfigDialog({ open, onOpenChange, config, onSaved }: Model
               />
             </div>
           </div>
+          )}
+
+          {PROVIDER_DEFINITIONS[config.providerId]?.category !== 'coding' && (
+            <ExtraParamsEditor rows={extraParams} onChange={setExtraParams} />
           )}
 
           {testResult && (

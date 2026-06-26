@@ -9,7 +9,7 @@
  */
 
 import { createLogger } from '@crewmeld/logger'
-import { resolveModelConfig } from '@/lib/conversation/model-config'
+import { mergeExtraParams, resolveModelConfig } from '@/lib/conversation/model-config'
 import type { ConversationModelConfig } from '@/lib/conversation/types'
 import { t } from '@/lib/core/server-i18n'
 import type { SopNode, SopNodeState, SopWorkflowResult } from '@/types/sop'
@@ -217,16 +217,25 @@ async function callApprovalGateLLM(
       'Content-Type': 'application/json',
       Authorization: `Bearer ${modelConfig.apiKey}`,
     },
-    body: JSON.stringify({
-      model: modelConfig.model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userMessage },
-      ],
-      stream: false,
-      max_tokens: 128,
-      temperature: 0,
-    }),
+    // Merge operator-configured passthrough params (e.g. thinking:{"type":"disabled"})
+    // so reasoning models can be turned off for this judgment call; max_tokens is
+    // generous enough that an un-disabled thinking model still leaves room for the
+    // VALID/INVALID body instead of spending the whole budget on reasoning.
+    body: JSON.stringify(
+      mergeExtraParams(
+        {
+          model: modelConfig.model,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userMessage },
+          ],
+          stream: false,
+          max_tokens: 512,
+          temperature: 0,
+        },
+        modelConfig.extraParams
+      )
+    ),
   })
 
   if (!response.ok) {

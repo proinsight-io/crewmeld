@@ -44,6 +44,13 @@ export interface ConversationModelConfig {
   model: string
   apiKey: string
   baseUrl: string
+  /**
+   * User-defined passthrough parameters merged into the OpenAI-compatible
+   * `/chat/completions` body (e.g. `enable_thinking: false`). Sourced from
+   * `model_configs.default_params.extraParams`. Reserved request keys are
+   * never overridden — see `mergeExtraParams` in `./model-config`.
+   */
+  extraParams?: Record<string, unknown>
 }
 
 /**

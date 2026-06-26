@@ -10,6 +10,11 @@ import { cn } from '@/lib/core/utils/cn'
 import type { ProviderDisplayInfo } from '@/lib/models/types'
 import { type TranslationKey, useTranslation } from '@/hooks/use-translation'
 import { PROVIDER_DEFINITIONS } from '@/providers/models'
+import {
+  type ExtraParamRow,
+  ExtraParamsEditor,
+  rowsToExtraParams,
+} from './extra-params-editor'
 
 interface AddModelWizardProps {
   open: boolean
@@ -87,6 +92,7 @@ export function AddModelWizard({
   const [codingFastModel, setCodingFastModel] = useState('')
   const [codingSonnetModel, setCodingSonnetModel] = useState('')
   const [codingOpusModel, setCodingOpusModel] = useState('')
+  const [extraParams, setExtraParams] = useState<ExtraParamRow[]>([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -104,6 +110,7 @@ export function AddModelWizard({
     setCodingFastModel('')
     setCodingSonnetModel('')
     setCodingOpusModel('')
+    setExtraParams([])
     setSaving(false)
     setError(null)
   }, [])
@@ -157,6 +164,7 @@ export function AddModelWizard({
             : {
                 temperature: Number.parseFloat(temperature),
                 maxTokens: Number.parseInt(maxTokens, 10),
+                extraParams: rowsToExtraParams(extraParams),
               },
         }),
       })
@@ -183,6 +191,7 @@ export function AddModelWizard({
     codingFastModel,
     codingSonnetModel,
     codingOpusModel,
+    extraParams,
     handleClose,
     onCreated,
     t,
@@ -492,6 +501,10 @@ export function AddModelWizard({
                 />
               </div>
             </div>
+            )}
+
+            {PROVIDER_DEFINITIONS[selectedProvider.id]?.category !== 'coding' && (
+              <ExtraParamsEditor rows={extraParams} onChange={setExtraParams} />
             )}
 
             </div>

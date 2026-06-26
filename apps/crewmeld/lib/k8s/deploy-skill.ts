@@ -1338,7 +1338,8 @@ async function deployCmtoolSkill(skill: SkillPackage): Promise<CmtoolDeployResul
   } catch {
     throw new Error(
       `Tool code missing or incomplete on NFS for tool ${toolId}: ` +
-        `${path.join(codeDir, 'start.sh')} not found. Re-run adopt to sync the workspace.`
+        `${path.join(codeDir, 'start.sh')} not found. Re-adopt (dev-studio tool) or ` +
+        `re-import the .cmtool package (imported tool) to sync the workspace.`
     )
   }
 

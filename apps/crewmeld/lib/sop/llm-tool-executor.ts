@@ -9,6 +9,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { createLogger } from '@crewmeld/logger'
+import { mergeExtraParams } from '@/lib/conversation/model-config'
 import type { ConversationModelConfig } from '@/lib/conversation/types'
 import { t } from '@/lib/core/server-i18n'
 import type { ScopeIdentity } from '@/lib/identity/types'
@@ -1089,6 +1090,12 @@ async function callLLMNonStreaming(
     body.tools = tools
     body.tool_choice = 'auto'
   }
+
+  // Merge operator-configured passthrough params (e.g. thinking:{"type":"disabled"})
+  // so reasoning models can be disabled for SOP tool-loop calls. Without this the
+  // model stays in thinking mode and multi-round tool calls fail with "reasoning_content
+  // must be passed back" because the prior assistant turn's reasoning isn't echoed.
+  mergeExtraParams(body, config.extraParams)
 
   const response = await fetch(`${config.baseUrl}/chat/completions`, {
     method: 'POST',

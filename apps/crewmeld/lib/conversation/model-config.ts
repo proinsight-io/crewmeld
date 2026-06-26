@@ -15,6 +15,38 @@ import type { ConversationModelConfig } from './types'
 const logger = createLogger('ConversationModelConfig')
 
 /**
+ * Request-body keys the engine controls. User-defined `extraParams` can never
+ * overwrite these, preventing a misconfigured parameter from breaking the call.
+ */
+const RESERVED_BODY_KEYS = new Set([
+  'model',
+  'messages',
+  'stream',
+  'stream_options',
+  'tools',
+  'tool_choice',
+])
+
+/**
+ * Merge user-defined `extraParams` into an OpenAI-compatible request body,
+ * skipping reserved keys. Mutates and returns `body` for call-site convenience.
+ *
+ * @param body - The request body being assembled (e.g. for `/chat/completions`).
+ * @param extraParams - Operator-configured passthrough params, may be undefined.
+ */
+export function mergeExtraParams(
+  body: Record<string, unknown>,
+  extraParams?: Record<string, unknown>
+): Record<string, unknown> {
+  if (!extraParams) return body
+  for (const [key, value] of Object.entries(extraParams)) {
+    if (RESERVED_BODY_KEYS.has(key)) continue
+    body[key] = value
+  }
+  return body
+}
+
+/**
  * Provider -> OpenAI-compatible base URL mapping
  */
 const PROVIDER_BASE_URLS: Record<string, string> = {
@@ -194,8 +226,12 @@ async function resolveFromModelConfigRow(
 
   const baseUrl = resolveBaseUrl(providerId, config.apiEndpoint ?? undefined)
 
+  const params = (config.defaultParams ?? {}) as { extraParams?: Record<string, unknown> }
+  const extraParams =
+    params.extraParams && typeof params.extraParams === 'object' ? params.extraParams : undefined
+
   logger.info(`Resolved model config (${source}): provider=${providerId}, model=${model}`)
-  return { providerId, model, apiKey, baseUrl }
+  return { providerId, model, apiKey, baseUrl, extraParams }
 }
 
 function resolveBaseUrl(providerId: string, customEndpoint?: string): string {

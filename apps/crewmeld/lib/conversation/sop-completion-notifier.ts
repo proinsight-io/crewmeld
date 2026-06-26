@@ -136,7 +136,7 @@ export async function notifyChannelOnSopCompletion(params: NotifyParams): Promis
       let translatedOutput = params.output
       if (!isZh && params.output && conv.employeeId) {
         try {
-          const { resolveModelConfig } = await import('./model-config')
+          const { resolveModelConfig, mergeExtraParams } = await import('./model-config')
           const config = await resolveModelConfig(conv.employeeId, conv.workspaceId ?? '')
           const resp = await fetch(`${config.baseUrl}/chat/completions`, {
             method: 'POST',
@@ -144,18 +144,23 @@ export async function notifyChannelOnSopCompletion(params: NotifyParams): Promis
               'Content-Type': 'application/json',
               Authorization: `Bearer ${config.apiKey}`,
             },
-            body: JSON.stringify({
-              model: config.model,
-              messages: [
+            body: JSON.stringify(
+              mergeExtraParams(
                 {
-                  role: 'system',
-                  content:
-                    'Translate the following content to English. Keep the structure and formatting. Only output the translation, nothing else.',
+                  model: config.model,
+                  messages: [
+                    {
+                      role: 'system',
+                      content:
+                        'Translate the following content to English. Keep the structure and formatting. Only output the translation, nothing else.',
+                    },
+                    { role: 'user', content: params.output },
+                  ],
+                  max_tokens: 2000,
                 },
-                { role: 'user', content: params.output },
-              ],
-              max_tokens: 2000,
-            }),
+                config.extraParams
+              )
+            ),
           })
           if (resp.ok) {
             const data = (await resp.json()) as { choices: Array<{ message: { content: string } }> }
@@ -751,7 +756,7 @@ async function summarizeResultWithLLM(
   }
 
   try {
-    const { resolveModelConfig } = await import('./model-config')
+    const { resolveModelConfig, mergeExtraParams } = await import('./model-config')
     const config = await resolveModelConfig(employeeId, workspaceId)
 
     const response = await fetch(`${config.baseUrl}/chat/completions`, {
@@ -760,21 +765,26 @@ async function summarizeResultWithLLM(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${config.apiKey}`,
       },
-      body: JSON.stringify({
-        model: config.model,
-        messages: [
+      body: JSON.stringify(
+        mergeExtraParams(
           {
-            role: 'system',
-            content: t('summarizePrompt'),
+            model: config.model,
+            messages: [
+              {
+                role: 'system',
+                content: t('summarizePrompt'),
+              },
+              {
+                role: 'user',
+                content: jsonResult.slice(0, 4000),
+              },
+            ],
+            stream: false,
+            max_tokens: 500,
           },
-          {
-            role: 'user',
-            content: jsonResult.slice(0, 4000),
-          },
-        ],
-        stream: false,
-        max_tokens: 500,
-      }),
+          config.extraParams
+        )
+      ),
     })
 
     if (!response.ok) {

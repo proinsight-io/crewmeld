@@ -159,3 +159,20 @@ export async function failToolCallLog(callId: string, error: string): Promise<Te
     resultContent: `Tool execution failed: ${error}`,
   })
 }
+
+/**
+ * Count async tool-call rows still `pending` for a task. The engine calls this
+ * right after suspending a node to detect a callback that already landed before
+ * the suspend (the suspend/resume race) — when zero remain, the resume that
+ * would otherwise have been lost is driven from the engine instead.
+ */
+export async function countPendingToolCalls(taskId: string): Promise<number> {
+  const counted = (await db.execute(sql`
+    SELECT count(*)::int AS pending
+    FROM work_logs
+    WHERE task_id = ${taskId}
+      AND log_type = 'tool_call'
+      AND metadata->>'status' = 'pending'
+  `)) as unknown as Array<{ pending: number }>
+  return counted[0]?.pending ?? 0
+}

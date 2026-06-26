@@ -4,6 +4,7 @@ import { createLogger } from '@crewmeld/logger'
 import { eq } from 'drizzle-orm'
 import type { NextRequest } from 'next/server'
 import { apiAuthErr, apiErr, apiOk } from '@/lib/api/response'
+import { getBaseUrl } from '@/lib/core/utils/urls'
 import { withAudit } from '@/lib/audit/with-audit'
 import { requirePermission } from '@/lib/auth/rbac/check-permission'
 import {
@@ -134,7 +135,7 @@ async function _PATCH(request: NextRequest, { params }: { params: Promise<{ id: 
 
       // If Telegram and key config updated, rebuild webhookUrl and re-register
       if (existing.type === 'telegram') {
-        const baseUrl = process.env.WEBHOOK_BASE_URL || process.env.NEXT_PUBLIC_APP_URL
+        const baseUrl = process.env.WEBHOOK_BASE_URL || getBaseUrl()
         // Telegram uses connectionId-based routing for precise multi-Bot matching
         const newWebhookUrl = `${baseUrl}/api/channels/telegram/webhook/c/${id}`
 

@@ -18,6 +18,7 @@
  * to replace it.
  */
 import crypto from 'node:crypto'
+import fs from 'node:fs/promises'
 import { PutObjectCommand } from '@aws-sdk/client-s3'
 import { db, toolInstances, tools } from '@crewmeld/db'
 import { createLogger } from '@crewmeld/logger'
@@ -29,7 +30,10 @@ import { apiAuthErr, apiErr, apiOk } from '@/lib/api/response'
 import { withAudit } from '@/lib/audit/with-audit'
 import { requirePermission } from '@/lib/auth/rbac/check-permission'
 import { MANIFEST_RELATIVE_PATH, Manifest, type ManifestT } from '@/lib/dev-studio/manifest-reader'
+import { syncZipToCode } from '@/lib/dev-studio/code-sync'
+import { AdoptError, prewarmDependencies } from '@/lib/dev-studio/dependency-prewarmer'
 import { convertManifestToTool } from '@/lib/dev-studio/manifest-to-tool'
+import { paths } from '@/lib/dev-studio/paths'
 import {
   ensureToolPackagesBucket,
   MAX_ZIP_SIZE_BYTES,
@@ -129,6 +133,36 @@ async function _POST(request: NextRequest) {
   const toolId = nanoid()
   const now = new Date()
 
+  // Extract the workspace code onto NFS (tools-workspace/<toolId>/code/) so the
+  // tool can later be deployed (上架): deployCmtoolSkill requires start.sh +
+  // .crewmeld-studio/manifest.json there. Adopt does this for live sessions via
+  // syncWorkspaceToCode; an imported package has no adopt step, so this is its
+  // only path to NFS. Done before the DB insert and rolled back on failure.
+  try {
+    await syncZipToCode(toolId, zipBytes, sha256)
+  } catch (err) {
+    logger.error({ err: (err as Error).message, toolId }, 'cmtool NFS code sync failed')
+    return apiErr('api.skill.importFailed', { status: 500 })
+  }
+
+  // Install manifest.dependencies.libraries into the shared site-packages volume,
+  // mirroring the adopt flow (prewarmDependencies). Without this an imported
+  // service/script tool deploys against an empty shared site-packages and fails at
+  // runtime (ModuleNotFoundError / never opens its port). Empty libraries return
+  // immediately. On failure roll back the NFS code dir and skip the insert, so a
+  // half-imported tool that can't be deployed never lands in the table.
+  try {
+    await prewarmDependencies(toolId, manifest)
+  } catch (err) {
+    await fs.rm(paths.toolCode.forBff(toolId), { recursive: true, force: true }).catch(() => {})
+    if (err instanceof AdoptError) {
+      logger.error({ err: err.detail, toolId }, 'cmtool dependency prewarm failed')
+      return apiErr('api.skill.importDepsFailed', { status: 422 })
+    }
+    logger.error({ err: (err as Error).message, toolId }, 'cmtool dependency prewarm error')
+    return apiErr('api.skill.importFailed', { status: 500 })
+  }
+
   try {
     await db
       .insert(tools)
@@ -153,6 +187,8 @@ async function _POST(request: NextRequest) {
     })
   } catch (err) {
     logger.error({ err: (err as Error).message, toolId }, 'tool insert failed')
+    // Roll back the NFS code dir so a failed import leaves no orphan workspace.
+    await fs.rm(paths.toolCode.forBff(toolId), { recursive: true, force: true }).catch(() => {})
     return apiErr('api.skill.importFailed', { status: 500 })
   }
 

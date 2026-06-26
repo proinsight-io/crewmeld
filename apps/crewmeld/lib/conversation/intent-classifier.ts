@@ -9,6 +9,7 @@
 
 import { createLogger } from '@crewmeld/logger'
 import { t } from '@/lib/core/server-i18n'
+import { mergeExtraParams } from './model-config'
 import type { ConversationModelConfig, EngineMessage } from './types'
 
 const logger = createLogger('IntentClassifier')
@@ -121,13 +122,18 @@ export async function classifyIntent(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${modelConfig.apiKey}`,
       },
-      body: JSON.stringify({
-        model: modelConfig.model,
-        messages,
-        temperature: 0,
-        max_tokens: 200,
-        stream: false,
-      }),
+      body: JSON.stringify(
+        mergeExtraParams(
+          {
+            model: modelConfig.model,
+            messages,
+            temperature: 0,
+            max_tokens: 200,
+            stream: false,
+          },
+          modelConfig.extraParams
+        )
+      ),
     })
 
     if (!response.ok) {
