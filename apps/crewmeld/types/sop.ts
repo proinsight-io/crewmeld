@@ -189,6 +189,12 @@ export interface NodeExecutionResult {
    * paused_for_human / paused_for_tool execution statuses respectively.
    */
   pauseKind?: 'human' | 'tool'
+  /**
+   * Node task id (work_logs grouping key) for an async-tool pause. The engine
+   * re-checks pending tool calls right after suspending to close the race where
+   * a fast tool's callback fires before the suspend transition lands.
+   */
+  taskId?: string
   error?: string
   /** Flag for error exit path (set by engine after retries exhausted) */
   errorExit?: boolean

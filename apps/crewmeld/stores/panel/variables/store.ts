@@ -3,6 +3,7 @@ import JSON5 from 'json5'
 import { create } from 'zustand'
 import { devtools } from 'zustand/middleware'
 import { normalizeName } from '@/lib/types/execution-constants'
+import { safeRandomUUID } from '@/lib/uuid'
 import { useOperationQueueStore } from '@/stores/operation-queue/store'
 import type { Variable, VariablesStore } from '@/stores/panel/variables/types'
 import { useWorkflowRegistry } from '@/stores/workflows/registry/store'
@@ -108,7 +109,7 @@ export const useVariablesStore = create<VariablesStore>()(
     },
 
     addVariable: (variable, providedId?: string) => {
-      const id = providedId || crypto.randomUUID()
+      const id = providedId || safeRandomUUID()
 
       const workflowVariables = get().getVariablesByWorkflowId(variable.workflowId)
 
@@ -236,7 +237,7 @@ export const useVariablesStore = create<VariablesStore>()(
 
               for (const { blockId, subBlockId, value } of changedSubBlocks) {
                 operationQueue.addToQueue({
-                  id: crypto.randomUUID(),
+                  id: safeRandomUUID(),
                   operation: {
                     operation: 'subblock-update',
                     target: 'subblock',

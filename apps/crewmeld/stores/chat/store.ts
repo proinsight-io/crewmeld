@@ -58,7 +58,7 @@ export const useChatStore = create<ChatState>()(
           set((state) => {
             const newMessage: ChatMessage = {
               ...message,
-              id: (message as any).id ?? crypto.randomUUID(),
+              id: (message as any).id ?? uuidv4(),
               timestamp: (message as any).timestamp ?? new Date().toISOString(),
             }
 

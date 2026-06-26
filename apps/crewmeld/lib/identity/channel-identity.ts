@@ -168,6 +168,13 @@ export async function resolveChannelIdentity(
           positions: detail.positions ?? [],
           employeeNo: detail.employeeNo,
           leaderId: detail.leaderId,
+          // IM-level caller info — mirror the web path so the normalized identity
+          // always carries the channel (consumers / op-log read profile.channel).
+          profile: {
+            channel: input.channel,
+            externalUserId: input.userId,
+            ...(detail.name ? { senderName: detail.name } : {}),
+          },
           // orgUnitIds here is the channel-direct open_department_id space (used by SOP
           // dept-permission matching at the visibility gate). scope.storeIds is NOT populated
           // here: channel-sourced output fields are routed from binding-configured channel

@@ -35,7 +35,7 @@ export default function EmployeeChatPage() {
   const [initialized, setInitialized] = useState(false)
   const initializingRef = useRef<string | null>(null)
 
-  // Load employee info — 切换员工时立即清空旧状态
+  // Load employee info — clear stale state immediately when switching employees
   useEffect(() => {
     setIsLoading(true)
     setInitialized(false)
@@ -52,7 +52,7 @@ export default function EmployeeChatPage() {
       .finally(() => setIsLoading(false))
   }, [employeeId])
 
-  // 切换员工时：校验并初始化会话（仅执行一次）
+  // On employee switch: validate and initialize the conversation (runs once)
   useEffect(() => {
     if (isLoading || !employee) return
     if (initializingRef.current === employeeId) return
@@ -63,14 +63,14 @@ export default function EmployeeChatPage() {
       const employeeConvs = state.conversations.filter((c) => c.employeeId === employeeId)
       const currentId = state.activeConversationId
 
-      // 如果当前活跃会话属于该员工，直接使用
+      // If the active conversation already belongs to this employee, use it directly
       if (currentId && employeeConvs.some((c) => c.id === currentId)) {
         loadMessages(currentId)
         setInitialized(true)
         return
       }
 
-      // 否则选中该员工最近的会话，或进入空聊天状态
+      // Otherwise select this employee's most recent conversation, or fall to an empty chat
       if (employeeConvs.length > 0) {
         const latest = employeeConvs[0]
         setActiveConversation(latest.id)

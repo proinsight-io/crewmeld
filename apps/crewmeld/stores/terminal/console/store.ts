@@ -3,6 +3,7 @@ import { create } from 'zustand'
 import { createJSONStorage, devtools, persist } from 'zustand/middleware'
 import { redactApiKeys } from '@/lib/core/security/redaction'
 import type { NormalizedBlockOutput } from '@/lib/types/execution'
+import { safeRandomUUID } from '@/lib/uuid'
 import { getQueryClient } from '@/app/_shell/providers/query-provider'
 import { type GeneralSettings, generalSettingsKeys } from '@/hooks/queries/general-settings'
 import { useExecutionStore } from '@/stores/execution'
@@ -163,7 +164,7 @@ export const useTerminalConsoleStore = create<ConsoleStore>()(
 
             const newEntry: ConsoleEntry = {
               ...redactedEntry,
-              id: crypto.randomUUID(),
+              id: safeRandomUUID(),
               timestamp: new Date().toISOString(),
             }
 

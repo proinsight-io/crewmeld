@@ -1,6 +1,7 @@
 import { createLogger } from '@crewmeld/logger'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { safeRandomUUID } from '@/lib/uuid'
 import type { AddNotificationParams, Notification } from './types'
 
 const logger = createLogger('NotificationStore')
@@ -55,7 +56,7 @@ export const useNotificationStore = create<NotificationStore>()(
       notifications: [],
 
       addNotification: (params: AddNotificationParams) => {
-        const id = crypto.randomUUID()
+        const id = safeRandomUUID()
 
         const notification: Notification = {
           id,

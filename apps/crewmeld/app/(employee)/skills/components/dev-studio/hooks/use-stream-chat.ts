@@ -5,6 +5,7 @@ import { mutate as globalMutate } from 'swr'
 import { type Ask, AskExtractor } from '@/lib/dev-studio/ask-extractor'
 import { getDevStudioPersona } from '@/lib/dev-studio/persona-extensions'
 import { MarkerExtractor } from '@/lib/dev-studio/phase-marker-extractor'
+import { safeRandomUUID } from '@/lib/uuid'
 import { useTranslation } from '@/hooks/use-translation'
 
 // Local types — minimal mirror of @anthropic-ai/claude-code SDK message shapes.
@@ -292,21 +293,8 @@ export interface UseStreamChatResult {
 
 const SESSIONS_SWR_KEY_PREFIX = '/api/employee/dev-studio/sessions'
 
-/**
- * UUID v4 with a Math.random fallback. `crypto.randomUUID` is only exposed
- * in secure contexts (HTTPS or localhost); production deployments served
- * over plain HTTP threw "crypto.randomUUID is not a function" on Send.
- */
-function newUuid(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0
-    const v = c === 'x' ? r : (r & 0x3) | 0x8
-    return v.toString(16)
-  })
-}
+/** UUID v4 safe in non-secure browser contexts. See {@link safeRandomUUID}. */
+const newUuid = safeRandomUUID
 
 /**
  * @param sessionId - Active dev-studio session, or null when none selected.

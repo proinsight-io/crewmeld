@@ -532,6 +532,12 @@ export async function executeSop(executionId: string): Promise<void> {
         const pausedStatus = result.pauseKind === 'tool' ? 'paused_for_tool' : 'paused_for_human'
         await transitionStatus(executionId, 'running', pausedStatus)
         await persistSnapshot(executionId, snapshot)
+        // Race guard: a fast tool may have already settled its work-log before
+        // the transition above, leaving its resume to find status=running and
+        // bail. Now suspended, drive the resume ourselves if nothing's pending.
+        if (result.pauseKind === 'tool' && result.taskId) {
+          await resumeIfToolsAlreadySettled(executionId, result.taskId)
+        }
         return
       }
 
@@ -872,6 +878,27 @@ export async function resumeSopFromPause(pauseState: {
 }
 
 /**
+ * Close the suspend/resume race for async tools. A very fast tool can finalize
+ * its work-log (or dispatch can fail it) BEFORE the engine transitions the SOP
+ * to paused_for_tool — that callback's resume attempt then finds status=running
+ * and bails. Once suspended we re-check here: if no async call is still pending
+ * for the task, the SOP would otherwise hang forever, so we drive the resume.
+ * Idempotent — resumeSopFromAsyncTool's First-Wins transition dedupes against a
+ * real (late) callback resuming concurrently.
+ */
+async function resumeIfToolsAlreadySettled(executionId: string, taskId: string): Promise<void> {
+  const { countPendingToolCalls } = await import('./async-tool-log')
+  if ((await countPendingToolCalls(taskId)) > 0) return
+  void resumeSopFromAsyncTool(executionId, taskId).catch((err) => {
+    logger.error('Race-guard async-tool resume failed', {
+      executionId,
+      taskId,
+      error: err instanceof Error ? err.message : String(err),
+    })
+  })
+}
+
+/**
  * Resume a SOP suspended on an async tool (paused_for_tool).
  *
  * Triggered by the tool-callback handler once every async call in the node's
@@ -923,6 +950,11 @@ export async function resumeSopFromAsyncTool(executionId: string, taskId: string
     const pausedStatus = result.pauseKind === 'tool' ? 'paused_for_tool' : 'paused_for_human'
     await transitionStatus(executionId, 'running', pausedStatus)
     await persistSnapshot(executionId, snapshot)
+    // Same race guard as the main loop: settle-before-suspend would otherwise
+    // strand this next round in paused_for_tool.
+    if (result.pauseKind === 'tool') {
+      await resumeIfToolsAlreadySettled(executionId, taskId)
+    }
     return
   }
 

@@ -17,6 +17,7 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createLogger } from '@crewmeld/logger'
+import unzipper from 'unzipper'
 import { paths } from './paths'
 
 const logger = createLogger('code-sync')
@@ -192,4 +193,91 @@ export async function syncWorkspaceToCode(sessionId: string, toolId: string): Pr
   }
 
   return { codeDir: dst, sha256, sizeBytes: totalSize, cached: false }
+}
+
+/**
+ * Import-time counterpart of {@link syncWorkspaceToCode}: extract a .cmtool
+ * workspace zip into `tools-workspace/<toolId>/code/` on NFS so a deployed
+ * (上架) tool finds its `start.sh` + `.crewmeld-studio/manifest.json` there.
+ *
+ * Adopt copies from a live session workspace; an imported package has no
+ * session, so the source is the uploaded zip bytes instead. Same atomic
+ * staging→rename, exclude rules, and size caps. `packageHash` is written to
+ * `.package-hash` as the content fingerprint.
+ */
+export async function syncZipToCode(
+  toolId: string,
+  zipBytes: Buffer,
+  packageHash: string,
+): Promise<{ codeDir: string; fileCount: number; sizeBytes: number }> {
+  const dst = paths.toolCode.forBff(toolId)
+
+  const archive = await unzipper.Open.buffer(zipBytes)
+  const fileEntries = archive.files.filter((f) => f.type === 'File')
+
+  const staging = `${dst}.staging-${randomId()}`
+  await fs.mkdir(staging, { recursive: true })
+
+  let fileCount = 0
+  let sizeBytes = 0
+  try {
+    for (const entry of fileEntries) {
+      const rel = entry.path.replace(/\\/g, '/')
+      const segs = rel.split('/')
+      // Path-traversal / absolute-path guard — a malicious zip must not escape staging.
+      if (rel.startsWith('/') || segs.includes('..')) {
+        throw new Error(`syncZipToCode: unsafe entry path: ${rel}`)
+      }
+      if (segs.some((s) => EXCLUDE_DIRS.has(s))) continue
+      if (EXCLUDE_FILES.has(segs[segs.length - 1])) continue
+
+      const buf = await entry.buffer()
+      if (buf.length > MAX_FILE_SIZE) {
+        throw new Error(`syncZipToCode: file "${rel}" (${buf.length} bytes) exceeds per-file max 5MB`)
+      }
+      sizeBytes += buf.length
+      if (sizeBytes > MAX_TOTAL_SIZE) {
+        throw new Error(`syncZipToCode: total size ${sizeBytes} exceeds 50MB cap`)
+      }
+      const out = path.join(staging, rel)
+      await fs.mkdir(path.dirname(out), { recursive: true })
+      await fs.writeFile(out, buf)
+      fileCount++
+    }
+    await fs.writeFile(path.join(staging, '.package-hash'), packageHash, 'utf-8')
+  } catch (err) {
+    await rmrf(staging).catch(() => {})
+    throw err
+  }
+
+  let backup: string | null = null
+  if (await pathExists(dst)) {
+    backup = `${dst}.old-${randomId()}`
+    await fs.rename(dst, backup)
+  }
+  try {
+    await fs.mkdir(path.dirname(dst), { recursive: true })
+    await fs.rename(staging, dst)
+  } catch (err) {
+    if (backup) {
+      await fs.rename(backup, dst).catch((restoreErr) => {
+        logger.warn(
+          `rollback failed: rename ${backup} → ${dst} threw ${(restoreErr as Error).message}; backup left for manual recovery`,
+          { backup, dst },
+        )
+      })
+    }
+    await rmrf(staging).catch(() => {})
+    throw err
+  }
+  if (backup) {
+    rmrf(backup).catch((cleanupErr) => {
+      logger.warn(
+        `backup cleanup failed: rmrf ${backup} threw ${(cleanupErr as Error).message}; orphaned dir left on NFS`,
+        { backup },
+      )
+    })
+  }
+
+  return { codeDir: dst, fileCount, sizeBytes }
 }
