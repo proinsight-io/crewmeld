@@ -6,7 +6,7 @@
 # Examples:
 #   ./reset.sh
 #   ./reset.sh --yes
-#   ./reset.sh --yes --profile k3s --profile minio --profile ragflow --profile ollama
+#   ./reset.sh --yes --profile opensandbox --profile minio --profile ragflow --profile ollama
 
 set -euo pipefail
 
@@ -24,7 +24,7 @@ cat <<'EOF'
 ============================================================
  WARNING: This will permanently delete all Crewmeld data:
    - all containers in this compose project
-   - all named volumes (postgres / redis / minio / k3s / ragflow / ollama)
+   - all named volumes (postgres / redis / minio / opensandbox / ragflow / ollama)
    - local .env (regenerated on next start)
    - local autogen state (./shared, ./temp)
 ============================================================
@@ -43,7 +43,7 @@ fi
 echo "[INFO] Stopping containers and removing volumes..."
 docker compose "${COMPOSE_ARGS[@]}" \
     --profile init \
-    --profile k3s \
+    --profile opensandbox \
     --profile minio \
     --profile ragflow \
     --profile ollama \

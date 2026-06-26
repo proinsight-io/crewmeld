@@ -6,7 +6,7 @@ rem Usage: reset.bat [--yes] [docker compose flags]
 rem Examples:
 rem   reset.bat                                          (interactive, default profiles)
 rem   reset.bat --yes                                    (skip confirmation)
-rem   reset.bat --yes --profile k3s --profile minio --profile ragflow --profile ollama
+rem   reset.bat --yes --profile opensandbox --profile minio --profile ragflow --profile ollama
 
 rem Parse --yes flag (must be first arg if present)
 set "AUTO_YES=0"
@@ -24,7 +24,7 @@ echo.
 echo ============================================================
 echo  WARNING: This will permanently delete all Crewmeld data:
 echo    - all containers in this compose project
-echo    - all named volumes (postgres / redis / minio / k3s / ragflow / ollama)
+echo    - all named volumes (postgres / redis / minio / opensandbox / ragflow / ollama)
 echo    - local .env (regenerated on next start)
 echo    - local autogen state (./shared,  ./temp)
 echo ============================================================
@@ -40,7 +40,7 @@ if "%AUTO_YES%"=="0" (
 
 rem Phase 1: Stop and remove containers + volumes (all profiles)
 echo [INFO] Stopping containers and removing volumes...
-docker compose %COMPOSE_ARGS% --profile init --profile k3s --profile minio --profile ragflow --profile ollama --profile ollama-cpu --profile ollama-setup down -v --remove-orphans
+docker compose %COMPOSE_ARGS% --profile init --profile opensandbox --profile minio --profile ragflow --profile ollama --profile ollama-cpu --profile ollama-setup down -v --remove-orphans
 
 rem Phase 2: Remove any orphan named volumes that survived (defensive)
 echo [INFO] Pruning leftover crewmeld volumes...

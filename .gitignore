@@ -13,6 +13,8 @@ dist/
 .env
 .env.local
 .env.*.local
+# Generated OpenSandbox server api_key (host-side secret, never commit)
+.opensandbox-server-key
 *.log
 tsconfig.tsbuildinfo
 test-results/
