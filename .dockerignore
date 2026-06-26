@@ -1,6 +1,14 @@
+# Bare names match only the context root; the leading-glob variants also exclude
+# nested workspace copies (apps/*/node_modules, packages/*/.next). Host bun
+# installs leave absolute-path symlinks (e.g. next -> D:/.../.bun/...) under
+# apps/crewmeld/node_modules; without the recursive pattern they leak into the
+# image via `COPY apps/crewmeld` and break standalone resolution at runtime.
 node_modules
+**/node_modules
 .next
+**/.next
 .turbo
+**/.turbo
 .git
 tests
 temp
@@ -8,6 +16,7 @@ uploads
 data
 *.log
 .env*
+**/.env*
 docs
 # E2E MSW mock layer entry — loads tests/e2e/fixtures/server-mocks/.
 # Excluded from production images; Next.js treats instrumentation.ts as optional.
