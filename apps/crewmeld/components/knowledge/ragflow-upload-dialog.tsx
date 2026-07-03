@@ -219,7 +219,6 @@ export function RagflowUploadDialog({
             <p className='font-medium'>{t('knowledge.uploadLimitTitle')}</p>
             <ul className='mt-1 list-inside list-disc space-y-0.5'>
               <li>{t('knowledge.uploadLimitLocal')}</li>
-              <li>{t('knowledge.uploadLimitDemo')}</li>
               <li>{t('knowledge.uploadLimitForbidden')}</li>
             </ul>
           </div>
