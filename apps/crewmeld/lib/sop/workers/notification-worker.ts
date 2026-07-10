@@ -1,4 +1,6 @@
+import { channelSessions, db } from '@crewmeld/db'
 import { createLogger } from '@crewmeld/logger'
+import { eq } from 'drizzle-orm'
 import { getBaseUrl } from '@/lib/core/utils/urls'
 import { generateApprovalToken } from '@/lib/human-employees/approval-token'
 import { buildNotificationContent } from '@/lib/human-employees/notification-content'
@@ -9,6 +11,47 @@ import {
 import type { NotificationJobPayload } from '@/types/sop'
 
 const logger = createLogger('SopNotificationWorker')
+
+/**
+ * Resolve the requester's real channel-native delivery id + id type for the
+ * requester_self approval card, from channel_sessions (keyed by conversation id).
+ *
+ * Mirrors sop-completion-notifier — the deliverable id is NOT the platform user
+ * id in _meta.userId. For Feishu, channel_sessions.externalUserId holds the
+ * (non-deliverable) user_id, while externalSessionId holds the chat_id — the
+ * p2p chat for a DM, which is what the send API actually accepts. Other channels
+ * store their native user id in externalUserId.
+ *
+ * @returns resolved delivery target, or null when no usable id is found.
+ */
+async function resolveRequesterDeliverable(
+  conversationId: string,
+  channel: string
+): Promise<{ receiveId: string; receiveIdType: string } | null> {
+  const [session] = await db
+    .select({
+      externalUserId: channelSessions.externalUserId,
+      externalSessionId: channelSessions.externalSessionId,
+    })
+    .from(channelSessions)
+    .where(eq(channelSessions.conversationId, conversationId))
+    .limit(1)
+
+  if (!session) return null
+
+  if (channel === 'feishu') {
+    // Feishu's deliverable id is the chat_id (externalSessionId). externalUserId
+    // is the feishu user_id, which the send API does not accept as an open_id —
+    // so if there's no chat_id, return null and let the caller fall back rather
+    // than send to an id Feishu can't resolve.
+    if (!session.externalSessionId) return null
+    return { receiveId: session.externalSessionId, receiveIdType: 'chat_id' }
+  }
+
+  // Other channels address the user by their native id stored in externalUserId.
+  if (!session.externalUserId) return null
+  return { receiveId: session.externalUserId, receiveIdType: 'user_id' }
+}
 
 /**
  * SOP Notification Delivery Worker
@@ -99,6 +142,50 @@ export async function processNotification(payload: NotificationJobPayload): Prom
       logger.info('Leader routing unavailable, falling back to configured assignee', {
         pauseId: contextData.pauseId,
         recipientId: payload.recipientId,
+      })
+    }
+
+    // approverSource='requester_self': deliver back to the requester on their own
+    // channel. Resolve the real channel-native id (e.g. feishu open_id) from
+    // channel_sessions via the conversation id — the platform user id in
+    // requesterUserId is NOT what the channel send API accepts. On failure (no
+    // session / invalid id / send error), fall back to the configured assignee.
+    if (payload.approverSource === 'requester_self' && contextData.requesterChannel) {
+      const deliverable = contextData.conversationId
+        ? await resolveRequesterDeliverable(contextData.conversationId, contextData.requesterChannel)
+        : null
+      // Fall back to the raw requesterUserId only when no session was found (keeps
+      // prior behavior for channels/records without a channel_session).
+      const toUser = deliverable?.receiveId ?? contextData.requesterUserId
+      const receiveIdType = deliverable?.receiveIdType ?? 'user_id'
+
+      if (toUser) {
+        const requesterResult = await dispatchApprovalToChannelUser(
+          contextData.requesterChannel,
+          toUser,
+          approvalContent,
+          payload.sourceEmployeeId,
+          receiveIdType,
+          // The requester's chat belongs to the digital employee's own bot — use
+          // that bound connection, not the global notification bot (a different
+          // app that isn't a member of this chat).
+          true
+        )
+        if (requesterResult) {
+          logger.info('Approval routed to requester', {
+            pauseId: contextData.pauseId,
+            channel: contextData.requesterChannel,
+            receiveIdType,
+            resolvedFromSession: !!deliverable,
+            status: requesterResult.status,
+          })
+          return
+        }
+      }
+      logger.info('Requester routing unavailable, falling back to configured assignee', {
+        pauseId: contextData.pauseId,
+        recipientId: payload.recipientId,
+        hadSession: !!deliverable,
       })
     }
 

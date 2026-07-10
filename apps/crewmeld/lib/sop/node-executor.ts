@@ -1941,11 +1941,35 @@ function extractLeaderId(snapshot: SopStateSnapshot): string | undefined {
 }
 
 /**
+ * Extract the requester's own channel-native id for the 'requester_self' approver
+ * source. Prefers the injected identity (_meta.identity.employeeId, which is the
+ * IM channel userid on dev0.0.1), falling back to the raw _meta.userId.
+ */
+function extractRequesterUserId(snapshot: SopStateSnapshot): string | undefined {
+  const meta = extractMeta(snapshot)
+  const identity = meta?.identity as ScopeIdentity | undefined
+  if (typeof identity?.employeeId === 'string' && identity.employeeId.length > 0) {
+    return identity.employeeId
+  }
+  return typeof meta?.userId === 'string' ? meta.userId : undefined
+}
+
+/**
  * Extract the trigger channel (e.g. 'feishu') from snapshot triggerData._meta.channel
  */
 function extractRequesterChannel(snapshot: SopStateSnapshot): string | undefined {
   const meta = extractMeta(snapshot)
   return typeof meta?.channel === 'string' ? meta.channel : undefined
+}
+
+/**
+ * Extract the triggering conversation id from snapshot triggerData._meta.conversationId.
+ * Used by requester_self delivery to resolve the real channel-native id from
+ * channel_sessions (e.g. feishu open_id).
+ */
+function extractConversationId(snapshot: SopStateSnapshot): string | undefined {
+  const meta = extractMeta(snapshot)
+  return typeof meta?.conversationId === 'string' ? meta.conversationId : undefined
 }
 
 function extractMeta(snapshot: SopStateSnapshot): Record<string, unknown> | undefined {
@@ -2015,14 +2039,22 @@ async function enqueueNotification(
 ): Promise<void> {
   const approverSource = node.approverSource ?? 'assignee'
   const recipientId = node.executorId
-  // In requester_leader mode, resolve the leader + channel from the injected
-  // identity; executorId (if set) is the fallback approver.
+  // In requester_leader / requester_self mode, resolve the target + channel from
+  // the injected identity; executorId (if set) is the fallback approver.
   const leaderId = approverSource === 'requester_leader' ? extractLeaderId(snapshot) : undefined
+  const requesterUserId =
+    approverSource === 'requester_self' ? extractRequesterUserId(snapshot) : undefined
   const requesterChannel =
-    approverSource === 'requester_leader' ? extractRequesterChannel(snapshot) : undefined
+    approverSource === 'requester_leader' || approverSource === 'requester_self'
+      ? extractRequesterChannel(snapshot)
+      : undefined
+  // requester_self resolves its delivery id from channel_sessions via the
+  // conversation id (feishu open_id, etc.), the same source sop-completion-notifier uses.
+  const conversationId =
+    approverSource === 'requester_self' ? extractConversationId(snapshot) : undefined
 
-  if (!recipientId && !leaderId) {
-    logger.warn('enqueueNotification: no leader and no assignee to notify, skipping', {
+  if (!recipientId && !leaderId && !requesterUserId) {
+    logger.warn('enqueueNotification: no leader, requester, or assignee to notify, skipping', {
       executionId,
       nodeId: node.id,
       approverSource,
@@ -2051,6 +2083,7 @@ async function enqueueNotification(
     executionId,
     approverSource,
     hasLeaderId: !!leaderId,
+    hasRequesterUserId: !!requesterUserId,
     requesterChannel,
     senderName,
     senderEmail,
@@ -2078,7 +2111,9 @@ async function enqueueNotification(
       nodeName: node.name,
       pauseId,
       leaderId,
+      requesterUserId,
       requesterChannel,
+      conversationId,
       senderName,
       senderEmail,
       baseUrl,
@@ -2087,7 +2122,11 @@ async function enqueueNotification(
     },
   }
 
-  await dispatchNotificationJob(payload, pauseId, recipientId ?? leaderId ?? 'leader')
+  await dispatchNotificationJob(
+    payload,
+    pauseId,
+    recipientId ?? leaderId ?? requesterUserId ?? 'requester'
+  )
 }
 
 /**

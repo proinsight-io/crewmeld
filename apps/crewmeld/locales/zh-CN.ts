@@ -1419,6 +1419,9 @@ export const zhCN = {
     nodeConfigApproverLeader: '发起人直属上级',
     nodeConfigApproverLeaderHint:
       '卡片将发给触发本流程的用户的直属上级（来自飞书/钉钉/企业微信的组织身份），无需指定具体人。解析不到上级时，发给下方的兜底审批人。',
+    nodeConfigApproverSelf: '发起人本人',
+    nodeConfigApproverSelfHint:
+      '卡片将发回给触发本流程的用户本人（来自飞书/钉钉/企业微信的渠道身份），无需指定具体人。解析不到渠道身份时，发给下方的兜底审批人。',
     nodeConfigFallbackApprover: '兜底审批人（可选）',
     nodeConfigSelectHuman: '选择协作人员',
     nodeConfigNotifyMethod: '审批通知方式',
@@ -2438,6 +2441,7 @@ export const zhCN = {
     toolSubtitle: '管理和探索可用于数字员工的工具',
     creating: '创建中',
     importTool: '导入工具',
+    importing: '导入中',
     config: '配置',
     confirmUninstallTitle: '确认卸载',
     uninstalling: '卸载中',
@@ -4109,6 +4113,50 @@ export const zhCN = {
   // UI strings for the tool dev-studio dialog and the global notification cards
   // it spawns. Keep the structure mirrored exactly in apps/crewmeld/locales/en.ts.
   devStudio: {
+    opencode: {
+      tool: {
+        read: '读取',
+        list: '列目录',
+        webfetch: '抓取网页',
+        websearch: '联网搜索',
+        task: '子任务',
+        bash: 'Shell 命令',
+        edit: '编辑',
+        write: '写入',
+        patch: '补丁',
+        todo: '待办',
+        question: '提问',
+        skill: '技能',
+        called: '调用了 {tool}',
+        fileCount: '{count} 个文件',
+        copyCommand: '复制命令',
+        loaded: '已加载 {path}',
+      },
+      diff: {
+        removed: '删除',
+        added: '新增',
+      },
+      question: {
+        answered: '已回答 {count}',
+        count: '{count} 个问题',
+        customAnswer: '自填答案',
+        customPlaceholder: '输入自定义答案…',
+      },
+      todo: {
+        done: '已完成 {done}/{total}',
+      },
+      status: {
+        connecting: '连接中…',
+        working: 'AI 正在处理…',
+        errorPrefix: '出错了：',
+      },
+      error: {
+        unknown: 'opencode 会话发生未知错误',
+        sendFailed: '发送失败',
+        sendFailedHttp: '发送失败 (HTTP {status})',
+        detailSep: '：',
+      },
+    },
     modelSelector: {
       label: '编程模型',
       systemDefault: '系统默认',
@@ -4208,8 +4256,9 @@ export const zhCN = {
     test: {
       empty: '等待 AI 交付工具…',
       manifestInvalidTitle: '工具清单（manifest.json）解析失败，测试页无法加载',
-      manifestInvalidHint:
-        '通常是 AI 写出的 manifest 格式有误。请在左侧让它修正（常见：connectorType 写成了字符串、字符串里有未转义的双引号、多余的逗号/括号），修好后会自动恢复。',
+      manifestInvalidHint: '已自动通知 AI 修正中…，无需手动复制错误信息。',
+      manifestAutoFix:
+        'manifest 校验失败，请修正 manifest.json 后重试。\n提示：output.type 只能是 files / json / text / image / pdf 之一（files 需要 dir 字段）。\n\n错误详情：\n{detail}',
       paramsHeading: '输入参数',
       run: '运行测试',
       running: '运行中…',
@@ -4345,6 +4394,7 @@ export const zhCN = {
       uploadedChip: '已上传 {count} 个文件',
       send: '发送 (Ctrl+Enter)',
       stop: '停止 (ESC)',
+      busyPlaceholder: 'AI 处理中，请稍候…',
       thinking: 'AI 正在思考…',
       aborted: '（已停止）',
       engineerReady: 'AI 工程师已就绪',

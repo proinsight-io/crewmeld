@@ -321,7 +321,7 @@ export function SopNodeConfigPanel({ nodeId }: SopNodeConfigPanelProps) {
               {t('sops.nodeConfigApproverSource')}
             </Label>
             <div className='mt-1 space-y-1.5' data-testid='sop-editor:config-panel:approver-source'>
-              {(['assignee', 'requester_leader'] as const).map((src) => (
+              {(['assignee', 'requester_leader', 'requester_self'] as const).map((src) => (
                 <label
                   key={src}
                   className='flex cursor-pointer items-center gap-2 rounded-md border border-gray-100 px-2.5 py-1.5 text-xs transition-colors hover:bg-gray-50'
@@ -338,7 +338,9 @@ export function SopNodeConfigPanel({ nodeId }: SopNodeConfigPanelProps) {
                     {t(
                       src === 'assignee'
                         ? 'sops.nodeConfigApproverAssignee'
-                        : 'sops.nodeConfigApproverLeader'
+                        : src === 'requester_leader'
+                          ? 'sops.nodeConfigApproverLeader'
+                          : 'sops.nodeConfigApproverSelf'
                     )}
                   </span>
                 </label>
@@ -352,11 +354,17 @@ export function SopNodeConfigPanel({ nodeId }: SopNodeConfigPanelProps) {
             </div>
           )}
 
+          {(sopNode.approverSource ?? 'assignee') === 'requester_self' && (
+            <div className='rounded-md bg-blue-50 px-3 py-2 text-[11px] text-blue-700'>
+              {t('sops.nodeConfigApproverSelfHint')}
+            </div>
+          )}
+
           <div>
             <Label className='mb-1.5 text-gray-500 text-xs'>
-              {(sopNode.approverSource ?? 'assignee') === 'requester_leader'
-                ? t('sops.nodeConfigFallbackApprover')
-                : t('sops.nodeConfigAssignHuman')}
+              {(sopNode.approverSource ?? 'assignee') === 'assignee'
+                ? t('sops.nodeConfigAssignHuman')
+                : t('sops.nodeConfigFallbackApprover')}
             </Label>
             <Select
               value={sopNode.executorId ?? ''}
@@ -398,12 +406,12 @@ export function SopNodeConfigPanel({ nodeId }: SopNodeConfigPanelProps) {
           </Label>
           {selectedHumanEmployee.contactMethods.length > 0 ? (
             <div className='mt-1 space-y-1.5' data-testid='sop-editor:config-panel:notify-methods'>
-              {selectedHumanEmployee.contactMethods.map((cm) => {
+              {selectedHumanEmployee.contactMethods.map((cm, idx) => {
                 const Icon = CONTACT_TYPE_ICONS[cm.type] ?? Send
                 const checked = notifyMethods.includes(cm.type)
                 return (
                   <label
-                    key={cm.type}
+                    key={`${cm.type}-${cm.value}-${idx}`}
                     className='flex cursor-pointer items-center gap-2 rounded-md border border-gray-100 px-2.5 py-1.5 text-xs transition-colors hover:bg-gray-50'
                   >
                     <input
