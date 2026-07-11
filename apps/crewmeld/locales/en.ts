@@ -1474,6 +1474,9 @@ export const en: LooseMessages = {
     nodeConfigApproverLeader: "Requester's direct leader",
     nodeConfigApproverLeaderHint:
       "The card is sent to the direct leader of whoever triggered this flow (resolved from Feishu/DingTalk/WeCom org identity) — no need to pick a person. When no leader can be resolved, it falls back to the collaborator below.",
+    nodeConfigApproverSelf: 'Requester themselves',
+    nodeConfigApproverSelfHint:
+      "The card is sent back to whoever triggered this flow (resolved from their Feishu/DingTalk/WeCom channel identity) — no need to pick a person. When the channel identity can't be resolved, it falls back to the collaborator below.",
     nodeConfigFallbackApprover: 'Fallback approver (optional)',
     nodeConfigSelectHuman: 'Select Collaborator',
     nodeConfigNotifyMethod: 'Approval Notification',
@@ -2454,6 +2457,7 @@ export const en: LooseMessages = {
     toolSubtitle: 'Manage and explore tools available for AI employees',
     creating: 'Creating',
     importTool: 'Import Tool',
+    importing: 'Importing',
     config: 'Config',
     confirmUninstallTitle: 'Confirm Uninstall',
     uninstalling: 'Uninstalling',
@@ -4151,6 +4155,50 @@ You are a general-purpose intelligent assistant that can handle various daily wo
   // ── Dev Studio (Sub-spec B) ──
   // Mirror of devStudio in apps/crewmeld/locales/zh-CN.ts. Keys must stay in sync.
   devStudio: {
+    opencode: {
+      tool: {
+        read: 'Read',
+        list: 'List',
+        webfetch: 'Fetch page',
+        websearch: 'Web search',
+        task: 'Subtask',
+        bash: 'Shell command',
+        edit: 'Edit',
+        write: 'Write',
+        patch: 'Patch',
+        todo: 'Todos',
+        question: 'Question',
+        skill: 'Skill',
+        called: 'Called {tool}',
+        fileCount: '{count} file(s)',
+        copyCommand: 'Copy command',
+        loaded: 'Loaded {path}',
+      },
+      diff: {
+        removed: 'Removed',
+        added: 'Added',
+      },
+      question: {
+        answered: 'Answered {count}',
+        count: '{count} question(s)',
+        customAnswer: 'Custom answer',
+        customPlaceholder: 'Enter a custom answer…',
+      },
+      todo: {
+        done: 'Done {done}/{total}',
+      },
+      status: {
+        connecting: 'Connecting…',
+        working: 'Working…',
+        errorPrefix: 'Error: ',
+      },
+      error: {
+        unknown: 'The opencode session hit an unknown error',
+        sendFailed: 'Send failed',
+        sendFailedHttp: 'Send failed (HTTP {status})',
+        detailSep: ': ',
+      },
+    },
     modelSelector: {
       label: 'Coding model',
       systemDefault: 'System default',
@@ -4253,7 +4301,9 @@ You are a general-purpose intelligent assistant that can handle various daily wo
       empty: 'Waiting for AI to deliver the tool…',
       manifestInvalidTitle: 'manifest.json failed to parse — the test panel cannot load',
       manifestInvalidHint:
-        'Usually the AI wrote a malformed manifest. Ask it (on the left) to fix it (common causes: connectorType written as a string, unescaped double-quotes inside a string, extra commas/brackets). It recovers automatically once fixed.',
+        'Auto-notified the AI to fix it — no need to copy the error manually. It recovers automatically once fixed.',
+      manifestAutoFix:
+        'The manifest.json validation failed. Please fix manifest.json and try again.\nHint: output.type must be one of: files / json / text / image / pdf (files requires a dir field).\n\nError details:\n{detail}',
       paramsHeading: 'Input parameters',
       run: 'Run test',
       running: 'Running…',
@@ -4395,6 +4445,7 @@ You are a general-purpose intelligent assistant that can handle various daily wo
       uploadedChip: '{count} file(s) uploaded',
       send: 'Send (Ctrl+Enter)',
       stop: 'Stop (ESC)',
+      busyPlaceholder: 'AI is working, please wait…',
       thinking: 'AI is thinking…',
       aborted: '(stopped)',
       engineerReady: 'AI engineer ready',

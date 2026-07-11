@@ -189,7 +189,9 @@ export async function dispatchApprovalToChannelUser(
   channel: string,
   userId: string,
   content: ApprovalNotificationContent,
-  sourceEmployeeId?: string
+  sourceEmployeeId?: string,
+  receiveIdType = 'user_id',
+  preferBoundEmployee = false
 ): Promise<DispatchResult | null> {
   const plugin = getPlugin(channel)
   if (!plugin?.buildApprovalCard || !plugin.outbound.sendCard || !content.pauseId) {
@@ -198,7 +200,14 @@ export async function dispatchApprovalToChannelUser(
   }
 
   try {
-    const result = await sendApprovalViaPlugin(plugin, userId, content, sourceEmployeeId)
+    const result = await sendApprovalViaPlugin(
+      plugin,
+      userId,
+      content,
+      sourceEmployeeId,
+      receiveIdType,
+      preferBoundEmployee
+    )
     if (result.status === 'sent') {
       logger.info('Approval card delivered to leader', { channel, leaderId: userId })
       return result
@@ -228,26 +237,35 @@ async function sendApprovalViaPlugin(
   plugin: ChannelPlugin,
   toUser: string,
   content: ApprovalNotificationContent,
-  sourceEmployeeId?: string
+  sourceEmployeeId?: string,
+  receiveIdType = 'user_id',
+  preferBoundEmployee = false
 ): Promise<DispatchResult> {
   const { resolveCredentialByBoundEmployee, resolveSystemDefault, resolveCredentialById } =
     await import('@/lib/connectors/resolver')
   const { getNotificationBotChannelId } = await import('@/lib/connectors/notification-bot')
+  const connType = plugin.id as import('@crewmeld/db/schema').ConnectionType
 
-  // Prefer admin-designated notification bot, then bound connection, finally system default
-  const designatedChannelId = await getNotificationBotChannelId(plugin.id)
-  let credential = designatedChannelId ? await resolveCredentialById(designatedChannelId) : null
+  // When delivering to an existing chat the requester already shares with the
+  // digital employee (requester_self via chat_id), only that employee's own bot
+  // is a member of that chat — the globally-designated notification bot is a
+  // different app and cannot post there. So resolve the bound-employee credential
+  // first in that case. Otherwise keep the default order (notification bot first).
+  let credential = null
+  if (preferBoundEmployee && sourceEmployeeId) {
+    credential = await resolveCredentialByBoundEmployee(sourceEmployeeId, connType)
+  }
+
+  if (!credential) {
+    const designatedChannelId = await getNotificationBotChannelId(plugin.id)
+    credential = designatedChannelId ? await resolveCredentialById(designatedChannelId) : null
+  }
 
   if (!credential && sourceEmployeeId) {
-    credential = await resolveCredentialByBoundEmployee(
-      sourceEmployeeId,
-      plugin.id as import('@crewmeld/db/schema').ConnectionType
-    )
+    credential = await resolveCredentialByBoundEmployee(sourceEmployeeId, connType)
   }
   if (!credential) {
-    credential = await resolveSystemDefault(
-      plugin.id as import('@crewmeld/db/schema').ConnectionType
-    )
+    credential = await resolveSystemDefault(connType)
   }
 
   if (!credential) {
@@ -275,7 +293,7 @@ async function sendApprovalViaPlugin(
     connectionId: credential.connectionId,
     connectionName: credential.connectionName,
     sourceEmployeeId,
-    designatedChannelId,
+    preferBoundEmployee,
   })
 
   const card = plugin.buildApprovalCard!({
@@ -292,7 +310,7 @@ async function sendApprovalViaPlugin(
   })
 
   const cardResponseCode = await plugin.outbound.sendCard!(
-    { receiveId: toUser, receiveIdType: 'user_id', card },
+    { receiveId: toUser, receiveIdType, card },
     credential.config as Record<string, unknown>
   )
 

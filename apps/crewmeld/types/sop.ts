@@ -34,8 +34,11 @@ export interface SopNode {
    * - 'requester_leader': send to the direct leader of whoever triggered the SOP
    *   (from _meta.identity.leaderId, IM channels only); executorId, if set,
    *   serves as the fallback approver when no leader can be reached.
+   * - 'requester_self': send back to the requester themselves (from
+   *   _meta.identity.employeeId, IM channels only); executorId, if set, serves
+   *   as the fallback approver when the requester's channel id is unavailable.
    */
-  approverSource?: 'assignee' | 'requester_leader'
+  approverSource?: 'assignee' | 'requester_leader' | 'requester_self'
   /** Condition/branch config (for condition / switch nodes) */
   conditionConfig?: ConditionConfig
   exits: SopExit[]
@@ -215,6 +218,50 @@ export interface AsyncToolWatchdogPayload {
 }
 
 /**
+ * BullMQ exec payload — durably runs a BFF-side async tool (api in-process /
+ * http deployed service) then applies its result via the callback handler.
+ *
+ * Unlike pod tools (which call back themselves), these run in the BFF; putting
+ * their execution behind a durable job is what lets them survive a BFF restart
+ * instead of hanging until the watchdog. Every field must be JSON-serializable
+ * (it round-trips through Redis).
+ */
+export interface AsyncToolExecApiPayload {
+  kind: 'api'
+  executionId: string
+  callId: string
+  /** Instance id — for logs/bookkeeping and cycle detection in the runner. */
+  toolId: string
+  /** Stored spec (pre/request/post) executed in the in-process JS sandbox. */
+  apiSpec: import('@/lib/tools/api-tool-types').ApiToolSpec
+  /** Parsed LLM arguments. */
+  args: Record<string, unknown>
+  /** Forward the resolved caller identity into the outgoing request. */
+  forwardIdentity?: boolean
+  /** Platform-resolved caller identity (never sourced from the LLM). */
+  identity?: import('@/lib/identity/types').ScopeIdentity
+}
+
+/** {@link AsyncToolExecApiPayload} sibling for deployed-service / k8s http tools. */
+export interface AsyncToolExecHttpPayload {
+  kind: 'http'
+  executionId: string
+  callId: string
+  toolId: string
+  /** Persistent endpoint the tool is reached at. */
+  endpoint: string
+  /** Request body the loop assembled (identity + _sop* fields already merged). */
+  requestBody: Record<string, unknown>
+  /** Add the OpenSandbox proxy auth header when reaching the endpoint via proxy. */
+  useProxy?: boolean
+  /** 'opensandbox' → synthesise the envelope from the raw response; 'standard' →
+   *  the endpoint already returns a { success, result, error } envelope. */
+  envelopeMode: 'opensandbox' | 'standard'
+}
+
+export type AsyncToolExecPayload = AsyncToolExecApiPayload | AsyncToolExecHttpPayload
+
+/**
  * Notification job payload — enqueued per recipient, one job per recipient
  *
  * The SOP module only determines "who to notify", not the delivery channel.
@@ -232,8 +279,8 @@ export interface NotificationJobPayload {
   notifyMethod?: string | string[]
   /** Digital employee ID that triggered the conversation (for looking up bound channel connections, avoiding cross-app) */
   sourceEmployeeId?: string
-  /** Approver source: 'assignee' (default) or 'requester_leader' (deliver to the requester's leader) */
-  approverSource?: 'assignee' | 'requester_leader'
+  /** Approver source: 'assignee' (default), 'requester_leader' (deliver to the requester's leader), or 'requester_self' (deliver back to the requester) */
+  approverSource?: 'assignee' | 'requester_leader' | 'requester_self'
   contextData: {
     sopName: string
     nodeName: string
@@ -242,8 +289,17 @@ export interface NotificationJobPayload {
     pauseId: string
     /** Requester's direct leader id (when approverSource='requester_leader'), channel-native */
     leaderId?: string
-    /** Channel the requester came from (e.g. 'feishu'), used to deliver to the leader */
+    /** Requester's own channel-native id (when approverSource='requester_self') */
+    requesterUserId?: string
+    /** Channel the requester came from (e.g. 'feishu'), used to deliver to the leader/requester */
     requesterChannel?: string
+    /**
+     * Conversation id that triggered the SOP (from _meta.conversationId). Used by
+     * requester_self delivery to look up channel_sessions and resolve the real
+     * channel-native delivery id (e.g. feishu open_id), matching how
+     * sop-completion-notifier reaches the user.
+     */
+    conversationId?: string
     /** Execution result of the previous digital employee node (JSON string) */
     previousNodeResult?: string
     previousNodeName?: string

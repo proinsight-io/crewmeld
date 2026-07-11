@@ -145,9 +145,21 @@ export async function validateSopForExecution(
       }
 
       case 'human_employee': {
-        // Must select a collaborator
+        // In 'assignee' mode the collaborator (executorId) is mandatory. In
+        // 'requester_leader' / 'requester_self' mode the approval card is pushed
+        // to the requester's (or their leader's) own channel, so executorId is
+        // only an optional fallback approver — it, its contact methods, and the
+        // notifyMethod are all optional. When a fallback is provided, validate it
+        // fully so the fallback path is guaranteed to work.
+        const approverSource = node.approverSource ?? 'assignee'
+        const assigneeRequired = approverSource === 'assignee'
+
         if (!node.executorId) {
-          errors.push({ nodeId: node.id, nodeName: label, message: t('sopValidatorNoHuman') })
+          if (assigneeRequired) {
+            errors.push({ nodeId: node.id, nodeName: label, message: t('sopValidatorNoHuman') })
+          }
+          // No fallback approver configured for leader/self mode — nothing else
+          // to validate; delivery relies on channel card push.
           break
         }
         const he = heMap.get(node.executorId)
