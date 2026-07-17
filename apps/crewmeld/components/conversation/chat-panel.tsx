@@ -23,6 +23,7 @@ export function ChatPanel({ conversationId, employeeId }: ChatPanelProps) {
     progressMessage,
     loadMessages,
     sendMessage,
+    createConversation,
   } = useConversationStore()
 
   const [input, setInput] = useState('')
@@ -85,7 +86,22 @@ export function ChatPanel({ conversationId, employeeId }: ChatPanelProps) {
     setInput('')
     setPendingFiles([])
 
-    // Upload files to MinIO
+    // Ensure the conversation exists BEFORE uploading any files, so the upload
+    // lands in the conversation's NFS conv-io dir (uploads with no
+    // conversationId used to fall back to MinIO under a synthetic `user-<id>`
+    // key, which the SOP seed / tools never see). Text-only sends don't need
+    // this — sendMessage creates the conversation lazily.
+    let convId = conversationId
+    if (!convId && filesToUpload.length > 0 && employeeId) {
+      convId = await createConversation(employeeId)
+      if (!convId) {
+        // Creation failed — restore pending files so the user can retry.
+        setPendingFiles(filesToUpload)
+        return
+      }
+    }
+
+    // Upload files into the conversation's NFS store.
     const uploadedFiles: MessageFileAttachment[] = []
     if (filesToUpload.length > 0) {
       setIsUploading(true)
@@ -93,7 +109,7 @@ export function ChatPanel({ conversationId, employeeId }: ChatPanelProps) {
         for (const file of filesToUpload) {
           const formData = new FormData()
           formData.append('file', file)
-          if (conversationId) formData.append('conversationId', conversationId)
+          if (convId) formData.append('conversationId', convId)
           const res = await fetch('/api/employee/conversations/files/upload', {
             method: 'POST',
             body: formData,
@@ -124,7 +140,16 @@ export function ChatPanel({ conversationId, employeeId }: ChatPanelProps) {
       conversationId ? undefined : employeeId,
       uploadedFiles.length > 0 ? uploadedFiles : undefined
     )
-  }, [input, pendingFiles, isStreaming, isUploading, sendMessage, conversationId, employeeId])
+  }, [
+    input,
+    pendingFiles,
+    isStreaming,
+    isUploading,
+    sendMessage,
+    createConversation,
+    conversationId,
+    employeeId,
+  ])
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? [])

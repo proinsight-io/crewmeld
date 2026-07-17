@@ -93,6 +93,14 @@ export const toolDevSessions = pgTable(
       .notNull()
       .default('destroyed'),
 
+    // Which coding agent backs this session's sandbox: claude-code-webui or opencode serve.
+    coderType: text('coder_type', { enum: ['claudecode', 'opencode'] })
+      .$type<'claudecode' | 'opencode'>()
+      .notNull()
+      .default('claudecode'),
+    // The opencode-side session id (opencode.db) this dev session maps to; null until first prompt.
+    opencodeSessionId: text('opencode_session_id'),
+
     workspaceDir: text('workspace_dir').notNull(),
     /**
      * Host end of the `/root/.claude/projects` bind mount. The name is a

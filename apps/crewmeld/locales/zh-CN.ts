@@ -1423,6 +1423,7 @@ export const zhCN = {
     nodeConfigApproverSelfHint:
       '卡片将发回给触发本流程的用户本人（来自飞书/钉钉/企业微信的渠道身份），无需指定具体人。解析不到渠道身份时，发给下方的兜底审批人。',
     nodeConfigFallbackApprover: '兜底审批人（可选）',
+    nodeConfigNoFallbackApprover: '不设置（无兜底审批人）',
     nodeConfigSelectHuman: '选择协作人员',
     nodeConfigNotifyMethod: '审批通知方式',
     nodeConfigNotifySelected: '（已选 {count} 个平台）',
@@ -2288,6 +2289,8 @@ export const zhCN = {
     formSaving: '保存中...',
     contactPlaceholder: '请输入联系方式',
     addContact: '添加联系方式',
+    contactDuplicate: '该渠道已添加',
+    formContactDuplicate: '存在重复的联系方式渠道，请勿重复添加同一渠道',
   },
   skills: {
     title: '工具管理',
@@ -3478,6 +3481,8 @@ export const zhCN = {
       wecomFieldsMissing: '企微渠道必须提供 corpId, corpSecret, agentId',
       invalidParams: '参数不完整',
       typeUnsupported: '不支持的渠道类型: {type}',
+      duplicateCredential:
+        '相同凭据的渠道已存在（API Key 与 Secret 完全一致），无法重复添加。如需调整请直接编辑已有渠道。',
     },
     sop: {
       notFound: 'SOP 不存在',
@@ -4149,6 +4154,9 @@ export const zhCN = {
         connecting: '连接中…',
         working: 'AI 正在处理…',
         errorPrefix: '出错了：',
+        retrying: '模型繁忙，正在自动重试…',
+        retryAttempt: '第 {attempt} 次重试',
+        retryCountdown: '{seconds} 秒后重试',
       },
       error: {
         unknown: 'opencode 会话发生未知错误',
@@ -4350,7 +4358,6 @@ export const zhCN = {
     },
     adopt: {
       button: '采纳',
-      gatedHint: '请先在对话中审批依赖',
       confirmTitle: '采纳这个工具？',
       confirmBody: '采纳后会销毁运行容器并归档会话；之后可在已采纳列表中查看。该操作不可撤销。',
       confirmOk: '采纳',
@@ -4361,6 +4368,13 @@ export const zhCN = {
       registered: '工具已注册',
       goToSkills: '前往工具列表部署',
       needsRedeploy: '工具已更新，请重新部署实例以生效',
+    },
+    dependencyGate: {
+      title: '自动批准依赖？',
+      hint: '这个工具还有 AI 声明的第三方库 / 域名依赖尚未审批。是否自动批准这些依赖并继续采纳？',
+      confirm: '批准并继续',
+      cancel: '取消',
+      failed: '批准失败，请重试',
     },
     session: {
       newIteration: '新建迭代',

@@ -101,7 +101,7 @@ export function DevStudioChat({
 
   return (
     <ScrollArea ref={scrollRootRef} className='flex-1 min-h-0' data-testid='dev-studio:chat-area'>
-      <div className='py-3 flex flex-col gap-1'>
+      <div className='px-3 py-3 flex flex-col gap-1'>
         {messages.length === 0 && !busy ? (
           <div className='text-center text-sm text-muted-foreground py-12'>
             {t('devStudio.chat.empty')}
@@ -119,7 +119,7 @@ export function DevStudioChat({
         )}
         {showThinking && (
           <div
-            className='text-xs text-muted-foreground flex items-center gap-1.5 my-1 px-2'
+            className='text-xs text-muted-foreground flex items-center gap-1.5 my-1'
             data-testid='dev-studio:chat-thinking'
             aria-live='polite'
           >

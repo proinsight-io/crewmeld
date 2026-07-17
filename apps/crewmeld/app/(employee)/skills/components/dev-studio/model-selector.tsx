@@ -9,6 +9,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { useTranslation } from '@/hooks/use-translation'
+import { cn } from '@/lib/core/utils/cn'
 
 /** Shape of one coding model config returned by GET /models?category=coding. */
 interface CodingModelConfig {
@@ -30,6 +31,11 @@ interface ModelSelectorProps {
    * the coding list (e.g. a stale config).
    */
   currentLabel?: string | null
+  /**
+   * Extra classes merged into the trigger; use to override the default width
+   * per usage (e.g. `w-[80%]` in the create dialog, `flex-1` in the header).
+   */
+  triggerClassName?: string
 }
 
 /**
@@ -40,7 +46,7 @@ interface ModelSelectorProps {
  * of as a confusing duplicated header + item. Used both at session-create time
  * and for mid-session model switching (Sub-spec C §5).
  */
-export function ModelSelector({ value, onChange, disabled, currentLabel }: ModelSelectorProps) {
+export function ModelSelector({ value, onChange, disabled, currentLabel, triggerClassName }: ModelSelectorProps) {
   const { t } = useTranslation()
   const [configs, setConfigs] = useState<CodingModelConfig[]>([])
 
@@ -65,7 +71,7 @@ export function ModelSelector({ value, onChange, disabled, currentLabel }: Model
 
   return (
     <Select value={value ?? undefined} onValueChange={(v) => onChange(v)} disabled={disabled}>
-      <SelectTrigger className='h-8 w-[180px] text-xs' data-testid='dev-studio:model-selector'>
+      <SelectTrigger className={cn('h-8 w-[180px] text-xs', triggerClassName)} data-testid='dev-studio:model-selector'>
         <SelectValue placeholder={t('devStudio.modelSelector.label')} />
       </SelectTrigger>
       <SelectContent>

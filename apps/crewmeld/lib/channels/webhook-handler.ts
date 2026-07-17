@@ -238,12 +238,23 @@ export async function handleChannelWebhook<TConfig>(
       channelId === 'wecom' ||
       channelId === 'discord'
     ) {
-      await ensureSenderName(
+      // Resolve sender name in the background — must NOT block the webhook ack.
+      // Feishu expects a response within ~3s; awaiting these profile lookups
+      // (which can time out ~10s each when the contact scope is missing) pushes
+      // the ack past that window, so Feishu retries and the same message —
+      // including file downloads — gets processed twice. senderName is
+      // non-critical metadata and is backfilled on subsequent messages.
+      void ensureSenderName(
         conversationId,
         message.externalUserId,
         config as Record<string, unknown>,
         message.externalSessionId
-      )
+      ).catch((err) => {
+        logger.warn(`${channelId} ensureSenderName failed`, {
+          conversationId,
+          error: err instanceof Error ? err.message : String(err),
+        })
+      })
     }
 
     // 8.2 Resolve and log the sender's org directory detail (positions /
@@ -639,6 +650,35 @@ function guessMimeType(fileName: string): string {
 /**
  * Download channel file → store in MinIO (no content parsing; files are processed by SOP tools)
  */
+/**
+ * Retry a transient outbound send (e.g. "fetch failed" reaching the channel
+ * API). Replies are sent after the webhook ack, so a single network blip would
+ * otherwise silently drop the user-facing message. Retries up to `attempts`
+ * times with exponential backoff; rethrows the last error if all attempts fail.
+ *
+ * @param fn - The send operation to run.
+ * @param attempts - Total tries including the first (default 3).
+ * @param baseDelayMs - Backoff base; delay before retry N is `baseDelayMs * 2^(N-1)`.
+ */
+async function sendWithRetry<T>(
+  fn: () => Promise<T>,
+  attempts = 3,
+  baseDelayMs = 500
+): Promise<T> {
+  let lastErr: unknown
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fn()
+    } catch (err) {
+      lastErr = err
+      if (attempt < attempts) {
+        await new Promise((resolve) => setTimeout(resolve, baseDelayMs * 2 ** (attempt - 1)))
+      }
+    }
+  }
+  throw lastErr
+}
+
 async function downloadAndStoreFile(
   message: Record<string, unknown>,
   conversationId: string
@@ -905,21 +945,23 @@ async function handleAsyncResponse<TConfig>(
           chunkLength: chunks[i].length,
           chunkPreview: chunks[i].slice(0, 100),
         })
-        await plugin.outbound.sendText(
-          {
-            receiveId: finalReceiveId,
-            receiveIdType: finalReceiveIdType,
-            content: chunks[i],
-            sessionWebhook,
-          } as unknown as import('@/lib/channels/plugin-types').SendTextParams,
-          config
+        await sendWithRetry(() =>
+          plugin.outbound.sendText(
+            {
+              receiveId: finalReceiveId,
+              receiveIdType: finalReceiveIdType,
+              content: chunks[i],
+              sessionWebhook,
+            } as unknown as import('@/lib/channels/plugin-types').SendTextParams,
+            config
+          )
         )
         logger.info(`[${channelId}] Chunk ${i + 1}/${chunks.length} sent successfully`, {
           conversationId,
         })
       } catch (chunkErr) {
         const errMsg = chunkErr instanceof Error ? chunkErr.message : String(chunkErr)
-        logger.error(`[${channelId}] Chunk ${i + 1}/${chunks.length} send failed`, {
+        logger.error(`[${channelId}] Chunk ${i + 1}/${chunks.length} send failed after retries`, {
           conversationId,
           receiveId: finalReceiveId,
           chunkLength: chunks[i].length,
@@ -943,9 +985,11 @@ async function handleAsyncResponse<TConfig>(
           receiveId: finalReceiveId,
           fileName: file.name,
         })
-        await plugin.outbound.sendFile(
-          { receiveId: finalReceiveId, receiveIdType: finalReceiveIdType, file },
-          config
+        await sendWithRetry(() =>
+          plugin.outbound.sendFile(
+            { receiveId: finalReceiveId, receiveIdType: finalReceiveIdType, file },
+            config
+          )
         )
         logger.info(`[${channelId}] Attachment sent successfully`, {
           conversationId,

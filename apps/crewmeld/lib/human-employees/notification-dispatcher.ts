@@ -5,6 +5,7 @@ import { eq } from 'drizzle-orm'
 import { getPlugin } from '@/lib/channels/plugin-registry'
 import type { ChannelPlugin } from '@/lib/channels/plugin-types'
 import { t } from '@/lib/core/server-i18n'
+import { contactKey, matchesNotifyMethod } from '@/lib/human-employees/notify-method'
 import '@/lib/channels/plugins'
 
 const logger = createLogger('NotificationDispatcher')
@@ -72,16 +73,18 @@ export async function dispatchNotification(
     return []
   }
 
-  // Determine delivery method list: supports multi-platform (string | string[])
+  // Determine delivery method list: supports multi-platform (string | string[]).
+  // Each entry is either a specific "type:value" contact key or a legacy bare
+  // contact type (all contacts of that type). When nothing is configured, fall
+  // back to the recipient's email (or first) contact as a specific key.
+  const defaultContact = allContacts.find((c) => c.type === 'email') ?? allContacts[0]
   const methods: string[] = notifyMethod
     ? Array.isArray(notifyMethod)
       ? notifyMethod
       : [notifyMethod]
-    : allContacts.find((c) => c.type === 'email')
-      ? ['email']
-      : allContacts[0]?.type
-        ? [allContacts[0].type]
-        : []
+    : defaultContact
+      ? [contactKey(defaultContact)]
+      : []
 
   if (methods.length === 0) {
     logger.warn('Notification delivery skipped: recipient has no contact info', {
@@ -91,8 +94,10 @@ export async function dispatchNotification(
     return []
   }
 
-  // Multi-platform: collect all matching contact methods
-  const contacts = allContacts.filter((c) => methods.includes(c.type))
+  // Multi-platform: collect all contact methods selected by the configured
+  // notify methods — specific "type:value" keys match one contact, legacy bare
+  // types match every contact of that type.
+  const contacts = allContacts.filter((c) => methods.some((m) => matchesNotifyMethod(m, c)))
 
   if (contacts.length === 0) {
     logger.warn('Notification delivery failed: no matching contact method for recipient', {

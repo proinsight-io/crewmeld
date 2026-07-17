@@ -667,7 +667,8 @@ export async function processMessage(
           knowledgeReferences,
           taskId,
           isZh,
-          channelConfig
+          channelConfig,
+          fileMetadata
         )
         await db
           .update(taskExecutions)
@@ -763,7 +764,9 @@ async function runMessageLoop(
   taskId = '',
   isZh = true,
   /** Credentials of the connection that received the message — threaded to SOP identity resolution. */
-  channelConfig?: Record<string, unknown>
+  channelConfig?: Record<string, unknown>,
+  /** Files attached to the current user message — the fallback seed set when the LLM names no `input_files`. */
+  fileMetadata?: Array<{ key: string; name: string; size: number; mimeType: string }>
 ): Promise<{ outputSummary: string | null; totalTokens: number }> {
   const lang = isZh ? 'zh' : 'en'
   const messages: EngineMessage[] = [{ role: 'system', content: systemPrompt }, ...contextMessages]
@@ -1008,18 +1011,47 @@ async function runMessageLoop(
           // Inject original user message into input, ensure SOP start_trigger can access it.
           // LLM-extracted precise params (sopInput) expanded later; same-name fields override input.
           const sopInput = (args.input as Record<string, unknown>) ?? args
-          // Grab the most recent user message with [附件: url=...] from history, take all [附件] annotations
-          // append to input end, ensure SOP inner LLM can see real file URLs (prevent hallucinated public URLs)
-          let sopInputMessage = userMessage
+          // Files the user pointed at for THIS request. The outer LLM relays the
+          // names it read in the user's message via `input_files`; only those
+          // conv-io files get seeded into the SOP workspace (so a template sent
+          // once earlier is picked up by name, and prior outputs / unrelated
+          // uploads are not dumped in). Fall back to the files attached to the
+          // current message when the LLM named none.
+          const namedInputFiles = Array.isArray(args.input_files)
+            ? (args.input_files as unknown[]).filter((x): x is string => typeof x === 'string')
+            : []
+          const inputFiles =
+            namedInputFiles.length > 0
+              ? namedInputFiles
+              : (fileMetadata ?? []).map((f) => f.name)
+          // Collect [附件:] annotations from ALL user messages in history (not
+          // just the most recent one), deduped by filename keeping the latest
+          // upload. A single SOP trigger often follows several separate
+          // file-upload messages (e.g. data Excel + PPT template sent one at a
+          // time, each with its own "已收到" reply in between); taking only the
+          // last file message would drop the earlier files and make the SOP's
+          // inner LLM believe they are missing. This mirrors the SOP bridge's
+          // conv-io → sop-files seed, which copies every conversation file.
+          const seenAttachmentNames = new Set<string>()
+          const attachmentAnnotations: string[] = []
           for (let i = messages.length - 1; i >= 0; i--) {
             const m = messages[i]
             if (m.role !== 'user' || typeof m.content !== 'string') continue
             const matches = m.content.match(/\[附件:[^\]]+\]/g)
-            if (matches && matches.length > 0) {
-              sopInputMessage = `${userMessage}\n\n${matches.join('\n')}`
-              break
+            if (!matches) continue
+            for (const annotation of matches) {
+              const name = annotation.match(/name=([^,\]]+)/)?.[1]?.trim() ?? annotation
+              if (seenAttachmentNames.has(name)) continue
+              seenAttachmentNames.add(name)
+              attachmentAnnotations.push(annotation)
             }
           }
+          // Newest-first above → reverse to chronological order for the prompt.
+          attachmentAnnotations.reverse()
+          const sopInputMessage =
+            attachmentAnnotations.length > 0
+              ? `${userMessage}\n\n${attachmentAnnotations.join('\n')}`
+              : userMessage
           const triggerData: Record<string, unknown> = {
             input: sopInputMessage,
             ...sopInput,
@@ -1038,7 +1070,8 @@ async function runMessageLoop(
               enqueue(encodeSSE(progressEvent))
             },
             isZh,
-            channelConfig
+            channelConfig,
+            inputFiles
           )
 
           if (!result.success) {

@@ -14,12 +14,17 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
-import { buildConnEnvKeys, type OnConnectionChange } from '@/lib/dev-studio/connection-context'
+import {
+  buildConnEnvKeys,
+  fetchConnectionEntries,
+  type OnConnectionChange,
+} from '@/lib/dev-studio/connection-context'
+import { buildManifestFixPrompt } from '@/lib/dev-studio/manifest-fix-prompt'
 import { useTranslation } from '@/hooks/use-translation'
 import { useDevStudioUI } from '@/stores/dev-studio-ui/store'
+import { ClaudeChatSurface } from './claude-chat-surface'
 import { type CloseAction, CloseConfirmDialog } from './close-confirm-dialog'
 import { CreateSessionDialog } from './create-session-dialog'
-import { DevStudioChat } from './dev-studio-chat'
 import { DevStudioHeader } from './dev-studio-header'
 import { DevStudioInput } from './dev-studio-input'
 import { useDevStudioSession } from './hooks/use-dev-studio-session'
@@ -29,6 +34,7 @@ import { useSessionList } from './hooks/use-session-list'
 import { useSplitRatio } from './hooks/use-split-ratio'
 import { useStreamChat } from './hooks/use-stream-chat'
 import { LoadingOverlay } from './loading-overlay'
+import { OpencodeChatSurface } from './opencode/opencode-chat-surface'
 import { ResumeOverlay } from './resume-overlay'
 import { SplitPane } from './split-pane'
 import { WorkspacePanel } from './workspace-panel'
@@ -57,50 +63,6 @@ const ERROR_TITLE_KEYS: Record<string, string> = {
   network: 'devStudio.errors.network',
 }
 
-/**
- * Chat-only single-column body (used when the active session has not opted
- * into the workspace side panel).
- */
-function ChatPanel({
-  messages,
-  sessionId,
-  onAskAnswered,
-  busy,
-  loadingHistory,
-}: {
-  messages: ReturnType<typeof useStreamChat>['messages']
-  sessionId: string | null
-  onAskAnswered: () => void
-  busy: boolean
-  loadingHistory: boolean
-}) {
-  const { t } = useTranslation()
-  // h-full (not flex-1) because the SplitPane slot wrapping this is a
-  // plain block (h-full overflow-hidden), not a flex container — flex-1
-  // there silently resolves to height:auto and the ScrollArea inside
-  // collapses to zero, killing both visibility and the ability to scroll.
-  return (
-    <div className='relative h-full min-h-0 flex flex-col' data-testid='dev-studio:chat-panel'>
-      <DevStudioChat
-        messages={messages}
-        sessionId={sessionId}
-        onAskAnswered={onAskAnswered}
-        busy={busy}
-      />
-      {/* History spinner — shown while a session's persisted timeline loads, but
-          only before any message has rendered, so it covers the blank gap on
-          first landing / session switch without flickering over an in-flight
-          stream that has already started appending. */}
-      {loadingHistory && messages.length === 0 && (
-        <LoadingOverlay
-          label={t('devStudio.loading.history')}
-          testId='dev-studio:history-loading'
-        />
-      )}
-    </div>
-  )
-}
-
 export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Props) {
   const { t } = useTranslation()
   const setDialogOpen = useDevStudioUI((s) => s.setDialogOpen)
@@ -127,20 +89,53 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
     ? (sessions.find((s) => s.id === session.sessionId) ?? null)
     : null
   const showRightPanel = sessionRecord?.rightPanelVisible ?? false
+  // Determine the coder backend for this session. Defaults to 'claudecode' while
+  // the session list is loading (before sessionRecord resolves) so the claude
+  // surface is mounted first and swaps to opencode once the row arrives — the
+  // user sees the spinner state rather than a flash of the wrong surface.
+  const coderType: 'claudecode' | 'opencode' = sessionRecord?.coderType ?? 'claudecode'
 
   // Hydrate the bound connection from the session row once it first loads for
   // the current session. Latched by session id so it applies the persisted
   // value on open / session-switch without clobbering a live operator change
   // (which already updates both the local state and the row).
+  //
+  // The selector value and the model-facing note must be restored *together*.
+  // A session reopened with a connection already bound never passes through
+  // `handleConnectionChange`, so restoring only `selectedConnectionId` leaves
+  // the operator looking at a populated dropdown while the model is told
+  // nothing — it then guesses the env var names (`CONN_USER` instead of the
+  // injected `CONN_USERNAME`) and the tool fails at run time against
+  // credentials that were present in the sandbox all along.
   const loadedConnForSessionRef = useRef<string | null>(null)
   useEffect(() => {
     const sid = session.sessionId
     if (!sid || !sessionRecord) return
     if (loadedConnForSessionRef.current === sid) return
     loadedConnForSessionRef.current = sid
-    setSelectedConnectionId(sessionRecord.connectionId ?? null)
+
+    const connId = sessionRecord.connectionId ?? null
+    setSelectedConnectionId(connId)
     setConnectionInitialContext(null)
-  }, [session.sessionId, sessionRecord])
+    if (!connId) return
+
+    void fetchConnectionEntries().then((entries) => {
+      // Guard on the ref rather than an effect-scoped `cancelled` flag: the
+      // session row is refetched on a timer, so this effect re-runs (and its
+      // cleanup fires) far more often than the session actually changes. The
+      // ref only moves on a real session switch.
+      if (loadedConnForSessionRef.current !== sid) return
+      const entry = entries.find((c) => c.id === connId)
+      if (!entry) return
+      setConnectionInitialContext(
+        t('devStudio.connectionContext.initial', {
+          name: entry.name,
+          type: entry.type,
+          keys: buildConnEnvKeys(entry.configPreview ?? {}).join(', '),
+        })
+      )
+    })
+  }, [session.sessionId, sessionRecord, t])
 
   const split = useSplitRatio({ storageKey: 'dev-studio.split.ratio' })
 
@@ -178,9 +173,11 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
   // Gate the 5s polling on dialog open — otherwise SWR keeps hitting /manifest
   // after the dialog closes (the Radix Dialog can keep children mounted in some
   // animation states; passing null disables the SWR key entirely).
-  const { isPresent: manifestPresent, mutate: mutateManifest } = useManifest(
-    open ? session.sessionId : null
-  )
+  const {
+    isPresent: manifestPresent,
+    mutate: mutateManifest,
+    error: manifestError,
+  } = useManifest(open ? session.sessionId : null)
 
   // First time the AI writes .crewmeld-studio/manifest.json for this session,
   // auto-open the right workspace panel so the operator sees the freshly
@@ -201,6 +198,63 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
       .catch(() => {})
   }, [session.sessionId, sessionRecord?.rightPanelVisible, mutateSessions])
   useManifestFirstAppearance(session.sessionId, manifestPresent, onManifestFirstAppear)
+
+  // Tracks whether the opencode surface is currently busy. Reported up via the
+  // onBusyChange callback so the manifest auto-fix effect can gate on it.
+  const [opencodeBusy, setOpencodeBusy] = useState(false)
+
+  // Deduplication key for the manifest auto-fix notification. Stores the last
+  // `${sessionId}::${errorMessage}` combination that was dispatched so the
+  // same error is never sent twice. Resets when the error clears.
+  const notifiedManifestErrorRef = useRef<string | null>(null)
+
+  // Auto-notify the AI when manifest.json fails to parse. The prompt is sent
+  // as a hidden message (invisible to the operator) so the AI can self-correct
+  // without requiring manual copy/paste. Guards:
+  //   - Container must be running (no point sending to a stopped sandbox).
+  //   - AI must be idle — if busy, the effect re-runs when busy flips to false.
+  //   - Same error key is dispatched at most once (ref-based dedup).
+  useEffect(() => {
+    if (!manifestError) {
+      // Error cleared — reset dedup so a future new error triggers a fresh send.
+      notifiedManifestErrorRef.current = null
+      return
+    }
+
+    const sid = session.sessionId
+    if (!sid) return
+    if (sessionRecord?.containerStatus !== 'running') return
+
+    const key = `${sid}::${manifestError.message}`
+    if (notifiedManifestErrorRef.current === key) return
+
+    const isBusy = coderType === 'opencode' ? opencodeBusy : chat.busy
+    if (isBusy) return // re-runs automatically when busy turns false
+
+    // Mark as dispatched before the async send to prevent concurrent re-triggers.
+    notifiedManifestErrorRef.current = key
+
+    const prompt = buildManifestFixPrompt(manifestError.message, t)
+
+    if (coderType === 'claudecode') {
+      void chat.send(prompt, { hidden: true })
+    } else {
+      void fetch(`/api/employee/dev-studio/sessions/${encodeURIComponent(sid)}/chat`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ message: prompt, requestId: crypto.randomUUID() }),
+      }).catch(() => {})
+    }
+  }, [
+    manifestError,
+    chat.busy,
+    opencodeBusy,
+    coderType,
+    sessionRecord?.containerStatus,
+    session.sessionId,
+    t,
+    chat,
+  ])
 
   /**
    * Handle the close-confirm dialog's chosen action.
@@ -549,65 +603,82 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
           </div>
         )}
 
-        {session.status === 'ready' && (
+        {session.status === 'ready' && session.sessionId && (
           <>
             <div className='flex-1 flex overflow-hidden'>
               {/* Always wrap in SplitPane so toggling the right panel never
-                  remounts ChatPanel — that used to throw away scroll position
-                  and re-render the entire message list. WorkspacePanel is
-                  rendered lazily (only when sessionId exists), but the
-                  ChatPanel slot stays stable across the toggle. */}
+                  remounts the chat surface — that used to throw away scroll
+                  position and re-render the entire message list. WorkspacePanel
+                  is rendered lazily (only when sessionId exists), but the chat
+                  slot stays stable across the toggle. */}
               <SplitPane
                 leftPct={split.leftPct}
                 onDragEnd={split.onDragEnd}
                 showRight={showRightPanel}
               >
-                <ChatPanel
-                  messages={chat.messages}
-                  sessionId={session.sessionId}
-                  onAskAnswered={chat.resumeAfterAsk}
-                  busy={chat.busy}
-                  loadingHistory={chat.loadingHistory}
-                />
-                {session.sessionId ? (
-                  <WorkspacePanel
-                    sessionId={session.sessionId}
-                    onAdoptSuccess={onClose}
-                    connectionId={selectedConnectionId}
-                    onConnectionChange={handleConnectionChange}
+                {/* Route chat surface by coderType. Each surface calls its own
+                    hook (useOpencodeStream or useStreamChat) unconditionally
+                    within the mounted component, satisfying the Rules of Hooks
+                    constraint — the dialog switches WHICH component is mounted,
+                    never conditionally calls hooks in one component.
+                    OpencodeChatSurface is self-contained (includes its own
+                    input). ClaudeChatSurface is the chat area only; the input
+                    + ResumeOverlay stay at dialog level below the SplitPane so
+                    they span the full dialog width (matching the original layout). */}
+                {coderType === 'opencode' ? (
+                  // session.sessionId is non-null: narrowed by the outer
+                  // `&& session.sessionId` guard in the status === 'ready' block.
+                  // eslint-disable-next-line @typescript-eslint/no-non-null-assertion
+                  <OpencodeChatSurface
+                    sessionId={session.sessionId!}
+                    onBusyChange={setOpencodeBusy}
+                    containerStatus={sessionRecord?.containerStatus}
+                    resumeMode={
+                      sessionRecord?.status === 'adopted' && toolId ? 'fork' : 'rehydrate'
+                    }
+                    onFork={toolId ? handleForkIteration : undefined}
+                    onResumed={() => mutateSessions()}
                   />
                 ) : (
-                  <div />
+                  <ClaudeChatSurface
+                    sessionId={session.sessionId ?? ''}
+                    messages={chat.messages}
+                    busy={chat.busy}
+                    loadingHistory={chat.loadingHistory}
+                    onAskAnswered={chat.resumeAfterAsk}
+                  />
                 )}
+                <WorkspacePanel
+                  sessionId={session.sessionId}
+                  onAdoptSuccess={onClose}
+                  connectionId={selectedConnectionId}
+                  onConnectionChange={handleConnectionChange}
+                />
               </SplitPane>
             </div>
-            <div className='relative'>
-              <DevStudioInput
-                busy={chat.busy}
-                // Block sending until the persisted history (and the resumed
-                // claude session id) finish loading. Otherwise a message sent
-                // mid-load races the restore: the async `setMessages(restored)`
-                // overwrites the just-started turn, so the reply silently
-                // vanishes and a fresh claude session is started instead of
-                // resuming. Surfaces only on session switch / reopen.
-                disabled={chat.loadingHistory}
-                isFirstMessage={chat.isFirstMessage}
-                sessionId={session.sessionId}
-                onSend={chat.send}
-                onAbort={chat.abort}
-              />
-              {sessionRecord && sessionRecord.containerStatus !== 'running' && (
-                <ResumeOverlay
-                  sessionId={sessionRecord.id}
-                  // Adopted originals cannot be rehydrated (BFF returns 410) — the
-                  // overlay forks a fresh iteration off the baseline instead.
-                  // Active iterations rehydrate their own suspended container.
-                  mode={sessionRecord.status === 'adopted' && toolId ? 'fork' : 'rehydrate'}
-                  onResumed={() => mutateSessions()}
-                  onFork={toolId ? handleForkIteration : undefined}
+            {/* Claude input + ResumeOverlay span the full dialog width below
+                the SplitPane. Not rendered for opencode — that surface owns
+                its own input. */}
+            {coderType !== 'opencode' && (
+              <div className='relative'>
+                <DevStudioInput
+                  busy={chat.busy}
+                  disabled={chat.loadingHistory}
+                  isFirstMessage={chat.isFirstMessage}
+                  sessionId={session.sessionId}
+                  onSend={chat.send}
+                  onAbort={chat.abort}
                 />
-              )}
-            </div>
+                {sessionRecord && sessionRecord.containerStatus !== 'running' && (
+                  <ResumeOverlay
+                    sessionId={sessionRecord.id}
+                    mode={sessionRecord.status === 'adopted' && toolId ? 'fork' : 'rehydrate'}
+                    onResumed={() => mutateSessions()}
+                    onFork={toolId ? handleForkIteration : undefined}
+                  />
+                )}
+              </div>
+            )}
           </>
         )}
 

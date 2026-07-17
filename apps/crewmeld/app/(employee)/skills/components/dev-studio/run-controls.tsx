@@ -26,12 +26,6 @@ interface RunControlsProps {
   onRun: () => void
   onClear: () => void
   onAdopt: () => void
-  /**
-   * Whether adoption is available. Defaults to `true`. Set `false` while the
-   * session has unapproved package dependencies — the adopt button is then
-   * replaced by a hint pointing the operator at the inline review card.
-   */
-  canAdopt?: boolean
 }
 
 /**
@@ -55,7 +49,6 @@ export function RunControls({
   onRun,
   onClear,
   onAdopt,
-  canAdopt = true,
 }: RunControlsProps) {
   const { t } = useTranslation()
   const [copied, setCopied] = useState(false)
@@ -143,23 +136,14 @@ export function RunControls({
         </span>
       )}
       <div className='flex-1' />
-      {canAdopt ? (
-        <Button
-          type='button'
-          size='sm'
-          onClick={onAdopt}
-          data-testid='dev-studio:run-controls:adopt'
-        >
-          {t('devStudio.adopt.button')}
-        </Button>
-      ) : (
-        <span
-          className='text-xs text-muted-foreground'
-          data-testid='dev-studio:run-controls:adopt-gated'
-        >
-          {t('devStudio.adopt.gatedHint')}
-        </span>
-      )}
+      <Button
+        type='button'
+        size='sm'
+        onClick={onAdopt}
+        data-testid='dev-studio:run-controls:adopt'
+      >
+        {t('devStudio.adopt.button')}
+      </Button>
     </div>
   )
 }

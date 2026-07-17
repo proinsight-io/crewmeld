@@ -3,11 +3,13 @@
  *
  * Switch the coding model for an active session mid-flight. Structurally this
  * is a "rehydrate with a new model": the running container is destroyed and a
- * fresh one is spawned bound to the SAME workspace/claude host directories, so
- * the AI conversation context (persisted under /root/.claude/projects) and the
- * user's files survive the swap. The only difference from rehydrate is that we
- * persist the new `modelConfigId` first, so the recreated container picks up
- * the newly-selected model's credentials.
+ * fresh one is spawned bound to the SAME workspace/coder-state host directories,
+ * so the AI conversation context and the user's files survive the swap. The
+ * only difference from rehydrate is that we persist the new `modelConfigId`
+ * first, so the recreated container picks up the newly-selected model's
+ * credentials. The container image and mounts are derived from the EXISTING
+ * session's `coderType` so claudecode and opencode sessions each get the
+ * correct provider.
  *
  * Body: `{ modelConfigId: string | null }` — null switches back to the global
  * env default (Sub-spec C D2).
@@ -15,10 +17,10 @@
  * @see docs/superpowers/specs/2026-05-26-tool-dev-studio-spec-C-design.md §4.5
  */
 import { getCurrentUserRole } from '@/lib/auth/rbac/check-role'
+import { getCoderProvider } from '@/lib/dev-studio/coder-providers'
 import { getDevStudioEnv } from '@/lib/dev-studio/env'
 import { resolveModelEnv } from '@/lib/dev-studio/model-resolver'
-import { type HostVolume, OpenSandboxClient } from '@/lib/dev-studio/opensandbox-client'
-import { paths } from '@/lib/dev-studio/paths'
+import { OpenSandboxClient } from '@/lib/dev-studio/opensandbox-client'
 import type { ApiError } from '@/lib/dev-studio/schemas'
 import { sessionStore } from '@/lib/dev-studio/session-store'
 
@@ -37,23 +39,6 @@ function errorResponse(
     status,
     headers: { 'content-type': 'application/json' },
   })
-}
-
-/**
- * Mirror of POST /sessions's entrypoint builder. Kept local to avoid an import
- * cycle with the collection route (same rationale as rehydrate/route.ts).
- */
-function buildEntrypoint(pipIndexUrl: string | undefined): string[] {
-  const launch = 'exec claude-code-webui --host 0.0.0.0 --port 8080'
-  if (!pipIndexUrl) return ['claude-code-webui', '--host', '0.0.0.0', '--port', '8080']
-  const trustedHost = new URL(pipIndexUrl).host
-  const setup = `mkdir -p /root/.pip && printf '[global]\\nindex-url=%s\\ntrusted-host=%s\\n' '${pipIndexUrl}' '${trustedHost}' > /root/.pip/pip.conf`
-  return ['/bin/sh', '-c', `${setup} && ${launch}`]
-}
-
-function volumeNameFor(prefix: string, sessionId: string): string {
-  const safe = sessionId.replace(/[^a-z0-9-]/gi, '').toLowerCase()
-  return `${prefix}-${safe.slice(0, 56)}`
 }
 
 export async function PATCH(req: Request, ctx: RouteContext): Promise<Response> {
@@ -95,6 +80,10 @@ export async function PATCH(req: Request, ctx: RouteContext): Promise<Response> 
     return errorResponse(400, 'model-resolve-failed', String(e), false)
   }
 
+  // Resolve the provider from the EXISTING session's coderType so the recreated
+  // container uses the same image, entrypoint, and mounts as the original.
+  const provider = getCoderProvider(session.coderType ?? 'claudecode')
+
   const client = new OpenSandboxClient({
     serverUrl: env.OPENSANDBOX_SERVER_URL,
     apiKey: env.OPENSANDBOX_API_KEY,
@@ -115,27 +104,13 @@ export async function PATCH(req: Request, ctx: RouteContext): Promise<Response> 
   })
 
   // 2. Spawn a fresh container on the SAME host directories (forSandbox() Linux
-  // paths) so files + SDK conversation state survive the model swap.
-  const volumes: HostVolume[] = [
-    {
-      name: volumeNameFor('ws', sessionId),
-      hostPath: paths.sessionWorkspace.forSandbox(sessionId),
-      mountPath: '/root/workspace',
-      readOnly: false,
-    },
-    {
-      name: volumeNameFor('cl', sessionId),
-      hostPath: paths.sessionClaude.forSandbox(sessionId),
-      mountPath: '/root/.claude/projects',
-      readOnly: false,
-    },
-  ]
-
+  // paths) so files + SDK conversation state survive the model swap. Volumes are
+  // derived from the provider so the correct coder-state path is mounted.
   let sandbox: { id: string }
   try {
     sandbox = await client.createSandbox({
-      image: env.CREWMELD_SANDBOX_IMAGE,
-      entrypoint: buildEntrypoint(env.CREWMELD_PIP_INDEX_URL),
+      image: provider.image(env),
+      entrypoint: provider.buildEntrypoint({ env, pipIndexUrl: env.CREWMELD_PIP_INDEX_URL }),
       resourceLimits: { cpu: env.CREWMELD_SANDBOX_CPU, memory: env.CREWMELD_SANDBOX_MEMORY },
       timeoutSeconds: env.CREWMELD_SANDBOX_TTL_SECONDS,
       env: {
@@ -154,8 +129,14 @@ export async function PATCH(req: Request, ctx: RouteContext): Promise<Response> 
           : {}),
         API_TIMEOUT_MS: '600000',
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        ...(provider.id === 'opencode' && env.OPENCODE_SERVER_PASSWORD
+          ? {
+              OPENCODE_SERVER_PASSWORD: env.OPENCODE_SERVER_PASSWORD,
+              OPENCODE_PORT: String(env.OPENCODE_PORT),
+            }
+          : {}),
       },
-      volumes,
+      volumes: provider.mounts(sessionId),
     })
   } catch (e) {
     await sessionStore
@@ -180,7 +161,7 @@ export async function PATCH(req: Request, ctx: RouteContext): Promise<Response> 
 
   let endpoint: string
   try {
-    endpoint = await client.getEndpoint(sandbox.id, 8080)
+    endpoint = await client.getEndpoint(sandbox.id, provider.port)
   } catch (e) {
     client.destroy(sandbox.id).catch(() => {})
     await sessionStore

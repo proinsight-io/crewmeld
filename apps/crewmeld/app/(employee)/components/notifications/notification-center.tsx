@@ -7,6 +7,7 @@ import { useDevStudioUI } from '@/stores/dev-studio-ui/store'
 import { AskChoiceCard } from './ask-choice-card'
 import { AskConfirmCard } from './ask-confirm-card'
 import { AskTextCard } from './ask-text-card'
+import { OpencodeQuestionCard } from './opencode-question-card'
 import type { AskNotification, DependencyNotification } from './types'
 
 const NOTIFICATIONS_URL = '/api/employee/dev-studio/notifications'
@@ -55,6 +56,7 @@ const ASK_CARD_MAP: Record<string, (props: AskCardProps) => React.ReactElement> 
   choice: AskChoiceCard,
   confirm: AskConfirmCard,
   text: AskTextCard,
+  'opencode-question': OpencodeQuestionCard,
 }
 
 /**

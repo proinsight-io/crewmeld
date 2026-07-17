@@ -91,6 +91,18 @@ export const paths = {
     },
   },
 
+  /** Bind-mount target for the opencode coder's data directory (opencode.db etc.). */
+  sessionOpencodeData: {
+    forBff: (sessionId: string): string => {
+      assertId('sessionId', sessionId)
+      return bffJoin('sessions', sessionId, 'opencode')
+    },
+    forSandbox: (sessionId: string): string => {
+      assertId('sessionId', sessionId)
+      return sbxJoin('sessions', sessionId, 'opencode')
+    },
+  },
+
   toolCode: {
     forBff: (toolId: string): string => {
       assertId('toolId', toolId)
@@ -163,6 +175,8 @@ export const paths = {
       const [y, m, d] = parseDateLayer(sopExecId)
       return bffJoin('sop-files', y, m, d, sopExecId)
     },
+    /** BFF filesystem root of the date-layered sop-files tree (for cleanup). */
+    rootForBff: (): string => bffJoin('sop-files'),
     forSandbox: (): string => {
       return sbxJoin('sop-files')
     },

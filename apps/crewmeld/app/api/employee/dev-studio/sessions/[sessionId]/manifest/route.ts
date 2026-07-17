@@ -58,6 +58,28 @@ function getClient(): OpenSandboxClient {
 }
 
 /**
+ * Best-effort: assign `manifestName` as the session title when the session is
+ * currently untitled (`title === null`). A failure here is silenced — manifest
+ * delivery always takes priority.
+ *
+ * @param sessionId - Session to name.
+ * @param session - Already-fetched session row; must be non-null.
+ * @param manifestName - `name` from the successfully parsed manifest.
+ */
+async function maybeNameSession(
+  sessionId: string,
+  session: { title: string | null },
+  manifestName: string
+): Promise<void> {
+  if (session.title !== null) return
+  try {
+    await sessionStore.update(sessionId, { title: manifestName })
+  } catch {
+    // best-effort — naming failure must not affect manifest delivery
+  }
+}
+
+/**
  * 422 response for a manifest that exists but is not valid JSON / fails schema
  * validation (e.g. the AI wrote unescaped double-quotes inside a string value).
  * Carries the `sessionId` so operators can locate the broken file directly
@@ -103,6 +125,7 @@ export async function GET(_req: Request, ctx: RouteContext): Promise<Response> {
         const fp = path.join(paths.sessionWorkspace.forBff(sessionId), MANIFEST_RELATIVE_PATH)
         await overrideTimestampsInPlace(parsed, fp)
         const manifest = Manifest.parse(parsed)
+        await maybeNameSession(sessionId, session, manifest.name)
         return Response.json({ manifest })
       } catch (err) {
         // The container HAS a manifest but it's malformed (e.g. unescaped
@@ -119,6 +142,7 @@ export async function GET(_req: Request, ctx: RouteContext): Promise<Response> {
     if (!manifest) {
       return new Response('Not Found', { status: 404 })
     }
+    await maybeNameSession(sessionId, session, manifest.name)
     return Response.json({ manifest })
   } catch (err) {
     console.error(`[manifest GET] malformed manifest (host) for session ${sessionId}:`, err)

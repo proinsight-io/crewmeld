@@ -13,6 +13,7 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { contactKey, notifyMethodType } from '@/lib/human-employees/notify-method'
 import { useTranslation } from '@/hooks/use-translation'
 import { useSopEditorStore } from '@/stores/sop/editor-store'
 import type { SopExit, SopNode } from '@/types/sop'
@@ -58,6 +59,11 @@ const CONTACT_TYPE_ICONS: Record<string, typeof Mail> = {
   wecom: MessageSquare,
   dingtalk: MessageSquare,
 }
+
+// Sentinel Select value for "no fallback approver". Radix Select forbids an
+// empty-string item value, so this lets leader/self modes clear the optional
+// fallback approver (executorId) after one has been picked.
+const NO_FALLBACK_APPROVER = '__none__'
 
 export function SopNodeConfigPanel({ nodeId }: SopNodeConfigPanelProps) {
   const { t } = useTranslation()
@@ -167,8 +173,9 @@ export function SopNodeConfigPanel({ nodeId }: SopNodeConfigPanelProps) {
     if (!node || !selectedHumanEmployee || notifyMethods.length > 0) return
     const cms = selectedHumanEmployee.contactMethods
     if (cms.length === 0) return
-    const defaultMethod = cms.find((cm) => cm.type === 'email') ? 'email' : cms[0].type
-    updateSopNode(nodeId, { notifyMethod: [defaultMethod] })
+    // Default to a specific contact (email preferred, else the first one)
+    const defaultContact = cms.find((cm) => cm.type === 'email') ?? cms[0]
+    updateSopNode(nodeId, { notifyMethod: [contactKey(defaultContact)] })
   }, [selectedHumanEmployee, notifyMethods.length])
 
   // Early return AFTER all hooks
@@ -367,15 +374,23 @@ export function SopNodeConfigPanel({ nodeId }: SopNodeConfigPanelProps) {
                 : t('sops.nodeConfigFallbackApprover')}
             </Label>
             <Select
-              value={sopNode.executorId ?? ''}
+              value={
+                sopNode.executorId ??
+                ((sopNode.approverSource ?? 'assignee') === 'assignee' ? '' : NO_FALLBACK_APPROVER)
+              }
               onValueChange={(v) => {
-                // When switching employee, clear old notify methods, auto-select first contact of new person
+                // Leader/self modes offer a "no fallback" option so the optional
+                // fallback approver can be cleared after being picked.
+                if (v === NO_FALLBACK_APPROVER) {
+                  handleChange({ executorId: undefined, notifyMethod: [] })
+                  return
+                }
+                // When switching employee, clear old notify methods, auto-select
+                // a specific contact of the new person (email preferred)
                 const newEmployee = humanEmployeeList.find((u) => u.id === v)
                 const cms = newEmployee?.contactMethods ?? []
-                const defaultMethod =
-                  cms.length > 0
-                    ? [cms.find((cm) => cm.type === 'email') ? 'email' : cms[0].type]
-                    : []
+                const defaultContact = cms.find((cm) => cm.type === 'email') ?? cms[0]
+                const defaultMethod = defaultContact ? [contactKey(defaultContact)] : []
                 handleChange({ executorId: v || undefined, notifyMethod: defaultMethod })
               }}
             >
@@ -383,6 +398,11 @@ export function SopNodeConfigPanel({ nodeId }: SopNodeConfigPanelProps) {
                 <SelectValue placeholder={t('sops.nodeConfigSelectHuman')} />
               </SelectTrigger>
               <SelectContent>
+                {(sopNode.approverSource ?? 'assignee') !== 'assignee' && (
+                  <SelectItem value={NO_FALLBACK_APPROVER}>
+                    {t('sops.nodeConfigNoFallbackApprover')}
+                  </SelectItem>
+                )}
                 {humanEmployeeList.map((u) => (
                   <SelectItem key={u.id} value={u.id}>
                     {u.name}（{u.title}）
@@ -400,7 +420,11 @@ export function SopNodeConfigPanel({ nodeId }: SopNodeConfigPanelProps) {
             {t('sops.nodeConfigNotifyMethod')}
             {notifyMethods.length > 1 && (
               <span className='ml-1 text-blue-500'>
-                {t('sops.nodeConfigNotifySelected', { count: notifyMethods.length })}
+                {t('sops.nodeConfigNotifySelected', {
+                  // Count distinct platforms — several contacts of the same type
+                  // (e.g. multiple feishu) collapse to one platform.
+                  count: new Set(notifyMethods.map(notifyMethodType)).size,
+                })}
               </span>
             )}
           </Label>
@@ -408,7 +432,10 @@ export function SopNodeConfigPanel({ nodeId }: SopNodeConfigPanelProps) {
             <div className='mt-1 space-y-1.5' data-testid='sop-editor:config-panel:notify-methods'>
               {selectedHumanEmployee.contactMethods.map((cm, idx) => {
                 const Icon = CONTACT_TYPE_ICONS[cm.type] ?? Send
-                const checked = notifyMethods.includes(cm.type)
+                const id = contactKey(cm)
+                // Checked when this exact contact is selected, or a legacy bare
+                // type entry still selects the whole type.
+                const checked = notifyMethods.includes(id) || notifyMethods.includes(cm.type)
                 return (
                   <label
                     key={`${cm.type}-${cm.value}-${idx}`}
@@ -419,13 +446,32 @@ export function SopNodeConfigPanel({ nodeId }: SopNodeConfigPanelProps) {
                       className='h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500'
                       checked={checked}
                       onChange={() => {
-                        const next = checked
-                          ? notifyMethods.filter((m) => m !== cm.type)
-                          : [...notifyMethods, cm.type]
+                        let next: string[]
+                        if (checked) {
+                          // Removing this contact. If it's currently covered by a
+                          // legacy bare-type entry, first expand that type into the
+                          // specific keys of its remaining contacts, then drop this
+                          // one — so unchecking one of several same-type contacts no
+                          // longer removes them all.
+                          if (notifyMethods.includes(cm.type)) {
+                            const expanded = selectedHumanEmployee.contactMethods
+                              .filter((c) => c.type === cm.type && contactKey(c) !== id)
+                              .map(contactKey)
+                            next = [
+                              ...notifyMethods.filter((m) => m !== cm.type && m !== id),
+                              ...expanded,
+                            ]
+                          } else {
+                            next = notifyMethods.filter((m) => m !== id)
+                          }
+                        } else {
+                          next = [...notifyMethods, id]
+                        }
+                        next = Array.from(new Set(next))
                         // Keep at least one notification method
                         if (next.length > 0) handleChange({ notifyMethod: next })
                       }}
-                      data-testid={`sop-editor:config-panel:notify:${cm.type}`}
+                      data-testid={`sop-editor:config-panel:notify:${cm.type}:${cm.value}`}
                     />
                     <Icon className='h-3.5 w-3.5 shrink-0 text-gray-400' />
                     <span>

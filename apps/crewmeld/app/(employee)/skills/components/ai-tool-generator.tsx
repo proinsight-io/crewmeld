@@ -82,10 +82,9 @@ interface GeneratedTool {
   /** System connection type required by the tool */
   connectorType?: { type: string; dbType?: string }
   /**
-   * File handling mode flag from the LLM-generated JSON. When true, the
-   * tool uses the SOP workspace mount (/workspace/inputs + /workspace/outputs)
-   * and bypasses the warm pool. Defaults to false when the field is
-   * omitted (= legacy boto3 + presigned-URL mode).
+   * File handling mode flag from the LLM-generated JSON. When true, the tool
+   * reads/writes files under the mounted `/root/io` directory (the unified file
+   * IO contract). Defaults to false when the field is omitted.
    */
   needsFileMount?: boolean
 }
@@ -103,7 +102,7 @@ interface ChatMessage {
   isStreaming?: boolean
   /** Pipeline phase badge for this message */
   phaseBadge?: string
-  /** File download info (when tool returns files, supports base64 and MinIO download link) */
+  /** File download info (when tool returns files; downloadUrl points at the NFS-served file route) */
   fileDownload?: { fileName: string; format: string; base64?: string; downloadUrl?: string }
   /** Hidden message (not shown in chat UI, only sent as context to AI) */
   hidden?: boolean
@@ -1751,9 +1750,8 @@ export function AiToolGenerator({
         '---',
         'Please rewrite the tool based on the above information:',
         `1. Tool code uses ${lang}, parameters are injected via local variables (do not use module.exports), must have a return statement`,
-        '2. If the tool produces file-type content (images, Excel, PDF, CSV, QR codes, etc.), it must upload to MinIO and return a download link, strictly following the "File generation tool specification" in the system prompt. Returning Base64 is strictly forbidden',
-        '3. When generating download links, must use GetObjectCommand (not PutObjectCommand); the signed URL is for the user to download',
-        "4. Preserve the original tool's core functionality and parameter design"
+        '2. If the tool produces file-type content (images, Excel, PDF, CSV, QR codes, etc.), it must write the file into the `/root/io` directory and return its file name, strictly following the "File generation tool specification" in the system prompt. Returning Base64 is strictly forbidden',
+        "3. Preserve the original tool's core functionality and parameter design"
       )
     } else if (importProjectContext.source === 'markdown') {
       // ---- Markdown / TXT document import ----
@@ -1770,8 +1768,7 @@ export function AiToolGenerator({
         '1. Analyze the functionality described in the document',
         '2. Generate a tool that implements the core functionality described in the document',
         '3. Tool code uses JavaScript or Python',
-        '4. If the tool produces file-type content (images, Excel, PDF, CSV, etc.), it must upload to MinIO and return a download link, strictly following the "File generation tool specification" in the system prompt',
-        '5. When generating download links, must use GetObjectCommand (not PutObjectCommand); the signed URL is for the user to download',
+        '4. If the tool produces file-type content (images, Excel, PDF, CSV, etc.), it must write the file into the `/root/io` directory and return its file name, strictly following the "File generation tool specification" in the system prompt',
       ]
     } else {
       // ---- GitHub project zip import (original logic) ----

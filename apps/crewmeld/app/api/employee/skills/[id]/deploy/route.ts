@@ -8,40 +8,17 @@ import { requirePermission } from '@/lib/auth/rbac/check-permission'
 import {
   deploySkill,
   getDeployStatus,
-  initWarmPool,
-  isK8sConfigured,
-  isWarmPoolEnabled,
   undeploySkill,
 } from '@/lib/k8s/deploy-skill'
 import type { DeployInfo } from '@/app/(employee)/skills/types'
 
 const logger = createLogger('SkillDeployAPI')
 
-let poolInitialized = false
-async function ensureWarmPool(): Promise<void> {
-  if (poolInitialized || !isWarmPoolEnabled()) return
-  poolInitialized = true
-  try {
-    await initWarmPool()
-    logger.info('Warm pool initialized')
-  } catch (err) {
-    logger.warn(
-      `Warm pool initialization failed, falling back to legacy deploy: ${err instanceof Error ? err.message : String(err)}`
-    )
-  }
-}
-
 async function _POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const auth = await requirePermission('skill:deploy')
     if (!auth.authenticated || auth.error) {
       return apiAuthErr(auth)
-    }
-
-    await ensureWarmPool()
-
-    if (!isK8sConfigured()) {
-      return apiErr('api.skill.k8sNotConfigured', { status: 503 })
     }
 
     const { id } = await params

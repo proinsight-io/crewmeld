@@ -9,6 +9,7 @@ import { digitalEmployees, humanEmployees, toolInstances, tools } from '@crewmel
 import { createLogger } from '@crewmeld/logger'
 import { eq, inArray } from 'drizzle-orm'
 import { t } from '@/lib/core/server-i18n'
+import { matchesNotifyMethod } from '@/lib/human-employees/notify-method'
 import type { SopNode, SopSerializedEdge } from '@/types/sop'
 
 const logger = createLogger('SopValidator')
@@ -187,6 +188,20 @@ export async function validateSopForExecution(
             nodeName: label,
             message: t('sopValidatorNoNotifyMethod'),
           })
+        } else if (he.contactMethods && he.contactMethods.length > 0) {
+          // Every selected notify method must still resolve to at least one of
+          // the collaborator's current contacts, so a deleted contact doesn't
+          // silently drop the approval notification.
+          const unresolved = methods.filter(
+            (m) => !he.contactMethods.some((c) => matchesNotifyMethod(m, c))
+          )
+          if (unresolved.length > 0) {
+            errors.push({
+              nodeId: node.id,
+              nodeName: label,
+              message: t('sopValidatorNotifyMethodMissing', undefined, { name: he.name }),
+            })
+          }
         }
         break
       }

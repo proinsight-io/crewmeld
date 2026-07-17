@@ -103,7 +103,11 @@ export function CreateSessionDialog({ open, onConfirm, onCancel }: CreateSession
           </div>
         ) : (
           <div className='py-2'>
-            <ModelSelector value={modelConfigId} onChange={setModelConfigId} />
+            <ModelSelector
+              value={modelConfigId}
+              onChange={setModelConfigId}
+              triggerClassName='w-[80%]'
+            />
           </div>
         )}
 

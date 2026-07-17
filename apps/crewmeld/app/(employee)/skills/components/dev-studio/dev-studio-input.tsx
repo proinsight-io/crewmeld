@@ -10,6 +10,12 @@ import { SlashCommandMenu } from './slash-command-menu'
 interface Props {
   busy: boolean
   disabled: boolean
+  /**
+   * When `true`, the textarea is also disabled while `busy` is `true` and the
+   * placeholder changes to a "AI is working" hint.  Defaults to `false` so
+   * existing callers (e.g. the claudecode dialog) are unaffected.
+   */
+  disableWhenBusy?: boolean
   isFirstMessage: boolean
   sessionId: string | null
   onSend: (text: string) => void
@@ -19,6 +25,7 @@ interface Props {
 export function DevStudioInput({
   busy,
   disabled,
+  disableWhenBusy = false,
   isFirstMessage,
   sessionId,
   onSend,
@@ -151,7 +158,7 @@ export function DevStudioInput({
         ref={taRef}
         value={text}
         onChange={(e) => setText(e.target.value)}
-        disabled={disabled}
+        disabled={disabled || (disableWhenBusy && busy)}
         data-testid='dev-studio:input-textarea'
         onKeyDown={(e) => {
           if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -159,7 +166,11 @@ export function DevStudioInput({
             handleSend()
           }
         }}
-        placeholder={t('devStudio.chat.placeholder')}
+        placeholder={
+          disableWhenBusy && busy
+            ? t('devStudio.chat.busyPlaceholder')
+            : t('devStudio.chat.placeholder')
+        }
         rows={3}
         // resize-none because the effect above already auto-grows; letting
         // the browser drag-resize would race with the auto-grow on each

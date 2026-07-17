@@ -31,8 +31,13 @@ export async function POST(request: NextRequest) {
     })
   }
 
-  // conversationId is optional, use userId as temp prefix when absent
-  const conversationId = (formData.get('conversationId') as string) || `user-${session.user.id}`
+  // conversationId is required: the client creates the conversation before
+  // uploading so the file lands in the conversation's NFS conv-io dir. There is
+  // no `user-<id>` pre-conversation MinIO fallback anymore.
+  const conversationId = formData.get('conversationId') as string | null
+  if (!conversationId) {
+    return apiErr('api.files.notProvided', { status: 400 })
+  }
 
   const buffer = Buffer.from(await file.arrayBuffer())
   const attachment = await uploadConversationFile(

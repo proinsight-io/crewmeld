@@ -22,6 +22,16 @@ const EnvSchema = z.object({
     .optional()
     .transform((v) => v === '1' || v === 'true'),
   CREWMELD_SANDBOX_IMAGE: z.string().min(1).default('crewmeld/dev-sandbox:latest'),
+  /** Which coder IDE to launch inside the sandbox. Defaults to opencode. */
+  CREWMELD_CODER_DEFAULT: z.enum(['claudecode', 'opencode']).default('opencode'),
+  /** OCI image for the opencode coder container. */
+  CREWMELD_OPENCODE_IMAGE: z.string().min(1).default('proinsight/crewmeld-coder2:latest'),
+  /** Port opencode listens on inside the sandbox container. */
+  OPENCODE_PORT: z.coerce.number().int().positive().default(4096),
+  /** Optional server password for opencode's HTTP API. */
+  OPENCODE_SERVER_PASSWORD: z.string().min(1).optional(),
+  /** Username for opencode HTTP Basic auth. Defaults to 'opencode'. */
+  OPENCODE_SERVER_USERNAME: z.string().min(1).default('opencode'),
   CREWMELD_SANDBOX_TTL_SECONDS: z.coerce.number().int().positive().default(7200),
   // Legacy `CREWMELD_SESSIONS_DIR` was removed in spec 2026-05-28 Task 18 —
   // host paths now derive exclusively from CREWMELD_BFF_VOLUME_ROOT via the

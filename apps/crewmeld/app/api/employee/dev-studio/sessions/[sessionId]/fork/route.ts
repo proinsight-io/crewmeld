@@ -9,13 +9,15 @@
  * Flow:
  *  1. Auth + parse body `{ toolId }`.
  *  2. Find the most recent adopted session for this toolId to source the
- *     workspace directory and claude state directory.
+ *     workspace directory and coder state directory.
  *  3. Guard: reject 409 if another active session is already using this
  *     workspace (prevents concurrent writes to the same host directory).
- *  4. Spawn a sandbox container with the same workspace bind mount.
- *  5. Create a new `tool_dev_sessions` row linked to the tool, pointing at the
- *     same workspaceDir + claudeStateDir.
- *  6. Return `{ sessionId, containerId, containerStatus }`.
+ *  4. Resolve the provider from the source session's `coderType` so the fork
+ *     spawns the same container image / mounts as the original session.
+ *  5. Spawn a sandbox container with the new session's workspace bind mounts.
+ *  6. Create a new `tool_dev_sessions` row linked to the tool, pointing at the
+ *     same workspaceDir + coderStateDir.
+ *  7. Return `{ sessionId, containerId, containerStatus }`.
  */
 import { randomUUID } from 'node:crypto'
 import { access, cp, mkdir } from 'node:fs/promises'
@@ -24,9 +26,9 @@ import { db, toolDevMessages } from '@crewmeld/db'
 import { createLogger } from '@crewmeld/logger'
 import { asc, eq } from 'drizzle-orm'
 import { getCurrentUserRole } from '@/lib/auth/rbac/check-role'
+import { getCoderProvider } from '@/lib/dev-studio/coder-providers'
 import { getDevStudioEnv } from '@/lib/dev-studio/env'
 import { resolveModelEnv } from '@/lib/dev-studio/model-resolver'
-import type { HostVolume } from '@/lib/dev-studio/opensandbox-client'
 import { OpenSandboxClient } from '@/lib/dev-studio/opensandbox-client'
 import { paths } from '@/lib/dev-studio/paths'
 import type { ApiError } from '@/lib/dev-studio/schemas'
@@ -49,24 +51,6 @@ function errorResponse(
     status,
     headers: { 'content-type': 'application/json' },
   })
-}
-
-/**
- * Mirror of POST /sessions entrypoint builder. Kept local to avoid an import
- * cycle with the collection route.
- */
-function buildEntrypoint(pipIndexUrl: string | undefined): string[] {
-  const launch = 'exec claude-code-webui --host 0.0.0.0 --port 8080'
-  if (!pipIndexUrl) return ['claude-code-webui', '--host', '0.0.0.0', '--port', '8080']
-  const trustedHost = new URL(pipIndexUrl).host
-  const setup = `mkdir -p /root/.pip && printf '[global]\\nindex-url=%s\\ntrusted-host=%s\\n' '${pipIndexUrl}' '${trustedHost}' > /root/.pip/pip.conf`
-  return ['/bin/sh', '-c', `${setup} && ${launch}`]
-}
-
-/** DNS-label-safe volume name derived from sessionId. */
-function volumeNameFor(prefix: string, sessionId: string): string {
-  const safe = sessionId.replace(/[^a-z0-9-]/gi, '').toLowerCase()
-  return `${prefix}-${safe.slice(0, 56)}`
 }
 
 /** Whether a host path exists. */
@@ -145,6 +129,10 @@ export async function POST(req: Request, _ctx: RouteContext): Promise<Response> 
     return errorResponse(503, 'config-missing', String(e), false)
   }
 
+  // Resolve the provider from the source session's coderType so the forked
+  // container uses the same image, entrypoint, and volume mounts as the original.
+  const provider = getCoderProvider(sourceSession.coderType ?? 'claudecode')
+
   const client = new OpenSandboxClient({
     serverUrl: env.OPENSANDBOX_SERVER_URL,
     apiKey: env.OPENSANDBOX_API_KEY,
@@ -165,27 +153,36 @@ export async function POST(req: Request, _ctx: RouteContext): Promise<Response> 
     log.info({ oldSessionId: running.id, userId }, 'suspended running session for fork')
   }
 
-  // Materialise the new session's OWN workspace + claude dirs by copying the
-  // source adopted session's. Every host path in the system is derived from the
-  // session id via the `paths` facade; a fork that merely *mounted* the source
-  // dirs left `sessions/<newId>/` nonexistent, so any id-derived consumer
+  // Materialise the new session's OWN workspace + coder-state dirs by copying
+  // the source adopted session's. Every host path in the system is derived from
+  // the session id via the `paths` facade; a fork that merely *mounted* the
+  // source dirs left `sessions/<newId>/` nonexistent, so any id-derived consumer
   // (notably run-test's code-sync) failed with ENOENT scandir. Copying makes
-  // the iteration self-contained and keeps it from mutating the adopted
-  // baseline.
+  // the iteration self-contained and keeps it from mutating the adopted baseline.
   const newSessionId = randomUUID()
   const srcWorkspace = paths.sessionWorkspace.forBff(sourceSession.id)
   const dstWorkspace = paths.sessionWorkspace.forBff(newSessionId)
-  const srcClaude = paths.sessionClaude.forBff(sourceSession.id)
-  const dstClaude = paths.sessionClaude.forBff(newSessionId)
+
+  // Coder-state directory depends on the provider: claudecode stores conversation
+  // history under /root/.claude/projects; opencode stores it under
+  // /root/.local/share/opencode.
+  const isOpencode = provider.id === 'opencode'
+  const srcCoderState = isOpencode
+    ? paths.sessionOpencodeData.forBff(sourceSession.id)
+    : paths.sessionClaude.forBff(sourceSession.id)
+  const dstCoderState = isOpencode
+    ? paths.sessionOpencodeData.forBff(newSessionId)
+    : paths.sessionClaude.forBff(newSessionId)
+
   try {
     await mkdir(path.dirname(dstWorkspace), { recursive: true })
     await cp(srcWorkspace, dstWorkspace, { recursive: true })
-    // Claude SDK resume state is best-effort: a missing source dir just means
-    // the iteration starts without prior conversation context.
-    if (await pathExists(srcClaude)) {
-      await cp(srcClaude, dstClaude, { recursive: true })
+    // Coder state is best-effort: a missing source dir just means the iteration
+    // starts without prior conversation context.
+    if (await pathExists(srcCoderState)) {
+      await cp(srcCoderState, dstCoderState, { recursive: true })
     } else {
-      await mkdir(dstClaude, { recursive: true })
+      await mkdir(dstCoderState, { recursive: true })
     }
   } catch (e) {
     return errorResponse(
@@ -201,9 +198,14 @@ export async function POST(req: Request, _ctx: RouteContext): Promise<Response> 
     id: newSessionId,
     userId,
     toolId,
+    coderType: provider.id,
     workspaceDir: dstWorkspace,
-    claudeStateDir: dstClaude,
+    claudeStateDir: dstCoderState,
     containerStatus: 'creating',
+    // Carry the source's opencode session id so the fork (whose copied
+    // opencode.db holds that session) can read history off disk and continue
+    // the conversation over REST. Null for claudecode sources.
+    opencodeSessionId: sourceSession.opencodeSessionId ?? null,
     // Persist the EFFECTIVE id the resolver landed on, not the source input.
     // When the source was "系统默认" (null) and the global env model was later
     // removed, the resolver auto-picks a real coding config; persisting that
@@ -215,7 +217,7 @@ export async function POST(req: Request, _ctx: RouteContext): Promise<Response> 
 
   // Carry the source session's chat history into the iteration so the operator
   // sees the conversation that built the tool instead of a blank panel. The
-  // workspace + claude state copies above already preserve the model's resume
+  // workspace + coder state copies above already preserve the model's resume
   // context; this copies the UI-facing `tool_dev_messages` timeline to match.
   // Rows are append-only and keyed by sessionId, so we re-key clones to the new
   // session, keeping `sequence` (so the chat route's max(sequence) continues
@@ -245,28 +247,14 @@ export async function POST(req: Request, _ctx: RouteContext): Promise<Response> 
     )
   }
 
-  // Spawn sandbox bound to the NEW session's dirs. hostPath is the sandbox-side
-  // (Linux) view, derived from `newSessionId` — now populated by the copy above.
-  const volumes: HostVolume[] = [
-    {
-      name: volumeNameFor('ws', newSessionId),
-      hostPath: paths.sessionWorkspace.forSandbox(newSessionId),
-      mountPath: '/root/workspace',
-      readOnly: false,
-    },
-    {
-      name: volumeNameFor('cl', newSessionId),
-      hostPath: paths.sessionClaude.forSandbox(newSessionId),
-      mountPath: '/root/.claude/projects',
-      readOnly: false,
-    },
-  ]
-
+  // Spawn sandbox bound to the NEW session's dirs using the provider's mounts.
+  // hostPath is the sandbox-side (Linux) view, derived from `newSessionId` —
+  // now populated by the copy above.
   let sandbox: { id: string }
   try {
     sandbox = await client.createSandbox({
-      image: env.CREWMELD_SANDBOX_IMAGE,
-      entrypoint: buildEntrypoint(env.CREWMELD_PIP_INDEX_URL),
+      image: provider.image(env),
+      entrypoint: provider.buildEntrypoint({ env, pipIndexUrl: env.CREWMELD_PIP_INDEX_URL }),
       resourceLimits: {
         cpu: env.CREWMELD_SANDBOX_CPU,
         memory: env.CREWMELD_SANDBOX_MEMORY,
@@ -288,8 +276,14 @@ export async function POST(req: Request, _ctx: RouteContext): Promise<Response> 
           : {}),
         API_TIMEOUT_MS: '600000',
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+        ...(provider.id === 'opencode' && env.OPENCODE_SERVER_PASSWORD
+          ? {
+              OPENCODE_SERVER_PASSWORD: env.OPENCODE_SERVER_PASSWORD,
+              OPENCODE_PORT: String(env.OPENCODE_PORT),
+            }
+          : {}),
       },
-      volumes,
+      volumes: provider.mounts(newSessionId),
     })
   } catch (e) {
     await sessionStore

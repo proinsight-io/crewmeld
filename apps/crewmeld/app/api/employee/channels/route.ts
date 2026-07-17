@@ -10,6 +10,7 @@ import { withAudit } from '@/lib/audit/with-audit'
 import { requirePermission } from '@/lib/auth/rbac/check-permission'
 import { tryConnectDiscordGateway } from '@/lib/channels/plugins/discord/auto-connect'
 import { proxyFetch } from '@/lib/channels/proxy-fetch'
+import { findDuplicateChannel } from '@/lib/connectors/channel-dedup'
 import { decryptConfig, encryptConfig, maskSensitiveFields } from '@/lib/connectors/encryption'
 import { sanitizeConnectionConfig, WEBHOOK_CHANNEL_TYPES } from '@/lib/connectors/sanitize'
 import type {
@@ -192,6 +193,17 @@ async function _POST(request: NextRequest) {
       body.type as ConnectionType,
       body.config as Record<string, unknown>
     )
+
+    // Reject a channel whose credentials (id + secret) already exist — no
+    // adding the same account/app twice.
+    const duplicateId = await findDuplicateChannel(
+      body.type as ConnectionType,
+      sanitizedConfig as Record<string, unknown>
+    )
+    if (duplicateId) {
+      return apiErr('api.channel.duplicateCredential', { status: 409 })
+    }
+
     const configWithMeta: ConnectionConfig = webhookUrl
       ? { ...sanitizedConfig, webhookUrl }
       : (sanitizedConfig as ConnectionConfig)

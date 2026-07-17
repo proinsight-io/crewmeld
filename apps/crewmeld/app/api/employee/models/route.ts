@@ -44,7 +44,11 @@ export async function GET(request: NextRequest) {
       .select()
       .from(modelConfigs)
       .where(filters.length > 0 ? and(...filters) : undefined)
-      .orderBy(modelConfigs.providerId)
+      // Order by providerId (groups models per provider), then createdAt and id
+      // as tiebreakers so multiple models under the same provider keep a stable
+      // position — without them, an UPDATE (edit / test connection) reshuffles
+      // same-provider rows in heap order and the list appears to jump around.
+      .orderBy(modelConfigs.providerId, modelConfigs.createdAt, modelConfigs.id)
 
     const providers = getAllProviders()
 

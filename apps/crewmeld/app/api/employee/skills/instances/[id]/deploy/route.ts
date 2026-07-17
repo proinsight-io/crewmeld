@@ -9,28 +9,12 @@ import { resolveConnectionEnvVars } from '@/lib/connectors/resolve-conn-env'
 import {
   deploySkill,
   getDeployStatus,
-  initWarmPool,
   isK8sConfigured,
-  isWarmPoolEnabled,
   undeploySkill,
 } from '@/lib/k8s/deploy-skill'
 import type { DeployInfo } from '@/app/(employee)/skills/types'
 
 const logger = createLogger('InstanceDeployAPI')
-
-let poolInitialized = false
-async function ensureWarmPool(): Promise<void> {
-  if (poolInitialized || !isWarmPoolEnabled()) return
-  poolInitialized = true
-  try {
-    await initWarmPool()
-    logger.info('Warm pool initialized')
-  } catch (err) {
-    logger.warn(
-      `Warm pool initialization failed: ${err instanceof Error ? err.message : String(err)}`
-    )
-  }
-}
 
 async function _POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
@@ -38,8 +22,6 @@ async function _POST(req: Request, { params }: { params: Promise<{ id: string }>
     if (!auth.authenticated || auth.error) {
       return apiAuthErr(auth)
     }
-
-    await ensureWarmPool()
 
     const { id } = await params
 
@@ -138,7 +120,7 @@ async function _POST(req: Request, { params }: { params: Promise<{ id: string }>
         deployType: 'opensandbox-script',
         deployedAt: new Date().toISOString(),
       }
-    } else if (result.deployType === 'opensandbox') {
+    } else {
       deploy = {
         status: 'deployed',
         deployType: 'opensandbox',
@@ -146,14 +128,6 @@ async function _POST(req: Request, { params }: { params: Promise<{ id: string }>
         nodePort: result.nodePort,
         sandboxId: result.sandboxId,
         useProxy: result.useProxy,
-        deployedAt: new Date().toISOString(),
-      }
-    } else {
-      deploy = {
-        status: 'deployed',
-        deployType: 'k8s',
-        endpoint: result.endpoint,
-        nodePort: result.nodePort,
         deployedAt: new Date().toISOString(),
       }
     }

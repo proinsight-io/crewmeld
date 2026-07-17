@@ -12,6 +12,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { contactKey } from '@/lib/human-employees/notify-method'
 import { useTranslation } from '@/hooks/use-translation'
 import { ContactMethodEditor } from './contact-method-editor'
 
@@ -72,6 +73,14 @@ export function HumanEmployeeFormDialog({
     }
     if (!title.trim()) {
       setError(t('humanEmployees.formTitleRequired'))
+      return
+    }
+    // Reject duplicate channels: the same type+value must not appear twice.
+    const contactKeys = contactMethods
+      .filter((m) => m.value.trim())
+      .map((m) => contactKey({ type: m.type, value: m.value.trim() }))
+    if (new Set(contactKeys).size !== contactKeys.length) {
+      setError(t('humanEmployees.formContactDuplicate'))
       return
     }
 

@@ -9,9 +9,10 @@ import type { DoneEvent, PhaseEvent, ResultEvent } from '@/lib/dev-studio/sandbo
 import { useTranslation } from '@/hooks/use-translation'
 import { AdoptConfirmDialog } from './adopt-confirm-dialog'
 import { ConnectionPicker } from './connection-picker'
+import { DependencyGateDialog } from './dependency-gate-dialog'
 import { DependencyListEditor } from './dependency-list-editor'
+import type { ReviewLibrary } from './dependency-review-card'
 import { useEgressMode } from './hooks/use-egress-mode'
-import { useNotifications } from './hooks/use-notifications'
 import { IoFilesPanel } from './io-files-panel'
 import { RunControls } from './run-controls'
 import { SandboxLogViewer } from './sandbox-log-viewer'
@@ -58,7 +59,10 @@ interface TestPanelProps {
  *  - `events` feeds TestProgress;
  *  - `result` is shared between RunControls (so it can be cleared) and
  *    the TestResult panel itself;
- *  - `adoptOpen` is set by RunControls and consumed by AdoptConfirmDialog.
+ *  - `adoptOpen` is consumed by AdoptConfirmDialog; clicking Adopt first
+ *    checks for unapproved dependencies and, if any are pending, routes
+ *    through `depGate*` / DependencyGateDialog to auto-approve them before
+ *    `adoptOpen` opens.
  *
  * The run button initiates a POST with SSE streaming; frames are parsed
  * incrementally via ReadableStream.
@@ -72,12 +76,6 @@ export function TestPanel({
   onConnectionChange,
 }: TestPanelProps) {
   const { t } = useTranslation()
-
-  // Adoption is gated until the operator approves the package allow-list in the
-  // inline chat card. While this session has unapproved deps, the adopt button
-  // stays hidden — the review card (left pane) is the path forward.
-  const { dependencies } = useNotifications()
-  const canAdopt = !dependencies.some((d) => d.sessionId === sessionId)
 
   // The per-run ephemeral allowlist input only matters in allowlist mode; hide it when
   // egress is unrestricted (default). Unknown (loading) → treated as hidden.
@@ -102,6 +100,40 @@ export function TestPanel({
   const [result, setResult] = useState<RunTestResult | null>(null)
   const [doneEvent, setDoneEvent] = useState<DoneEvent | null>(null)
   const [adoptOpen, setAdoptOpen] = useState(false)
+
+  // ── Adopt dependency gate ──
+  // Clicking Adopt first checks the session's dependency-review state; if the
+  // AI declared libraries/domains the operator hasn't approved yet, the gate
+  // dialog offers a one-click auto-approve before falling through to the
+  // normal adopt-confirm dialog. See DependencyGateDialog for the POST.
+  const [depGateOpen, setDepGateOpen] = useState(false)
+  const [depGateLibraries, setDepGateLibraries] = useState<ReviewLibrary[]>([])
+  const [depGateDomains, setDepGateDomains] = useState<string[]>([])
+
+  const handleAdoptClick = useCallback(async () => {
+    try {
+      const res = await fetch(
+        `/api/employee/dev-studio/sessions/${encodeURIComponent(sessionId)}/dependencies`
+      )
+      if (res.ok) {
+        const data = (await res.json()) as {
+          pendingLibraries: ReviewLibrary[]
+          domains: string[]
+          needsReview: boolean
+        }
+        if (data.needsReview) {
+          setDepGateLibraries(data.pendingLibraries)
+          setDepGateDomains(data.domains)
+          setDepGateOpen(true)
+          return
+        }
+      }
+    } catch {
+      // Best-effort check — a network hiccup here should not block adopt;
+      // fall through to the normal confirm dialog below.
+    }
+    setAdoptOpen(true)
+  }, [sessionId])
   const [runError, setRunError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
 
@@ -339,8 +371,9 @@ export function TestPanel({
           setEvents([])
           setDoneEvent(null)
         }}
-        onAdopt={() => setAdoptOpen(true)}
-        canAdopt={canAdopt}
+        onAdopt={() => {
+          void handleAdoptClick()
+        }}
       />
 
       {runError && (
@@ -365,6 +398,18 @@ export function TestPanel({
           onViewLog={doneEvent?.kept ? () => setLogViewerOpen(true) : undefined}
         />
       )}
+
+      <DependencyGateDialog
+        open={depGateOpen}
+        sessionId={sessionId}
+        libraries={depGateLibraries}
+        domains={depGateDomains}
+        onApproved={() => {
+          setDepGateOpen(false)
+          setAdoptOpen(true)
+        }}
+        onCancel={() => setDepGateOpen(false)}
+      />
 
       <AdoptConfirmDialog
         open={adoptOpen}

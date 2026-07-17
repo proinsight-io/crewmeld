@@ -2,6 +2,7 @@ import { db } from '@crewmeld/db'
 import {
   SOP_TERMINAL_STATUSES,
   type SopExecutionStatus,
+  conversations,
   sopDefinitions,
   sopExecutions,
   sopNodeExecutions,
@@ -981,8 +982,14 @@ export async function resumeSopFromAsyncTool(executionId: string, taskId: string
   )
 
   if (!exitResult || exitResult.targetNodeId === null) {
-    await transitionStatus(executionId, 'running', 'completed', { completedAt: new Date() })
+    // Persist the snapshot (with the completed node's summary/output) BEFORE
+    // flipping status to 'completed' — same order as the main executeSop loop.
+    // Reversing them opens a window where a poller (the conversation's
+    // sync-grace waitForCompletion) sees status='completed' but reads the stale
+    // pre-resume snapshot, so deliverables extraction finds no output URL and
+    // silently skips promoting the file. status-last closes that window.
     await persistSnapshot(executionId, snapshot)
+    await transitionStatus(executionId, 'running', 'completed', { completedAt: new Date() })
     if (meta?.conversationId && execution.sopDefinitionId) {
       void notifySopResult(executionId, execution.sopDefinitionId, meta.conversationId)
     }
@@ -1090,11 +1097,41 @@ async function notifySopResult(
       .from(sopDefinitions)
       .where(eq(sopDefinitions.id, sopDefinitionId))
 
+    // Promote LLM-surfaced deliverables (NFS sop-files → conversation conv-io)
+    // and rewrite their URLs, mirroring the conversation's sync in-turn path.
+    // Without this the async engine-push path leaves generated files only in
+    // sop-files/<execId>/ with a raw /api/sop/... URL and attaches nothing.
+    const rawOutput = outputParts.length > 0 ? [...new Set(outputParts)].join('\n') : undefined
+    let finalOutput = rawOutput
+    let workspaceFiles: Array<{ key: string; name: string; size: number; mimeType: string }> | undefined
+    if (finalExec.status === 'completed' && rawOutput) {
+      try {
+        const { processDeliverables } = await import('./deliverables')
+        const [convRow] = await db
+          .select({ createdAt: conversations.createdAt })
+          .from(conversations)
+          .where(eq(conversations.id, conversationId))
+          .limit(1)
+        const deliverables = await processDeliverables({
+          sopExecutionId: executionId,
+          conversationId,
+          conversationCreatedAt: convRow?.createdAt ?? undefined,
+          finalMessage: rawOutput,
+        })
+        if (deliverables.attachments.length > 0) workspaceFiles = deliverables.attachments
+        finalOutput = deliverables.message
+      } catch (err) {
+        logger.warn('async-push deliverables processing failed', { executionId, error: err })
+      }
+    }
+
     await notifyChannelOnSopCompletion({
       conversationId,
       sopName: defRow?.name ?? 'SOP',
       executionId,
-      output: outputParts.length > 0 ? [...new Set(outputParts)].join('\n') : undefined,
+      output: finalOutput,
+      workspaceFiles,
+      isZh,
       errorMessage: finalExec.errorMessage ?? undefined,
       status: finalExec.status as 'completed' | 'failed' | 'error',
     })
