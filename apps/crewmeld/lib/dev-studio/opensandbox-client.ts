@@ -242,9 +242,19 @@ export class OpenSandboxClient {
    * {@link getEndpoint} in proxy mode. Returns `{}` when proxy mode is off,
    * so call sites can unconditionally spread `client.proxyHeaders()` into
    * their fetch options without branching.
+   *
+   * `Accept-Encoding: identity` is a workaround for an OpenSandbox reverse-proxy
+   * bug: when the upstream (e.g. opencode) gzip-encodes a response, the proxy
+   * advertises `Content-Encoding: gzip` but delivers an empty/truncated body,
+   * so Node's fetch (which requests gzip by default) fails to inflate it with
+   * `Z_DATA_ERROR: incorrect header check` / a socket-closed error. Forcing
+   * identity makes the proxy return the body uncompressed. Only applied in proxy
+   * mode; direct pod access keeps normal content negotiation.
    */
   proxyHeaders(): Record<string, string> {
-    return this.useProxy ? { 'OPEN-SANDBOX-API-KEY': this.apiKey } : {}
+    return this.useProxy
+      ? { 'OPEN-SANDBOX-API-KEY': this.apiKey, 'Accept-Encoding': 'identity' }
+      : {}
   }
 
   isProxyMode(): boolean {
@@ -287,6 +297,26 @@ export class OpenSandboxClient {
   async getSandbox(id: string): Promise<{ id: string; state: string }> {
     const info = await this.sandboxes.getSandbox(id)
     return { id: info.id as string, state: info.status?.state ?? 'Unknown' }
+  }
+
+  /**
+   * Whether a sandbox currently exists and is `Running`.
+   *
+   * Unlike {@link getEndpoint} — which in proxy mode only string-builds the
+   * reverse-proxy URL without ever contacting the server — this always hits the
+   * lifecycle API, so it reliably detects a container that has been
+   * reaped/expired/destroyed server-side. A 404 (already gone) resolves to
+   * `false`; any other non-`Running` state also resolves to `false`. Transport
+   * errors propagate so callers can distinguish "gone" from "couldn't check".
+   */
+  async isSandboxRunning(id: string): Promise<boolean> {
+    try {
+      const info = await this.getSandbox(id)
+      return info.state === 'Running'
+    } catch (e) {
+      if (e instanceof SandboxApiException && e.statusCode === 404) return false
+      throw e
+    }
   }
 
   async waitUntilRunning(id: string, opts: WaitOptions): Promise<void> {

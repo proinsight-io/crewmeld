@@ -1,22 +1,25 @@
 /**
- * Daily cleanup of stale SOP workspaces in MinIO.
+ * Daily cleanup of stale SOP file workspaces on NFS.
  *
- * Scans the `sop/` prefix and deletes every execution subdirectory whose
- * newest object is older than `SOP_WORKSPACE_RETENTION_DAYS` (default 30).
+ * The workspace lives at `<bff-root>/sop-files/<Y>/<M>/<D>/<execId>/`. The
+ * Y/M/D layer is the SOP's start date, so age is read straight from the path
+ * — no per-file stat. Every execId dir under a day older than
+ * `SOP_WORKSPACE_RETENTION_DAYS` (default 30) is removed, and emptied
+ * day/month/year dirs are pruned.
  *
  * Wired up from `instrumentation.ts`, so it runs once per server boot and
  * then once every `SOP_WORKSPACE_CLEANUP_INTERVAL_MS` (default 24h) for as
  * long as the process lives. Multi-replica deployments will see harmless
- * overlap — DeleteObject is idempotent.
+ * overlap — rm is idempotent.
  */
 
-import { DeleteObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3'
+import fs from 'node:fs/promises'
+import path from 'node:path'
 import { createLogger } from '@crewmeld/logger'
-import { getMinioClient, MINIO_BUCKET } from '@/lib/storage/minio-client'
+import { paths } from '@/lib/dev-studio/paths'
 
 const logger = createLogger('SopWorkspaceCleanup')
 
-const ROOT_PREFIX = 'sop/'
 const DEFAULT_RETENTION_DAYS = 30
 const DEFAULT_INTERVAL_MS = 24 * 60 * 60 * 1000
 
@@ -31,116 +34,75 @@ function getIntervalMs(): number {
   return Number.isFinite(ms) && ms > 0 ? ms : DEFAULT_INTERVAL_MS
 }
 
-interface SopFolder {
-  /** sop/{execId}/ */
-  prefix: string
-  /** Most recent LastModified across objects under this prefix. */
-  newest: Date
-}
-
-/**
- * Walk every object under sop/ and bucket by execId. Returns one entry per
- * execId with the newest LastModified seen — the cleanup decision is made
- * per folder, not per object, so a long-running SOP that keeps writing
- * doesn't get half-deleted.
- */
-async function listSopFolders(): Promise<SopFolder[]> {
-  const client = getMinioClient()
-  const byPrefix = new Map<string, Date>()
-  let continuationToken: string | undefined
-
-  do {
-    const list = await client.send(
-      new ListObjectsV2Command({
-        Bucket: MINIO_BUCKET,
-        Prefix: ROOT_PREFIX,
-        ContinuationToken: continuationToken,
-      })
-    )
-
-    for (const o of list.Contents ?? []) {
-      if (!o.Key || !o.LastModified) continue
-      // Match sop/{execId}/...; ignore objects directly under sop/.
-      const rest = o.Key.slice(ROOT_PREFIX.length)
-      const slash = rest.indexOf('/')
-      if (slash <= 0) continue
-      const prefix = `${ROOT_PREFIX}${rest.slice(0, slash + 1)}`
-      const prev = byPrefix.get(prefix)
-      if (!prev || o.LastModified > prev) byPrefix.set(prefix, o.LastModified)
-    }
-
-    continuationToken = list.IsTruncated ? list.NextContinuationToken : undefined
-  } while (continuationToken)
-
-  return Array.from(byPrefix.entries()).map(([prefix, newest]) => ({ prefix, newest }))
-}
-
-async function deleteByPrefix(prefix: string): Promise<number> {
-  const client = getMinioClient()
-  let deleted = 0
-  let continuationToken: string | undefined
-
-  do {
-    const list = await client.send(
-      new ListObjectsV2Command({
-        Bucket: MINIO_BUCKET,
-        Prefix: prefix,
-        ContinuationToken: continuationToken,
-      })
-    )
-    const objects = list.Contents ?? []
-    if (objects.length === 0) break
-
-    await Promise.all(
-      objects.map((o) =>
-        client.send(new DeleteObjectCommand({ Bucket: MINIO_BUCKET, Key: o.Key! }))
-      )
-    )
-    deleted += objects.length
-
-    continuationToken = list.IsTruncated ? list.NextContinuationToken : undefined
-  } while (continuationToken)
-
-  return deleted
-}
-
 export interface CleanupResult {
-  scanned: number
-  deletedFolders: number
-  deletedObjects: number
+  scannedDays: number
+  deletedExecs: number
+}
+
+/** List numeric-named subdirs of `dir` (missing dir → []). */
+async function numericDirs(dir: string): Promise<string[]> {
+  try {
+    const ents = await fs.readdir(dir, { withFileTypes: true })
+    return ents.filter((e) => e.isDirectory() && /^\d+$/.test(e.name)).map((e) => e.name)
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw e
+  }
+}
+
+/** Remove `dir` if it is now empty. Silent on non-empty / already-gone. */
+async function rmdirIfEmpty(dir: string): Promise<void> {
+  try {
+    await fs.rmdir(dir)
+  } catch {
+    /* not empty or already gone — fine */
+  }
 }
 
 /** Run one cleanup pass. Safe to call manually for ops/testing. */
 export async function runSopWorkspaceCleanup(): Promise<CleanupResult> {
   const cutoff = Date.now() - getRetentionMs()
-  const folders = await listSopFolders()
+  const root = paths.sopFiles.rootForBff()
 
-  let deletedFolders = 0
-  let deletedObjects = 0
+  let scannedDays = 0
+  let deletedExecs = 0
 
-  for (const folder of folders) {
-    if (folder.newest.getTime() >= cutoff) continue
-    try {
-      const n = await deleteByPrefix(folder.prefix)
-      deletedFolders++
-      deletedObjects += n
-    } catch (err) {
-      logger.warn('Failed to delete stale SOP workspace folder', {
-        prefix: folder.prefix,
-        error: err instanceof Error ? err.message : String(err),
-      })
+  for (const y of await numericDirs(root)) {
+    const yDir = path.join(root, y)
+    for (const m of await numericDirs(yDir)) {
+      const mDir = path.join(yDir, m)
+      for (const d of await numericDirs(mDir)) {
+        scannedDays++
+        const dDir = path.join(mDir, d)
+        // Keep the whole day until UTC midnight of Y/M/D ages past the cutoff.
+        const dayMs = Date.UTC(Number(y), Number(m) - 1, Number(d))
+        if (dayMs >= cutoff) continue
+        try {
+          for (const exec of await fs.readdir(dDir)) {
+            await fs.rm(path.join(dDir, exec), { recursive: true, force: true })
+            deletedExecs++
+          }
+          await rmdirIfEmpty(dDir)
+        } catch (err) {
+          logger.warn('Failed to clean stale sop-files day', {
+            day: `${y}/${m}/${d}`,
+            error: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+      await rmdirIfEmpty(mDir)
     }
+    await rmdirIfEmpty(yDir)
   }
 
-  if (deletedFolders > 0) {
+  if (deletedExecs > 0) {
     logger.info('SOP workspace cleanup complete', {
-      scanned: folders.length,
-      deletedFolders,
-      deletedObjects,
+      scannedDays,
+      deletedExecs,
       retentionDays: getRetentionMs() / (24 * 60 * 60 * 1000),
     })
   }
-  return { scanned: folders.length, deletedFolders, deletedObjects }
+  return { scannedDays, deletedExecs }
 }
 
 let timer: NodeJS.Timeout | null = null

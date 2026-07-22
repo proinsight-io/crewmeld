@@ -3,7 +3,10 @@
  *
  * Replaces the spec C packager.ts MinIO upload path. Copies a dev-studio
  * session's workspace into the tools-workspace/<toolId>/code directory on
- * NFS, using staging dir + POSIX rename for atomicity.
+ * NFS via a staging dir + rename swap. The BFF runs on Windows over an SMB
+ * share, where rename is NOT POSIX — it fails with EPERM if the source still
+ * has an open handle (Defender / indexer scanning just-written files), so the
+ * swaps go through {@link renameWithRetry} with a short backoff.
  *
  * Idempotency: if workspace content (sha256) matches the existing
  * .package-hash file in code/, skips the actual copy.
@@ -123,6 +126,36 @@ async function rmrf(p: string): Promise<void> {
   await fs.rm(p, { recursive: true, force: true })
 }
 
+/**
+ * Rename with retry — mitigates transient EPERM/EACCES/EBUSY on Windows→SMB.
+ *
+ * The BFF runs on Windows and writes to an SMB share (SMB-to-NFS). Unlike a
+ * POSIX rename, Windows `MoveFileExW` fails with ACCESS_DENIED (surfaced by
+ * Node as EPERM) when the source dir — or a file inside it — still has an open
+ * handle. Right after `syncZipToCode` writes the freshly-unzipped files into
+ * the staging dir, a Defender real-time scan or the search indexer commonly
+ * opens them for a few milliseconds; renaming staging in that window is denied.
+ * The lock clears almost immediately, so a short exponential backoff rides it
+ * out. Non-lock errors (e.g. ENOENT) are thrown on the first attempt.
+ */
+async function renameWithRetry(from: string, to: string, attempts = 6): Promise<void> {
+  const retryable = new Set(['EPERM', 'EACCES', 'EBUSY', 'ENOTEMPTY'])
+  for (let i = 0; ; i++) {
+    try {
+      await fs.rename(from, to)
+      return
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code
+      if (i >= attempts - 1 || !code || !retryable.has(code)) throw err
+      const delay = Math.min(50 * 2 ** i, 1000)
+      logger.warn(
+        `rename ${from} → ${to} failed with ${code}; retry ${i + 1}/${attempts - 1} in ${delay}ms`,
+      )
+      await new Promise((r) => setTimeout(r, delay))
+    }
+  }
+}
+
 async function pathExists(p: string): Promise<boolean> {
   try {
     await fs.access(p)
@@ -159,18 +192,18 @@ export async function syncWorkspaceToCode(sessionId: string, toolId: string): Pr
   let backup: string | null = null
   if (await pathExists(dst)) {
     backup = `${dst}.old-${randomId()}`
-    await fs.rename(dst, backup)
+    await renameWithRetry(dst, backup)
   }
 
   try {
     await fs.mkdir(path.dirname(dst), { recursive: true })
-    await fs.rename(staging, dst)
+    await renameWithRetry(staging, dst)
   } catch (err) {
     // Rollback: if the backup restore also fails, the previous dst is
     // stranded under a `.old-*` path — surface that loudly so operators
     // can recover manually instead of swallowing the secondary failure.
     if (backup) {
-      await fs.rename(backup, dst).catch((restoreErr) => {
+      await renameWithRetry(backup, dst).catch((restoreErr) => {
         logger.warn(
           `rollback failed: rename ${backup} → ${dst} threw ${(restoreErr as Error).message}; backup directory left in place for manual recovery`,
           { backup, dst },
@@ -253,14 +286,14 @@ export async function syncZipToCode(
   let backup: string | null = null
   if (await pathExists(dst)) {
     backup = `${dst}.old-${randomId()}`
-    await fs.rename(dst, backup)
+    await renameWithRetry(dst, backup)
   }
   try {
     await fs.mkdir(path.dirname(dst), { recursive: true })
-    await fs.rename(staging, dst)
+    await renameWithRetry(staging, dst)
   } catch (err) {
     if (backup) {
-      await fs.rename(backup, dst).catch((restoreErr) => {
+      await renameWithRetry(backup, dst).catch((restoreErr) => {
         logger.warn(
           `rollback failed: rename ${backup} → ${dst} threw ${(restoreErr as Error).message}; backup left for manual recovery`,
           { backup, dst },

@@ -12,6 +12,7 @@ import {
   tryDisconnectDiscordGateway,
 } from '@/lib/channels/plugins/discord/auto-connect'
 import { proxyFetch } from '@/lib/channels/proxy-fetch'
+import { findDuplicateChannel } from '@/lib/connectors/channel-dedup'
 import { decryptConfig, encryptConfig, maskSensitiveFields } from '@/lib/connectors/encryption'
 import { sanitizeConnectionConfig } from '@/lib/connectors/sanitize'
 import type {
@@ -132,6 +133,17 @@ async function _PATCH(request: NextRequest, { params }: { params: Promise<{ id: 
         body.config as Record<string, unknown>
       ) as Partial<ConnectionConfig>
       const mergedConfig = { ...existingConfig, ...sanitizedIncoming }
+
+      // Reject an edit that would make this channel's credentials (id + secret)
+      // collide with another existing channel of the same type.
+      const duplicateId = await findDuplicateChannel(
+        existing.type as ConnectionType,
+        mergedConfig as Record<string, unknown>,
+        id
+      )
+      if (duplicateId) {
+        return apiErr('api.channel.duplicateCredential', { status: 409 })
+      }
 
       // If Telegram and key config updated, rebuild webhookUrl and re-register
       if (existing.type === 'telegram') {

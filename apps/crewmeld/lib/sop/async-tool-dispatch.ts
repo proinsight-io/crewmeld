@@ -2,25 +2,29 @@
  * Dispatch a tool call asynchronously: journal a `pending` work-log row, kick
  * the work off in the background, and return immediately so the SOP can suspend.
  *
- * Completion always flows back through the HTTP callback route
- * (`/api/sop/[executionId]/tool-callback`) with a body
- * `{ callId, token, status, result?, error? }`:
+ * Completion flows back per tool kind:
  *
- *  - **api** tools run in-process (detached promise); on settle the BFF POSTs
- *    the result to the callback route itself (BFF → BFF, localhost-reachable).
- *  - **script / service** tools run inside their pod via a platform-assembled
+ *  - **api / http (long-running service)** tools run on the BFF, so they're handed to the
+ *    durable `sop-async-tool-exec` queue: the exec worker runs the tool and
+ *    applies the result in-process via the callback handler. Because the job
+ *    lives in Redis, a BFF restart mid-call re-runs it instead of losing an
+ *    in-memory promise. When no Redis is configured, a detached in-process run is
+ *    used as a fallback (netted by the watchdog).
+ *  - **script / service pod** tools run inside their pod via a platform-assembled
  *    wrapper. The wrapper runs the tool code, then a tiny python relay POSTs the
- *    raw result to the callback URL. The pod is kept alive until the callback
- *    (or watchdog) tears it down. The callback URL + token are written into the
- *    pod as data files — the tool's own code never sees or contains them.
+ *    raw result to the HTTP callback route (`/api/sop/[executionId]/tool-callback`,
+ *    body `{ callId, token, status, result?, error? }`). The pod is kept alive
+ *    until the callback (or watchdog) tears it down. The callback URL + token are
+ *    written into the pod as data files — the tool's own code never sees them.
  *
- * Dispatch is decoupled from the callback handler / SOP resume: it only needs
- * the callback URL, so it can be built and type-checked independently.
+ * Dispatch is decoupled from the callback handler / SOP resume, so it can be
+ * built and type-checked independently.
  */
 import { createLogger } from '@crewmeld/logger'
 import { getSandboxCallbackBaseUrl } from '@/lib/core/utils/urls'
 import type { ScopeIdentity } from '@/lib/identity/types'
 import type { ApiToolSpec } from '@/lib/tools/api-tool-types'
+import type { AsyncToolExecPayload } from '@/types/sop'
 import { signCallbackToken } from './async-tool-callback-token'
 import { failToolCallLog, writePendingToolCallLog } from './async-tool-log'
 
@@ -97,8 +101,9 @@ function callbackUrl(executionId: string): string {
   return `${getSandboxCallbackBaseUrl().replace(/\/$/, '')}/api/sop/${encodeURIComponent(executionId)}/tool-callback`
 }
 
-/** Liveness ceiling before a never-called-back tool is failed. Tracks pod TTL. */
-const WATCHDOG_DEFAULT_MINUTES = 120
+/** Liveness ceiling before a never-called-back tool is failed. Override via
+ *  CREWMELD_ASYNC_TOOL_WATCHDOG_MINUTES. */
+const WATCHDOG_DEFAULT_MINUTES = 30
 
 function watchdogDelayMs(): number {
   const m = Number(process.env.CREWMELD_ASYNC_TOOL_WATCHDOG_MINUTES)
@@ -195,10 +200,41 @@ async function writePodFile(
   })
 }
 
-/** Dispatch an in-process api tool; POST its result to the callback when done. */
+/**
+ * Hand a BFF-side async tool (api / http) to the durable exec queue so it
+ * survives a BFF restart. When no queue is configured (no Redis) fall back to an
+ * in-process detached run — the pre-queue behaviour, minus restart durability,
+ * netted by the watchdog. Both paths complete via the in-process callback
+ * handler (the worker runs inside the BFF, so no HTTP round-trip / token needed).
+ */
+async function enqueueOrRunAsyncToolExec(payload: AsyncToolExecPayload): Promise<void> {
+  const { getAsyncToolExecQueue } = await import('./queue')
+  const queue = getAsyncToolExecQueue()
+  if (queue) {
+    // jobId = callId dedups an accidental double-dispatch of the same call.
+    await queue.add('exec', payload, { jobId: payload.callId })
+    return
+  }
+
+  // No Redis: run detached in this process (lost on restart, but the watchdog
+  // still fails the pending row so the SOP does not hang forever).
+  void (async () => {
+    const { runAsyncToolExec } = await import('./async-tool-exec-run')
+    const { handleToolCallback } = await import('./tool-callback-handler')
+    const body = await runAsyncToolExec(payload)
+    try {
+      await handleToolCallback(payload.executionId, body)
+    } catch (e) {
+      logger.error('fallback async tool exec callback apply failed', {
+        callId: payload.callId,
+        error: e instanceof Error ? e.message : String(e),
+      })
+    }
+  })()
+}
+
+/** Dispatch an api tool onto the durable exec queue; the SOP suspends meanwhile. */
 async function dispatchApiToolAsync(p: DispatchApiToolParams): Promise<void> {
-  const url = callbackUrl(p.executionId)
-  const token = signCallbackToken(p.executionId, p.callId)
   const watchdogJobId = await registerWatchdog(p.executionId, p.callId)
 
   await writePendingToolCallLog({
@@ -215,37 +251,16 @@ async function dispatchApiToolAsync(p: DispatchApiToolParams): Promise<void> {
     watchdogJobId,
   })
 
-  // Detached: do NOT await the tool's completion — the SOP suspends meanwhile.
-  void (async () => {
-    let body: Record<string, unknown>
-    try {
-      const { runApiTool } = await import('@/lib/tools/api-tool-runner')
-      const { buildApiToolDeps } = await import('@/lib/tools/api-tool-deps')
-      const r = await runApiTool(p.apiSpec, p.args, buildApiToolDeps(), {
-        toolId: p.toolId,
-        forwardIdentity: p.apiForwardIdentity,
-        identity: p.identity,
-      })
-      body = r.success
-        ? { callId: p.callId, token, status: 'completed', result: r.result ?? null }
-        : { callId: p.callId, token, status: 'failed', error: r.error ?? 'Unknown error' }
-    } catch (e) {
-      body = { callId: p.callId, token, status: 'failed', error: e instanceof Error ? e.message : String(e) }
-    }
-    try {
-      await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-    } catch (err) {
-      // The watchdog will fail the still-pending row if this never lands.
-      logger.error('api tool self-callback POST failed', {
-        callId: p.callId,
-        error: err instanceof Error ? err.message : String(err),
-      })
-    }
-  })()
+  await enqueueOrRunAsyncToolExec({
+    kind: 'api',
+    executionId: p.executionId,
+    callId: p.callId,
+    toolId: p.toolId,
+    apiSpec: p.apiSpec,
+    args: p.args,
+    forwardIdentity: p.apiForwardIdentity,
+    identity: p.identity,
+  })
 }
 
 /** Dispatch a pod (script/service) tool via an in-pod wrapper that calls back. */
@@ -308,14 +323,13 @@ async function dispatchPodToolAsync(p: DispatchPodToolParams): Promise<void> {
 }
 
 /**
- * Dispatch a deployed-service / k8s HTTP tool. The BFF calls the persistent
- * endpoint in a detached background task (the tool code has no callback logic),
- * then POSTs the result to the callback route itself. Unlike a pod tool this is
- * BFF-memory-bound: a BFF restart mid-call is recovered by the watchdog.
+ * Dispatch a deployed-service / k8s HTTP tool (the tool code has no callback
+ * logic, so the platform calls the endpoint and applies the result). The work is
+ * handed to the durable exec queue rather than run in a BFF-memory task, so a BFF
+ * restart mid-call is recovered by re-running the job instead of hanging until
+ * the watchdog. See {@link enqueueOrRunAsyncToolExec}.
  */
 async function dispatchHttpToolAsync(p: DispatchHttpToolParams): Promise<void> {
-  const url = callbackUrl(p.executionId)
-  const token = signCallbackToken(p.executionId, p.callId)
   const watchdogJobId = await registerWatchdog(p.executionId, p.callId)
 
   await writePendingToolCallLog({
@@ -332,55 +346,16 @@ async function dispatchHttpToolAsync(p: DispatchHttpToolParams): Promise<void> {
     watchdogJobId,
   })
 
-  void (async () => {
-    let body: Record<string, unknown>
-    try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (p.useProxy) {
-        const apiKey = process.env.OPENSANDBOX_API_KEY
-        if (apiKey) headers['OPEN-SANDBOX-API-KEY'] = apiKey
-      }
-      const resp = await fetch(p.endpoint, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(p.requestBody),
-      })
-
-      if (p.envelopeMode === 'opensandbox') {
-        const text = await resp.text()
-        let parsed: unknown
-        try {
-          parsed = JSON.parse(text)
-        } catch {
-          parsed = { raw: text }
-        }
-        body = resp.ok
-          ? { callId: p.callId, token, status: 'completed', result: parsed }
-          : {
-              callId: p.callId,
-              token,
-              status: 'failed',
-              error: typeof parsed === 'string' ? parsed : JSON.stringify(parsed),
-            }
-      } else {
-        const j = (await resp.json()) as { success?: boolean; result?: unknown; error?: string }
-        body =
-          j.success !== false
-            ? { callId: p.callId, token, status: 'completed', result: j.result ?? j }
-            : { callId: p.callId, token, status: 'failed', error: j.error ?? 'Unknown error' }
-      }
-    } catch (e) {
-      body = { callId: p.callId, token, status: 'failed', error: e instanceof Error ? e.message : String(e) }
-    }
-    try {
-      await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-    } catch (err) {
-      logger.error('http tool self-callback POST failed', {
-        callId: p.callId,
-        error: err instanceof Error ? err.message : String(err),
-      })
-    }
-  })()
+  await enqueueOrRunAsyncToolExec({
+    kind: 'http',
+    executionId: p.executionId,
+    callId: p.callId,
+    toolId: p.toolId,
+    endpoint: p.endpoint,
+    requestBody: p.requestBody,
+    useProxy: p.useProxy,
+    envelopeMode: p.envelopeMode,
+  })
 }
 
 /**

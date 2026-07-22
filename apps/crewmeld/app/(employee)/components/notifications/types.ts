@@ -43,3 +43,12 @@ export interface TextAskPayload {
   prompt: string
   placeholder?: string
 }
+
+/**
+ * Payload shape for `type === 'opencode-question'` asks. opencode questions are
+ * surfaced notify-only; the corner card shows the first question's summary and
+ * routes into the workbench, where the rich multi-question card answers it.
+ */
+export interface OpencodeQuestionAskPayload {
+  question: string
+}

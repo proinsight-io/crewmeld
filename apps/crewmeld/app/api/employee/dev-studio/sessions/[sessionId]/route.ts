@@ -29,6 +29,10 @@ const PatchSchema = z
     // surfaces the connection's CONN_* env vars to the model and the test-run
     // sandbox injects the resolved values.
     connectionId: z.string().nullable().optional(),
+    // Session title. First-naming only: accepted solely while the row is still
+    // untitled (title === null), so an auto-derived name (e.g. from a `<title>`
+    // marker or the manifest tool name) never clobbers an existing name.
+    title: z.string().min(1).max(60).optional(),
   })
   .strict()
 
@@ -85,7 +89,16 @@ export async function PATCH(req: Request, ctx: RouteContext): Promise<Response> 
     )
   }
 
-  const updated = await sessionStore.update(sessionId, parsed.data)
+  const patch = { ...parsed.data }
+  // First-naming only: never overwrite a title the session already has.
+  if (patch.title !== undefined && session.title !== null) {
+    delete patch.title
+  }
+  if (Object.keys(patch).length === 0) {
+    return Response.json({ session })
+  }
+
+  const updated = await sessionStore.update(sessionId, patch)
   return Response.json({ session: updated })
 }
 

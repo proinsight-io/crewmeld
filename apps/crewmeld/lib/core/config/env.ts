@@ -132,8 +132,6 @@ export const env = createEnv({
     S3_COPILOT_BUCKET_NAME:                z.string().optional(),                  // S3 bucket for copilot files
     S3_PROFILE_PICTURES_BUCKET_NAME:       z.string().optional(),                  // S3 bucket for profile pictures
     S3_OG_IMAGES_BUCKET_NAME:              z.string().optional(),                  // S3 bucket for OpenGraph images
-    S3_ENDPOINT:                           z.string().url().optional(),            // Custom S3 endpoint URL (for MinIO or other S3-compatible providers)
-    S3_FORCE_PATH_STYLE:                   z.boolean().optional(),                 // Force path-style addressing (required for MinIO)
 
     // Cloud Storage - Azure Blob 
     AZURE_ACCOUNT_NAME:                    z.string().optional(),                  // Azure storage account name
@@ -201,13 +199,6 @@ export const env = createEnv({
     KB_CONFIG_DELAY_BETWEEN_BATCHES:       z.number().optional().default(0),       // Delay between batches in ms (0 for max speed)
     KB_CONFIG_DELAY_BETWEEN_DOCUMENTS:     z.number().optional().default(50),      // Delay between documents in ms
     KB_CONFIG_CHUNK_CONCURRENCY:           z.number().optional().default(10),      // Concurrent PDF chunk OCR processing
-
-    // MinIO / S3-compatible Object Storage (conversation file uploads)
-    MINIO_ENDPOINT:                        z.string().optional(),                  // MinIO endpoint URL
-    MINIO_ACCESS_KEY:                      z.string().optional(),                  // MinIO access key
-    MINIO_SECRET_KEY:                      z.string().optional(),                  // MinIO secret key
-    MINIO_BUCKET:                          z.string().optional().default('tool-files'), // MinIO bucket name
-    MINIO_EXTERNAL_ENDPOINT:               z.string().optional(),                  // MinIO endpoint accessible from tool Pods (presigned URL generation)
 
     // K8s Skill Deployment
     K8S_API_SERVER:                        z.string().optional(),                  // Kubernetes API server URL

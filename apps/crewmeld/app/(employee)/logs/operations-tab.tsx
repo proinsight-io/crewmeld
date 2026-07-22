@@ -276,7 +276,11 @@ export function OperationsTab() {
                     <td key={j} className='px-4 py-3.5'>
                       <div
                         className='h-4 animate-pulse rounded-md bg-gray-100'
-                        style={{ width: `${60 + Math.random() * 30}%` }}
+                        // Deterministic width derived from the row/column index so
+                        // the server and client render identical markup — a
+                        // render-time Math.random() here produced different widths
+                        // on each side and tripped a React hydration mismatch.
+                        style={{ width: `${60 + (((i * 5 + j) * 13) % 30)}%` }}
                       />
                     </td>
                   ))}

@@ -85,6 +85,7 @@ export function DevStudioHeader({
           currentLabel={session?.modelName ?? null}
           onChange={(modelConfigId) => onSwitchModel(sessionId, modelConfigId)}
           disabled={busy || switchingModel || session?.containerStatus === 'creating'}
+          triggerClassName='w-[240px]'
         />
       )}
       {sessionId && onConnectionChange && (
@@ -96,11 +97,18 @@ export function DevStudioHeader({
       )}
       <ToolMetaBar sessionId={sessionId} />
       <div className='flex-1 min-w-0 overflow-x-auto'>
-        <PhaseTimeline
-          pipelinePhases={session?.pipelinePhases ?? null}
-          currentPhase={session?.phase ?? null}
-          phaseHistory={session?.phaseHistory ?? []}
-        />
+        {/* The phase timeline is driven by the claudecode-only `<phase>` /
+            `<pipeline>` markers; opencode never emits them, so the strip would
+            sit inert on the default 6-step pipeline. Render it only for
+            claudecode and keep this flex-1 box as a spacer for opencode so the
+            right-aligned controls stay put. */}
+        {session?.coderType !== 'opencode' && (
+          <PhaseTimeline
+            pipelinePhases={session?.pipelinePhases ?? null}
+            currentPhase={session?.phase ?? null}
+            phaseHistory={session?.phaseHistory ?? []}
+          />
+        )}
       </div>
       <ConnectionStatus session={session} />
       <RightPanelToggle sessionId={sessionId} visible={session?.rightPanelVisible ?? false} />

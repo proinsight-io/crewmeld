@@ -153,32 +153,7 @@ export async function register(): Promise<void> {
     }
   }
 
-  // Sweep orphan sandbox NetworkPolicies (left over from previous server
-  // process crashes). One-shot at startup; failures are non-fatal.
-  if (
-    process.env.NEXT_RUNTIME === 'nodejs' &&
-    process.env.K8S_API_SERVER &&
-    process.env.K8S_API_TOKEN
-  ) {
-    try {
-      const { reconcileOrphanNetworkPolicies } = await import('./lib/sandbox/network-policy')
-      const result = await reconcileOrphanNetworkPolicies()
-      if (result.scanned > 0) {
-        // biome-ignore lint/suspicious/noConsole: instrumentation startup log
-        console.log(
-          `[instrumentation] Sandbox NP reconcile: scanned=${result.scanned} deleted=${result.deleted}`
-        )
-      }
-    } catch (err) {
-      // biome-ignore lint/suspicious/noConsole: instrumentation diagnostic
-      console.warn(
-        '[instrumentation] Sandbox NP reconcile failed:',
-        err instanceof Error ? err.message : String(err)
-      )
-    }
-  }
-
-  // Schedule recurring cleanup of stale SOP workspaces in MinIO (default
+  // Schedule recurring cleanup of stale SOP workspaces (default
   // 30-day retention). Runs once immediately, then on a 24h interval.
   if (process.env.NEXT_RUNTIME === 'nodejs') {
     try {

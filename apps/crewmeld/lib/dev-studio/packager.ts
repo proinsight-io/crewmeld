@@ -1,17 +1,16 @@
 /**
  * Workspace -> .cmtool zip packaging primitives.
  *
- * Pure utilities for building a workspace zip + sha256, plus MinIO bucket
- * constants used by the legacy skills import/export/test-run routes that
- * still source `.cmtool` packages from MinIO.
+ * Pure utilities for building a workspace zip + sha256. No DB or MinIO side
+ * effects: the export routes under `app/api/employee/skills/**` build a
+ * `.cmtool` on the fly from the NFS workspace using these helpers.
  *
  * As of spec 2026-05-28-cross-platform-nfs-volume-design.md the dev-studio
  * run-test / adopt path uses {@link syncWorkspaceToCode} (NFS-backed) instead
  * of the previous package-upload-download-extract chain, so this module no
  * longer exports `packageWorkspace` and no longer writes
- * `tool_dev_sessions.lastPackage`. The remaining exports are still consumed
- * by routes under `app/api/employee/skills/**` that have not yet migrated
- * off MinIO storage for `.cmtool` template packages.
+ * `tool_dev_sessions.lastPackage`. The former MinIO `tool-packages` bucket
+ * helpers were removed once import-cmtool stopped writing the legacy archive.
  *
  * Exclusion rules:
  *   - .git/, node_modules/, __pycache__/, .next/, dist/, .DS_Store, Thumbs.db
@@ -26,20 +25,12 @@ import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { PassThrough } from 'node:stream'
-import { CreateBucketCommand, HeadBucketCommand } from '@aws-sdk/client-s3'
-import { createLogger } from '@crewmeld/logger'
 import archiver from 'archiver'
-import { getMinioClient } from '@/lib/storage/minio-client'
-
-const logger = createLogger('DevStudioPackager')
 
 /** Maximum total uncompressed workspace footprint allowed (50 MiB). */
 export const MAX_ZIP_SIZE_BYTES = 50 * 1024 * 1024
 /** Maximum size of any single file inside the workspace (5 MiB). */
 export const MAX_SINGLE_FILE_BYTES = 5 * 1024 * 1024
-
-/** MinIO bucket dedicated to packaged .cmtool zips. */
-export const TOOL_PACKAGES_BUCKET = 'tool-packages'
 
 const EXCLUDE_DIR_NAMES = new Set(['.git', 'node_modules', '__pycache__', '.next', 'dist'])
 const EXCLUDE_FILE_NAMES = new Set(['.DS_Store', 'Thumbs.db'])
@@ -147,31 +138,5 @@ async function walk(
       out.push({ abs: absChild, rel: childRel, size: stat.size })
     }
     // Sockets, FIFOs, symlinks, etc. are intentionally ignored.
-  }
-}
-
-/**
- * Ensure the {@link TOOL_PACKAGES_BUCKET} MinIO bucket exists, creating it on
- * first use. MinIO's `mc mb --ignore-existing` is run only for the default
- * `tool-files` bucket at compose startup; this bucket is created lazily on
- * the first packaging request.
- */
-export async function ensureToolPackagesBucket(): Promise<void> {
-  const client = getMinioClient()
-  try {
-    await client.send(new HeadBucketCommand({ Bucket: TOOL_PACKAGES_BUCKET }))
-    return
-  } catch {
-    // Fall through to create.
-  }
-  try {
-    await client.send(new CreateBucketCommand({ Bucket: TOOL_PACKAGES_BUCKET }))
-    logger.info('Created MinIO bucket', { bucket: TOOL_PACKAGES_BUCKET })
-  } catch (err) {
-    // Race: another process may have created it between Head and Create.
-    const code = (err as { name?: string }).name
-    if (code !== 'BucketAlreadyOwnedByYou' && code !== 'BucketAlreadyExists') {
-      throw err
-    }
   }
 }

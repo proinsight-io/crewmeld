@@ -40,6 +40,38 @@ interface NotifyParams {
   workspaceFiles?: FileAttachment[]
   errorMessage?: string
   status: 'completed' | 'failed' | 'error'
+  /**
+   * Explicit reply language derived from the SOP's `userLanguage`. When set,
+   * the notifier uses it verbatim and skips the tinyld re-detection (which is
+   * skewed toward English by the `[附件: … mimeType=application/… ]`
+   * annotations in the user's message) and the resulting mis-translation.
+   */
+  isZh?: boolean
+}
+
+/**
+ * Resolve whether to reply in Chinese from recent user messages. `[附件: …]`
+ * annotations are stripped first — their English-heavy `mimeType=application/…`
+ * text otherwise skews tinyld toward English and mistranslates Chinese output.
+ */
+function detectIsZhFromMessages(
+  messages: Array<{ content: string | null; role: string }>
+): boolean {
+  for (const msg of messages) {
+    if (msg.role === 'user' && msg.content) {
+      const clean = msg.content.replace(/\[附件:[^\]]*\]/g, ' ').trim()
+      if (clean.length >= 4) {
+        // Any CJK Han character → Chinese. tinyld misclassifies short mixed
+        // zh+Latin text (Chinese sentence peppered with `foo.xlsx` filenames)
+        // as a Latin language, so trust the script test first — same
+        // short-circuit the conversation engine's detectUserLanguage uses.
+        if (/\p{Script=Han}/u.test(clean)) return true
+        const langCode = detect(clean)
+        return !(langCode && langCode !== 'zh')
+      }
+    }
+  }
+  return true
 }
 
 interface ApprovalDecisionNotifyParams {
@@ -121,16 +153,7 @@ export async function notifyChannelOnSopCompletion(params: NotifyParams): Promis
         .orderBy(desc(conversationMessages.createdAt))
         .limit(10)
 
-      let isZh = true
-      for (const msg of recentMsgs) {
-        if (msg.role === 'user' && msg.content && msg.content.length >= 4) {
-          const langCode = detect(msg.content)
-          if (langCode && langCode !== 'zh') {
-            isZh = false
-          }
-          break
-        }
-      }
+      const isZh = params.isZh ?? detectIsZhFromMessages(recentMsgs)
 
       // Non-Chinese scenario: use LLM to translate results to user language
       let translatedOutput = params.output
@@ -230,16 +253,7 @@ export async function notifyChannelOnSopCompletion(params: NotifyParams): Promis
       .orderBy(desc(conversationMessages.createdAt))
       .limit(10)
 
-    let imIsZh = true
-    for (const msg of imRecentMsgs) {
-      if (msg.role === 'user' && msg.content && msg.content.length >= 4) {
-        const langCode = detect(msg.content)
-        if (langCode && langCode !== 'zh') {
-          imIsZh = false
-        }
-        break
-      }
-    }
+    const imIsZh = params.isZh ?? detectIsZhFromMessages(imRecentMsgs)
 
     const message = formatSopResultMessage(params, imIsZh)
 

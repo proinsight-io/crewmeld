@@ -868,6 +868,8 @@ CREATE TABLE "tool_dev_sessions" (
 	"phase_history" jsonb DEFAULT '[]'::jsonb NOT NULL,
 	"active_container_id" text,
 	"container_status" text DEFAULT 'destroyed' NOT NULL,
+	"coder_type" text DEFAULT 'claudecode' NOT NULL,
+	"opencode_session_id" text,
 	"workspace_dir" text NOT NULL,
 	"claude_state_dir" text NOT NULL,
 	"right_panel_visible" boolean DEFAULT false NOT NULL,

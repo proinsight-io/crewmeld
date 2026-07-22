@@ -87,20 +87,18 @@ export const promptsToolChatZhCN = {
   // ── File tool ──
   fileToolTitle: '⚠️ 文件类工具强制要求（最高优先级）',
   fileToolDesc:
-    '当工具需要生成文件（Excel、PDF、CSV、ZIP 等）时，**必须在代码中完成 MinIO 上传并返回 Presigned URL 下载链接**。',
+    '当工具需要生成文件（Excel、PDF、CSV、ZIP 等）时，**必须把文件写入 `/root/io` 目录，并在返回值中给出文件名**，平台会自动收集该目录下的产出文件。',
   fileToolEnvDesc:
-    '工具 Pod 中已预注入 MINIO_ENDPOINT、MINIO_ACCESS_KEY、MINIO_SECRET_KEY、MINIO_BUCKET、MINIO_PUBLIC_URL 环境变量，测试和生产环境都可用，直接使用即可。',
+    '工具运行时已挂载 `/root/io` 目录（统一文件目录），直接把生成的文件写到该目录即可，无需上传任何对象存储、也不需要生成下载链接。',
   fileToolSdkDesc:
-    'JavaScript 必须 import @aws-sdk/client-s3 和 @aws-sdk/s3-request-presigner；Python 必须 import boto3。',
+    '直接用标准库写文件即可（Python：open()/pathlib；JavaScript：node:fs），无需引入任何对象存储 SDK。',
   fileToolReturnFormat:
-    '返回值必须是 { "文件名": "xx.xlsx", "下载链接": "http://...presigned-url...", "格式": "xlsx" }。',
+    '返回值必须是 { "文件名": "xx.xlsx", "格式": "xlsx" }，其中「文件名」与写入 `/root/io` 的文件名保持一致。',
   fileToolForbiddenTitle: '**绝对禁止以下行为：**',
-  fileToolForbiddenItems: `- 返回文件路径、Base64、或任何非 Presigned URL 的内容
-- 检测 MINIO 环境变量是否存在然后走 mock/fallback 分支（环境变量一定存在，不需要判断）
-- 生成假的/模拟的下载链接（如 http://minio.local/... 之类的占位 URL）
+  fileToolForbiddenItems: `- 返回 Base64、文件内容、或除文件名以外的产物
+- 生成假的/模拟的下载链接或占位路径（如 http://.../xxx 之类）
 - 在代码中添加"测试环境"与"生产环境"的分支逻辑
-- **MinIO Object Key（文件路径）中使用中文或非 ASCII 字符**（会报 Object name contains unsupported characters），Key 只用英文/数字/下划线/短横线，中文文件名只放在返回结果的「文件名」字段中
-- **从 URL 中提取文件名时直接 split("/")**（Presigned URL 含 ?X-Amz-... 查询参数，split 会把参数带进文件名导致 Object Key 非法），必须用 urllib.parse.urlparse(url).path 或 new URL(url).pathname 先去掉查询参数`,
+- 把文件写到 \`/root/io\` 以外的目录（写别处平台收集不到）`,
 
   // ── Env var / secret ──
   envVarTitle: '环境变量（Secret 参数）规范（极其重要）',
@@ -284,20 +282,18 @@ export const promptsToolChatEn = {
   // ── File tool ──
   fileToolTitle: '⚠️ Mandatory requirements for file-producing tools (highest priority)',
   fileToolDesc:
-    'When a tool needs to generate a file (Excel, PDF, CSV, ZIP, etc.), **the code must upload the file to MinIO and return a Presigned URL download link**.',
+    'When a tool needs to generate a file (Excel, PDF, CSV, ZIP, etc.), **the code must write the file into the `/root/io` directory and return its file name**; the platform automatically collects the files produced in that directory.',
   fileToolEnvDesc:
-    'The tool Pod already has MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_BUCKET, and MINIO_PUBLIC_URL environment variables pre-injected. They are available in both test and production environments — use them directly.',
+    'The `/root/io` directory (the unified file directory) is already mounted at runtime — just write the generated file there. No object storage upload and no download link are needed.',
   fileToolSdkDesc:
-    'JavaScript must import @aws-sdk/client-s3 and @aws-sdk/s3-request-presigner; Python must import boto3.',
+    'Use the standard library to write files (Python: open()/pathlib; JavaScript: node:fs). No object storage SDK is required.',
   fileToolReturnFormat:
-    'The return value must be { "文件名": "xx.xlsx", "下载链接": "http://...presigned-url...", "格式": "xlsx" }.',
+    'The return value must be { "文件名": "xx.xlsx", "格式": "xlsx" }, where "文件名" matches the name of the file written to `/root/io`.',
   fileToolForbiddenTitle: '**The following behaviors are strictly forbidden:**',
-  fileToolForbiddenItems: `- Returning a file path, base64 content, or anything other than a Presigned URL
-- Checking whether the MINIO environment variables exist and branching into a mock/fallback path (they always exist; no check is needed)
-- Producing fake or mock download links (e.g. placeholder URLs like http://minio.local/...)
+  fileToolForbiddenItems: `- Returning base64, raw file content, or anything other than the file name
+- Producing fake or mock download links / placeholder paths
 - Adding "test environment" vs "production environment" branching in the code
-- **Using Chinese or non-ASCII characters in the MinIO Object Key (file path)** (it will fail with "Object name contains unsupported characters"). Keys must only contain English letters, digits, underscores, and dashes. Chinese file names belong only in the "文件名" field of the return value.
-- **Extracting a file name from a URL via a direct split("/")** (Presigned URLs contain ?X-Amz-... query parameters; splitting drags them into the file name and produces an illegal Object Key). You must strip the query string first using urllib.parse.urlparse(url).path or new URL(url).pathname.`,
+- Writing the file anywhere other than \`/root/io\` (files written elsewhere are not collected)`,
 
   // ── Env var / secret ──
   envVarTitle: 'Environment variable (secret parameter) spec (extremely important)',

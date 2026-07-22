@@ -16,10 +16,8 @@
  *   - During SOP         → tool pods read/write files directly (NFS mount).
  *   - SOP end / cleanup  → {@link deleteSopFiles} removes the subdir.
  *
- * The legacy MinIO seed
- * ({@link copyConversationFilesToSopInputs}) still runs in parallel for
- * K8s tools with rclone sidecars — both paths carry the same bytes for
- * different consumers.
+ * This NFS workspace is now the sole seed path for SOP tool inputs; the old
+ * MinIO seed (file-workspace) was removed once all tools moved to NFS.
  */
 
 import fs from 'node:fs/promises'
@@ -38,14 +36,19 @@ export interface SopFileEntry {
 
 /**
  * Ensure `<bff-root>/sop-files/<Y>/<M>/<D>/<sopExecId>/` exists. Idempotent.
- * Called at SOP start before any tool invocation so the sandbox mount root's
- * per-SOP subdir is present even when no conversation files exist (tools may
- * still write outputs into it).
+ *
+ * Called lazily — only from the two points that genuinely need the dir:
+ *   - {@link seedFromConversationIoToSopFiles} when it has ≥1 input file to copy;
+ *   - `materializeMountedTools` when the node has a `needsFileMount` tool that
+ *     may write outputs (covers every trigger type, not just conversations).
+ * A file-free SOP hits neither, so it never allocates an empty per-execution
+ * dir. The log stays at debug so a file SOP produces one quiet line, not the
+ * two info lines the old unconditional-plus-seed double call emitted.
  */
 export async function allocateSopFiles(sopExecId: string): Promise<string> {
   const dir = paths.sopFiles.forBff(sopExecId)
   await fs.mkdir(dir, { recursive: true })
-  logger.info({ sopExecId, dir }, 'allocated sop-files dir')
+  logger.debug('allocated sop-files dir', { sopExecId, dir })
   return dir
 }
 
@@ -58,23 +61,40 @@ export async function allocateSopFiles(sopExecId: string): Promise<string> {
  * symmetric to the dev-studio test flow's session-io → sop-files seed in
  * `lib/dev-studio/io-sync.ts`.
  *
- * - Source missing (fresh conversation with no uploads) → no-op,
- *   `copied: 0`. Destination is still mkdir'd so tools that only produce
- *   outputs have a place to write.
+ * - Source missing or empty (fresh conversation with no uploads) → no-op,
+ *   `copied: 0`, and the destination dir is NOT created. A tool that only
+ *   produces outputs gets its dir from `materializeMountedTools` instead, so
+ *   a file-free SOP leaves no empty dir behind.
  * - One level deep — only regular files at the root of conv-io are seeded;
  *   subdirs ignored to keep `/root/io/<sopExecId>/...` flat.
  * - Destination collisions overwrite (last-writer-wins). Within one SOP
  *   that's the desired "tool A re-emits a file" behavior.
+ *
+ * `names` restricts the seed to the caller-supplied file names — the ones the
+ * user pointed at in their request (relayed verbatim by the LLM as
+ * `input_files`). Matching is done against the sanitized on-disk name so a
+ * name like `月 报.xlsx` still resolves to the stored `月_报.xlsx`. When
+ * `names` is omitted every root file is seeded (legacy whole-conversation
+ * behavior). An empty array seeds nothing.
  *
  * The conv-io side stays untouched on every run.
  */
 export async function seedFromConversationIoToSopFiles(
   convId: string,
   convCreatedAt: Date | string,
-  sopExecId: string
+  sopExecId: string,
+  names?: string[]
 ): Promise<{ copied: number; sopFilesDir: string }> {
   const srcDir = paths.conversationIo.forBff(convId, convCreatedAt)
-  const dstDir = await allocateSopFiles(sopExecId)
+  // Compute the destination path but do NOT create it yet — a seed that copies
+  // nothing must not leave an empty dir behind (lazy-create on first copy).
+  const dstDir = paths.sopFiles.forBff(sopExecId)
+
+  // When a name list is given, match against the same sanitization the upload
+  // path applies before writing to disk (file-storage.uploadConversationFile).
+  const wanted = names
+    ? new Set(names.map((n) => n.replace(/[^a-zA-Z0-9._\-一-鿿]/g, '_')))
+    : null
 
   let entries: string[]
   try {
@@ -88,18 +108,24 @@ export async function seedFromConversationIoToSopFiles(
 
   let copied = 0
   for (const name of entries) {
+    if (wanted && !wanted.has(name)) continue
     const srcFile = path.join(srcDir, name)
     const stat = await fs.stat(srcFile)
     if (!stat.isFile()) continue
+    // Allocate the dir only when there is a real file to place in it.
+    if (copied === 0) await allocateSopFiles(sopExecId)
     const dstFile = path.join(dstDir, name)
     await fs.copyFile(srcFile, dstFile)
     copied++
   }
 
-  logger.info(
-    { convId, sopExecId, copied, srcDir, dstDir },
-    'seeded sop-files from conversation io'
-  )
+  logger.info('seeded sop-files from conversation io', {
+    convId,
+    sopExecId,
+    copied,
+    srcDir,
+    dstDir,
+  })
 
   return { copied, sopFilesDir: dstDir }
 }
@@ -132,7 +158,7 @@ export async function listSopFiles(sopExecId: string): Promise<SopFileEntry[]> {
 export async function deleteSopFiles(sopExecId: string): Promise<void> {
   const dir = paths.sopFiles.forBff(sopExecId)
   await fs.rm(dir, { recursive: true, force: true })
-  logger.info({ sopExecId, dir }, 'deleted sop-files dir')
+  logger.info('deleted sop-files dir', { sopExecId, dir })
 }
 
 /**
@@ -161,7 +187,17 @@ export async function resolveUniqueName(
   sopExecId: string,
   candidateName: string
 ): Promise<string> {
-  const dir = paths.sopFiles.forBff(sopExecId)
+  return resolveUniqueNameIn(paths.sopFiles.forBff(sopExecId), candidateName)
+}
+
+/**
+ * Directory-scoped variant of {@link resolveUniqueName}: pick a name that does
+ * not collide with an existing file in `dir`, suffixing `name(2).ext`,
+ * `name(3).ext`, … Used both for the SOP workspace (via resolveUniqueName) and
+ * for the conversation dir when promoting deliverables, so two same-named
+ * outputs never clobber each other on disk.
+ */
+async function resolveUniqueNameIn(dir: string, candidateName: string): Promise<string> {
   const ext = path.extname(candidateName)
   const base = ext ? candidateName.slice(0, -ext.length) : candidateName
 
@@ -169,7 +205,7 @@ export async function resolveUniqueName(
   let attempt = candidateName
   let counter = 2
   // Cap at a sensible ceiling so a runaway loop on a stuck FS can't hang
-  // the tool call. 1000 collisions in one SOP is already pathological.
+  // the tool call. 1000 collisions in one dir is already pathological.
   const MAX_ATTEMPTS = 1000
   while (counter <= MAX_ATTEMPTS + 1) {
     try {
@@ -188,4 +224,110 @@ export async function resolveUniqueName(
   throw new Error(
     `resolveUniqueName: exhausted ${MAX_ATTEMPTS} attempts for ${candidateName} in ${dir}`
   )
+}
+
+/** Minimal extension → MIME map for promoted deliverables. */
+const MIME_BY_EXT: Record<string, string> = {
+  pdf: 'application/pdf',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  svg: 'image/svg+xml',
+  txt: 'text/plain',
+  csv: 'text/csv',
+  json: 'application/json',
+  xml: 'application/xml',
+  md: 'text/markdown',
+  html: 'text/html',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  zip: 'application/zip',
+}
+
+function guessMime(name: string): string {
+  const ext = name.split('.').pop()?.toLowerCase()
+  return (ext && MIME_BY_EXT[ext]) || 'application/octet-stream'
+}
+
+/** A deliverable file promoted from the SOP workspace into the conversation. */
+export interface ConversationAttachment {
+  /**
+   * Conversation-scoped key: `conversations/<convId>/<ts>_<onDiskName>`. Shaped
+   * so `getConversationFile` strips the `<ts>_` prefix and reads the file back
+   * from the conv-io NFS dir.
+   */
+  key: string
+  /** Original (display) filename as surfaced by the LLM. */
+  name: string
+  /** Bytes. */
+  size: number
+  /** MIME guessed from the extension. */
+  mimeType: string
+}
+
+/**
+ * Promote specific SOP output files from the NFS sop-files workspace into the
+ * conversation's persistent conv-io directory, so LLM-surfaced deliverables
+ * survive the 30-day SOP-workspace cleanup and get a stable, conversation-
+ * scoped download URL.
+ *
+ * dev-studio / opensandbox tools write outputs to NFS, so this is the sole
+ * deliverables promotion path; a file NOT found on NFS is skipped (its URL is
+ * simply left un-rewritten in the message).
+ *
+ * The on-disk destination name is de-duplicated against the conv-io dir so two
+ * deliverables named `output(2).png` (from two separate SOP executions in the
+ * same conversation) land as `output(2).png` and `output(2)(2).png` rather than
+ * clobbering each other — the conv-io read path is name-addressed, not
+ * timestamp-addressed.
+ */
+export async function promoteSopFilesToConversation(
+  sopExecId: string,
+  convId: string,
+  convCreatedAt: Date | string,
+  fileNames: string[]
+): Promise<ConversationAttachment[]> {
+  if (fileNames.length === 0) return []
+  const srcDir = paths.sopFiles.forBff(sopExecId)
+  const dstDir = paths.conversationIo.forBff(convId, convCreatedAt)
+  const out: ConversationAttachment[] = []
+
+  for (const rawName of fileNames) {
+    // The name came from LLM message text; reject path escapes defensively.
+    if (rawName.includes('/') || rawName.includes('\\') || rawName.includes('..')) continue
+
+    const srcFile = path.join(srcDir, rawName)
+    let size: number
+    try {
+      const stat = await fs.stat(srcFile)
+      if (!stat.isFile()) continue
+      size = stat.size
+    } catch (e) {
+      // Missing on NFS (e.g. a legacy K8s tool that only pushed to MinIO) →
+      // skip so the caller falls back to the MinIO copy.
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue
+      throw e
+    }
+
+    await fs.mkdir(dstDir, { recursive: true })
+    const uniqueName = await resolveUniqueNameIn(dstDir, rawName)
+    await fs.copyFile(srcFile, path.join(dstDir, uniqueName))
+    out.push({
+      key: `conversations/${convId}/${Date.now()}_${uniqueName}`,
+      name: rawName,
+      size,
+      mimeType: guessMime(rawName),
+    })
+  }
+
+  logger.info('promoted sop-files to conversation', {
+    sopExecId,
+    convId,
+    requested: fileNames.length,
+    copied: out.length,
+  })
+  return out
 }

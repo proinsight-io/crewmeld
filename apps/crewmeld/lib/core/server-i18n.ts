@@ -563,6 +563,10 @@ const messages = {
     en: 'Collaborator "{name}" has no contact method configured',
   },
   sopValidatorNoNotifyMethod: { zh: '未选择通知方式', en: 'No notification method selected' },
+  sopValidatorNotifyMethodMissing: {
+    zh: '协作人员「{name}」的部分已选通知方式对应的联系方式已不存在，请重新选择',
+    en: 'Some selected notification methods for collaborator "{name}" no longer match an existing contact; please reselect',
+  },
   sopNodeTypeEmployee: { zh: '数字员工', en: 'Digital Employee' },
   sopNodeTypeHuman: { zh: '协作人员', en: 'Collaborator' },
   sopNodeTypeHumanConfirm: { zh: '人工确认', en: 'Manual Confirmation' },
@@ -706,6 +710,10 @@ const messages = {
   convSopToolDesc: {
     zh: '启动标准操作流程「{name}」。当用户提出与此流程相关的任务时，调用此工具执行。',
     en: 'Start standard operating procedure "{name}". Call this tool when the user requests a task related to this procedure.',
+  },
+  convSopInputFilesParam: {
+    zh: '本次任务要用到的文件名列表（来自用户消息中点名的文件，例如"根据 a.pdf 和 模板.pptx 生成"）。需包含用户提到但在更早消息里上传过的文件（如复用的模板）；文件名请与用户所述及历史附件保持一致。留空则默认使用当前这条消息附带的文件。',
+    en: 'List of file names to use for this task, taken from the files the user named in their message (e.g. "generate from a.pdf and template.pptx"). Include files the user refers to that were uploaded in earlier messages (e.g. a reused template); match the names to what the user said and to prior attachments. Leave empty to default to the files attached to the current message.',
   },
   sopNoPermission: {
     zh: '您没有权限执行该任务【{name}】',

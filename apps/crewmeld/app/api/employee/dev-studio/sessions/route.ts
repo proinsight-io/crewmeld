@@ -2,7 +2,7 @@
  * Sessions collection endpoints.
  *
  * - POST: create the host workspace, persist a `tool_dev_sessions` row, then
- *   spawn the OpenSandbox container with two bind mounts (workspace + claude
+ *   spawn the OpenSandbox container with two bind mounts (workspace + coder
  *   state). On failure the row is preserved with `containerStatus='destroyed'`
  *   so it still shows up in the user's session list.
  * - GET: list the current user's sessions filtered by status (sub-spec B §5).
@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { createLogger } from '@crewmeld/logger'
 import { getCurrentUserRole } from '@/lib/auth/rbac/check-role'
+import { getCoderProvider } from '@/lib/dev-studio/coder-providers'
 import { getDevStudioEnv } from '@/lib/dev-studio/env'
 import { resolveModelEnv } from '@/lib/dev-studio/model-resolver'
 import { OpenSandboxClient } from '@/lib/dev-studio/opensandbox-client'
@@ -21,22 +22,6 @@ import { type SessionStatus, sessionStore } from '@/lib/dev-studio/session-store
 const log = createLogger('dev-studio:sessions')
 
 const KNOWN_STATUSES = new Set<SessionStatus>(['active', 'adopted', 'archived'])
-
-/**
- * Builds the container entrypoint. When a pip index mirror is configured,
- * wraps `claude-code-webui` in `/bin/sh -c` and writes /root/.pip/pip.conf
- * before exec'ing the server. Otherwise launches the binary directly.
- *
- * Values are wrapped in single quotes; URLs/hostnames can't contain a
- * single quote so this is safe.
- */
-function buildEntrypoint(pipIndexUrl: string | undefined): string[] {
-  const launch = 'exec claude-code-webui --host 0.0.0.0 --port 8080'
-  if (!pipIndexUrl) return ['claude-code-webui', '--host', '0.0.0.0', '--port', '8080']
-  const trustedHost = new URL(pipIndexUrl).host
-  const setup = `mkdir -p /root/.pip && printf '[global]\\nindex-url=%s\\ntrusted-host=%s\\n' '${pipIndexUrl}' '${trustedHost}' > /root/.pip/pip.conf`
-  return ['/bin/sh', '-c', `${setup} && ${launch}`]
-}
 
 function errorResponse(
   status: number,
@@ -52,35 +37,20 @@ function errorResponse(
 }
 
 /**
- * Slug the volume name from a UUID. OpenSandbox requires DNS-label-safe names;
- * a v4 UUID already qualifies but we belt-and-brace lowercase + clamp length.
- */
-function volumeNameFor(prefix: string, sessionId: string): string {
-  const safe = sessionId.replace(/[^a-z0-9-]/gi, '').toLowerCase()
-  return `${prefix}-${safe.slice(0, 56)}`
-}
-
-/**
  * POST /api/employee/dev-studio/sessions
  *
  * Lifecycle:
  *  1. Authenticate; reject 401 if no session.
- *  2. Allocate sessionId and host paths (`workspace/`, `claude/`).
- *  3. mkdir both host subdirectories — atomic precondition for the bind mounts.
+ *  2. Resolve coderType from env (claudecode or opencode) and select the provider.
+ *  3. Allocate sessionId and materialise host directories for the provider's mounts.
  *  4. Persist a row in `tool_dev_sessions` with `containerStatus='creating'`.
  *     The row is preserved on any subsequent failure so the user still sees
  *     the session in their list and can rehydrate / archive it later.
- *  5. Spawn the OpenSandbox container with two host bind mounts:
- *       - `<host>/workspace` → `/root/workspace`        (code lives here)
- *       - `<host>/claude`    → `/root/.claude/projects` (SDK resume state)
- *     The claude mount is intentionally scoped to the `projects` subdirectory
- *     so the image's own `/root/.claude/{plugins,settings.json,CLAUDE.md,...}`
- *     stay visible (Docker bind mounts REPLACE, not overlay, the mount point).
- *     `projects` is where the SDK writes per-conversation jsonl state, so
- *     persisting just that subtree gives us cross-container resume without
- *     trampling the image's preinstalled plugins or permission config.
- *  6. Wait for Running, fetch the webui endpoint, then patch the row with
- *     `activeContainerId` + `containerStatus='running'`.
+ *  5. Spawn the OpenSandbox container via the provider's image/entrypoint/mounts.
+ *     - claudecode: workspace + /root/.claude/projects
+ *     - opencode: workspace + /root/.local/share/opencode
+ *  6. Wait for Running, fetch the webui endpoint (provider.port), then patch the
+ *     row with `activeContainerId` + `containerStatus='running'`.
  *
  * Errors:
  *  - mkdir failure → 500, no DB write.
@@ -146,25 +116,32 @@ export async function POST(req: Request): Promise<Response> {
   })
 
   // 0. Pre-allocate the host paths using a fresh UUID, then persist the row.
-  // The row's primary key is the same UUID, so the workspace path, claude
-  // projects path, bind-mount labels and the DB row all share one identifier.
+  // The row's primary key is the same UUID, so the workspace path, coder
+  // state path, bind-mount labels and the DB row all share one identifier.
   // Paths are derived from the cross-platform `paths` facade: forBff() gives
   // the local NFS-mount path (used for mkdir / DB debug column), forSandbox()
   // gives the Linux path the OpenSandbox host uses for bind mounts.
-  // Note: `claudeStateDir` is the host end of the `/root/.claude/projects`
-  // mount — historically named "state dir" before we narrowed the mount.
+  const coderType = env.CREWMELD_CODER_DEFAULT
+  const provider = getCoderProvider(coderType)
+
   const sessionId = randomUUID()
   const workspaceBffPath = paths.sessionWorkspace.forBff(sessionId)
-  const claudeBffPath = paths.sessionClaude.forBff(sessionId)
-  const workspaceSandboxPath = paths.sessionWorkspace.forSandbox(sessionId)
-  const claudeSandboxPath = paths.sessionClaude.forSandbox(sessionId)
+  // claudeStateDir satisfies the NOT NULL constraint; for opencode we store
+  // the opencode-data BFF path so the column has a meaningful value.
+  const coderStateBffPath =
+    coderType === 'opencode'
+      ? paths.sessionOpencodeData.forBff(sessionId)
+      : paths.sessionClaude.forBff(sessionId)
 
   // 1. Materialise host directories BEFORE spawning the container so bind
   // mounts land on existing paths (otherwise OpenSandbox may auto-create with
-  // wrong perms or refuse).
+  // wrong perms or refuse). Directories depend on which coder is active.
+  const bffDirs =
+    coderType === 'opencode'
+      ? [workspaceBffPath, paths.sessionOpencodeData.forBff(sessionId)]
+      : [workspaceBffPath, paths.sessionClaude.forBff(sessionId)]
   try {
-    await mkdir(workspaceBffPath, { recursive: true })
-    await mkdir(claudeBffPath, { recursive: true })
+    for (const d of bffDirs) await mkdir(d, { recursive: true })
   } catch (e) {
     return errorResponse(
       500,
@@ -182,56 +159,53 @@ export async function POST(req: Request): Promise<Response> {
   const session = await sessionStore.create({
     id: sessionId,
     userId,
+    coderType,
     workspaceDir: workspaceBffPath,
-    claudeStateDir: claudeBffPath,
+    claudeStateDir: coderStateBffPath,
     containerStatus: 'creating',
     modelConfigId,
     modelName: modelEnv.displayLabel,
   })
 
-  // 3. Create sandbox with two host bind mounts. Helper: if the call fails we
-  // mark the row destroyed and propagate a uniform error response.
+  // 3. Create sandbox using the provider's image/entrypoint/mounts. If the
+  // call fails we mark the row destroyed and propagate a uniform error response.
+  const modelEnvBlock = {
+    ANTHROPIC_AUTH_TOKEN: modelEnv.ANTHROPIC_AUTH_TOKEN,
+    ANTHROPIC_BASE_URL: modelEnv.ANTHROPIC_BASE_URL,
+    ANTHROPIC_MODEL: modelEnv.ANTHROPIC_MODEL,
+    ANTHROPIC_SMALL_FAST_MODEL: modelEnv.ANTHROPIC_SMALL_FAST_MODEL,
+    ...(modelEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL
+      ? { ANTHROPIC_DEFAULT_HAIKU_MODEL: modelEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL }
+      : {}),
+    ...(modelEnv.ANTHROPIC_DEFAULT_SONNET_MODEL
+      ? { ANTHROPIC_DEFAULT_SONNET_MODEL: modelEnv.ANTHROPIC_DEFAULT_SONNET_MODEL }
+      : {}),
+    ...(modelEnv.ANTHROPIC_DEFAULT_OPUS_MODEL
+      ? { ANTHROPIC_DEFAULT_OPUS_MODEL: modelEnv.ANTHROPIC_DEFAULT_OPUS_MODEL }
+      : {}),
+    API_TIMEOUT_MS: '600000',
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+  }
   let sandbox: { id: string }
   try {
     sandbox = await client.createSandbox({
-      image: env.CREWMELD_SANDBOX_IMAGE,
-      entrypoint: buildEntrypoint(env.CREWMELD_PIP_INDEX_URL),
+      image: provider.image(env),
+      entrypoint: provider.buildEntrypoint({ env, pipIndexUrl: env.CREWMELD_PIP_INDEX_URL }),
       resourceLimits: {
         cpu: env.CREWMELD_SANDBOX_CPU,
         memory: env.CREWMELD_SANDBOX_MEMORY,
       },
       timeoutSeconds: env.CREWMELD_SANDBOX_TTL_SECONDS,
       env: {
-        ANTHROPIC_AUTH_TOKEN: modelEnv.ANTHROPIC_AUTH_TOKEN,
-        ANTHROPIC_BASE_URL: modelEnv.ANTHROPIC_BASE_URL,
-        ANTHROPIC_MODEL: modelEnv.ANTHROPIC_MODEL,
-        ANTHROPIC_SMALL_FAST_MODEL: modelEnv.ANTHROPIC_SMALL_FAST_MODEL,
-        ...(modelEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL
-          ? { ANTHROPIC_DEFAULT_HAIKU_MODEL: modelEnv.ANTHROPIC_DEFAULT_HAIKU_MODEL }
+        ...modelEnvBlock,
+        ...(provider.id === 'opencode' && env.OPENCODE_SERVER_PASSWORD
+          ? {
+              OPENCODE_SERVER_PASSWORD: env.OPENCODE_SERVER_PASSWORD,
+              OPENCODE_PORT: String(env.OPENCODE_PORT),
+            }
           : {}),
-        ...(modelEnv.ANTHROPIC_DEFAULT_SONNET_MODEL
-          ? { ANTHROPIC_DEFAULT_SONNET_MODEL: modelEnv.ANTHROPIC_DEFAULT_SONNET_MODEL }
-          : {}),
-        ...(modelEnv.ANTHROPIC_DEFAULT_OPUS_MODEL
-          ? { ANTHROPIC_DEFAULT_OPUS_MODEL: modelEnv.ANTHROPIC_DEFAULT_OPUS_MODEL }
-          : {}),
-        API_TIMEOUT_MS: '600000',
-        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
       },
-      volumes: [
-        {
-          name: volumeNameFor('ws', sessionId),
-          hostPath: workspaceSandboxPath,
-          mountPath: '/root/workspace',
-          readOnly: false,
-        },
-        {
-          name: volumeNameFor('cl', sessionId),
-          hostPath: claudeSandboxPath,
-          mountPath: '/root/.claude/projects',
-          readOnly: false,
-        },
-      ],
+      volumes: provider.mounts(sessionId),
       metadata: { 'crewmeld.purpose': 'dev', 'crewmeld.session-id': sessionId },
     })
   } catch (e) {
@@ -259,7 +233,7 @@ export async function POST(req: Request): Promise<Response> {
   // 5. Resolve webui endpoint. Same recovery pattern as above.
   let webuiUrl: string
   try {
-    webuiUrl = await client.getEndpoint(sandbox.id, 8080)
+    webuiUrl = await client.getEndpoint(sandbox.id, provider.port)
   } catch (e) {
     client.destroy(sandbox.id).catch(() => {})
     await sessionStore

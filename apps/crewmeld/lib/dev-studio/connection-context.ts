@@ -13,6 +13,33 @@
  * real values into the test-run sandbox.
  */
 
+/** One system connection as returned by `GET /connectors?withConfig=true`. */
+export interface ConnectionEntry {
+  id: string
+  name: string
+  type: string
+  /** Masked config preview — keys are real, values are masked/safe. */
+  configPreview?: Record<string, unknown>
+}
+
+/**
+ * Fetch the operator's system connections along with their masked config
+ * previews. Returns an empty list on any failure: callers treat a failed
+ * request and "no such connection" identically — there is simply no connection
+ * context to surface to the model.
+ */
+export async function fetchConnectionEntries(): Promise<ConnectionEntry[]> {
+  try {
+    const res = await fetch('/api/employee/connectors?withConfig=true')
+    if (!res.ok) return []
+    const json = (await res.json()) as { data?: { connections?: ConnectionEntry[] } }
+    const list = json.data?.connections
+    return Array.isArray(list) ? list : []
+  } catch {
+    return []
+  }
+}
+
 /** Metadata about a chosen connection, forwarded by the connection pickers. */
 export interface ConnectionSelectionInfo {
   /** Human-friendly connection name (shown to the operator + the model). */

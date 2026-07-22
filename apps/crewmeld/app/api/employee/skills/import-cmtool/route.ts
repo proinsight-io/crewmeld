@@ -19,7 +19,6 @@
  */
 import crypto from 'node:crypto'
 import fs from 'node:fs/promises'
-import { PutObjectCommand } from '@aws-sdk/client-s3'
 import { db, toolInstances, tools } from '@crewmeld/db'
 import { createLogger } from '@crewmeld/logger'
 import { eq } from 'drizzle-orm'
@@ -34,12 +33,7 @@ import { syncZipToCode } from '@/lib/dev-studio/code-sync'
 import { AdoptError, prewarmDependencies } from '@/lib/dev-studio/dependency-prewarmer'
 import { convertManifestToTool } from '@/lib/dev-studio/manifest-to-tool'
 import { paths } from '@/lib/dev-studio/paths'
-import {
-  ensureToolPackagesBucket,
-  MAX_ZIP_SIZE_BYTES,
-  TOOL_PACKAGES_BUCKET,
-} from '@/lib/dev-studio/packager'
-import { getMinioClient } from '@/lib/storage/minio-client'
+import { MAX_ZIP_SIZE_BYTES } from '@/lib/dev-studio/packager'
 import type { SkillPackage } from '@/app/(employee)/skills/types'
 
 const logger = createLogger('import-cmtool')
@@ -105,29 +99,10 @@ async function _POST(request: NextRequest) {
     return apiErr('api.skill.importManifestInvalid', { status: 400 })
   }
 
-  // Upload zip to MinIO. Key namespaced under `imported/` so it doesn't
-  // collide with dev-studio session keys (`<sessionId>/<sha>.cmtool`).
-  const s3Key = `imported/${sha256}.cmtool`
-  try {
-    await ensureToolPackagesBucket()
-    await getMinioClient().send(
-      new PutObjectCommand({
-        Bucket: TOOL_PACKAGES_BUCKET,
-        Key: s3Key,
-        Body: zipBytes,
-        ContentType: 'application/zip',
-      })
-    )
-  } catch (err) {
-    logger.error({ err: (err as Error).message }, 'minio upload failed')
-    return apiErr('api.skill.importFailed', { status: 500 })
-  }
-
-  // Build tool record from manifest (reuses adopt-handler conversion).
-  // After NFS migration `convertManifestToTool` no longer accepts a MinIO
-  // s3Key; the import-cmtool flow still writes the zip to MinIO for the
-  // legacy skills routes that consume it, but the tools row only carries
-  // packageSha256. createdBy is supplied here by the caller.
+  // Build tool record from manifest (reuses adopt-handler conversion). The
+  // tools row only carries packageSha256; the deployable code lives on NFS
+  // (syncZipToCode below), so no MinIO archive is written. createdBy is
+  // supplied here by the caller.
   const toolData = convertManifestToTool({ manifest, sha256 })
 
   const toolId = nanoid()

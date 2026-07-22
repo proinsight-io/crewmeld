@@ -26,8 +26,12 @@
 import { db, toolDevPendingActions } from '@crewmeld/db'
 import { and, eq, inArray } from 'drizzle-orm'
 import { getCurrentUserRole } from '@/lib/auth/rbac/check-role'
+import { getCoderProvider } from '@/lib/dev-studio/coder-providers'
 import { normalizeName } from '@/lib/dev-studio/dependency-spec'
+import { getDevStudioEnv } from '@/lib/dev-studio/env'
 import { readManifestFromSession } from '@/lib/dev-studio/manifest-reader'
+import { listOpencodeQuestions } from '@/lib/dev-studio/opencode-rest'
+import { OpenSandboxClient } from '@/lib/dev-studio/opensandbox-client'
 import { sessionStore } from '@/lib/dev-studio/session-store'
 import { messages } from '@/locales'
 import { resolveLocale } from '@/lib/i18n/server-locale'
@@ -58,6 +62,16 @@ interface AskNotification {
 function difference(manifestList: string[], approvedList: string[]): string[] {
   const approved = new Set(approvedList)
   return manifestList.filter((entry) => !approved.has(entry))
+}
+
+/**
+ * Pull a human-readable summary out of an opencode pending-question request's
+ * first question, for the notify-only corner card. Falls back through
+ * `question` → `header` → a generic label so the card never renders blank.
+ */
+function summarizeOpencodeQuestion(questions: unknown[], fallback: string): string {
+  const first = questions[0] as { question?: string; header?: string } | undefined
+  return first?.question ?? first?.header ?? fallback
 }
 
 export async function GET(req: Request): Promise<Response> {
@@ -136,6 +150,51 @@ export async function GET(req: Request): Promise<Response> {
       payload: r.payload,
       streaming: sessionStore.hasActiveStreaming(r.sessionId),
     }))
+  }
+
+  // Pending opencode questions: these live in the opencode server (not the
+  // pending-actions table), so a backgrounded opencode session would otherwise
+  // never surface a corner card. Fetch them per opencode session and append as
+  // notify-only asks routing into the workbench, mirroring the claude flow.
+  const opencodeSessions = sessions.filter(
+    (s) => s.coderType === 'opencode' && s.activeContainerId && s.opencodeSessionId
+  )
+  if (opencodeSessions.length > 0) {
+    const env = getDevStudioEnv()
+    const provider = getCoderProvider('opencode')
+    const client = new OpenSandboxClient({
+      serverUrl: env.OPENSANDBOX_SERVER_URL,
+      apiKey: env.OPENSANDBOX_API_KEY,
+      useProxy: env.OPENSANDBOX_USE_PROXY,
+    })
+    const questionEntries = await Promise.all(
+      opencodeSessions.map(async (s): Promise<AskNotification[]> => {
+        try {
+          // activeContainerId narrowed by the filter above.
+          const baseUrl = await client.getEndpoint(s.activeContainerId as string, provider.port)
+          const headers: Record<string, string> = {
+            ...(provider.authHeader(env) ?? {}),
+            ...client.proxyHeaders(),
+          }
+          const all = await listOpencodeQuestions(baseUrl, headers)
+          return all
+            .filter((q) => q.sessionID === s.opencodeSessionId)
+            .map((q) => ({
+              sessionId: s.id,
+              sessionTitle: s.title ?? DEFAULT_TITLE,
+              askId: q.id,
+              type: 'opencode-question',
+              payload: { question: summarizeOpencodeQuestion(q.questions, DEFAULT_TITLE) },
+              streaming: sessionStore.hasActiveStreaming(s.id),
+            }))
+        } catch {
+          // An unreachable sandbox / transient opencode error must not break the
+          // whole notifications payload — treat it as "no pending questions".
+          return []
+        }
+      })
+    )
+    asks = asks.concat(questionEntries.flat())
   }
 
   return Response.json({ dependencies, asks })

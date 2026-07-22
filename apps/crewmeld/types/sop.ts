@@ -24,7 +24,12 @@ export interface SopNode {
   useKnowledgeBase?: boolean
   description?: string
   timeoutMinutes?: number
-  /** Approval notification method (multi-platform, from collaborator contact method types, default ['email']) */
+  /**
+   * Approval notification methods (multi-platform). Each entry is either a
+   * specific contact encoded as `"type:value"` (e.g. `"feishu:ou_abc"`), or a
+   * legacy bare contact type (e.g. `"feishu"`) meaning all contacts of that
+   * type. Defaults to the collaborator's email (or first) contact.
+   */
   notifyMethod?: string | string[]
   /** Approver list (human_confirm nodes support multiple approvers, First-Wins) */
   approvers?: string[]
@@ -275,7 +280,11 @@ export interface NotificationJobPayload {
   recipientName: string
   approvalToken: string
   messageTemplate: string
-  /** Notification method selected in SOP editor (multi-platform, e.g. ['email', 'feishu']) */
+  /**
+   * Notification methods selected in the SOP editor (multi-platform). Each entry
+   * is a specific `"type:value"` contact key or a legacy bare type (all contacts
+   * of that type), e.g. `['email:a@b.com', 'feishu']`.
+   */
   notifyMethod?: string | string[]
   /** Digital employee ID that triggered the conversation (for looking up bound channel connections, avoiding cross-app) */
   sourceEmployeeId?: string

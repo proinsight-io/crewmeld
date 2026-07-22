@@ -9,10 +9,17 @@ import { useTranslation } from '@/hooks/use-translation'
 
 const NOTIFICATIONS_URL = '/api/employee/dev-studio/notifications'
 
+/** A single dependency-review library row, as returned by `GET /sessions/:id/dependencies`. */
+export interface ReviewLibrary {
+  name: string
+  version: string
+  raw: string
+}
+
 /** Payload from `GET /sessions/:id/dependencies`. */
-interface ReviewPayload {
-  libraries: Array<{ name: string; version: string; raw: string }>
-  pendingLibraries: Array<{ name: string; version: string; raw: string }>
+export interface ReviewPayload {
+  libraries: ReviewLibrary[]
+  pendingLibraries: ReviewLibrary[]
   domains: string[]
   globals: string[]
   needsReview: boolean
@@ -20,7 +27,7 @@ interface ReviewPayload {
 
 interface CardProps {
   /** Pending (non-global, unapproved) libraries needing approval. */
-  libraries: Array<{ name: string; version: string; raw: string }>
+  libraries: ReviewLibrary[]
   /** Pending domains (read-only). */
   domains: string[]
   busy: boolean

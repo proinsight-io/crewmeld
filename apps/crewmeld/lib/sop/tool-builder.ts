@@ -12,6 +12,7 @@ import type { SkillPackage } from '@/app/(employee)/skills/types'
 import type { OpenAITool } from '@/lib/conversation/types'
 import { t } from '@/lib/core/server-i18n'
 import type { ApiToolSpec } from '@/lib/tools/api-tool-types'
+import { allocateSopFiles } from './sop-files-workspace'
 
 const logger = createLogger('SopToolBuilder')
 
@@ -295,6 +296,17 @@ export async function materializeMountedTools(
   const deployed: Array<{ toolName: string; skillId: string; instanceId: string }> = []
   let k8sModule: typeof import('@/lib/k8s/deploy-skill') | null = null
   let dbModule: typeof import('@crewmeld/db') | null = null
+
+  // Lazily create the SOP's NFS sop-files dir the moment we know a
+  // needsFileMount tool (service-mounted OR ephemeral script) is in play, so a
+  // tool can write outputs into it. This is the only creation point that runs
+  // for EVERY trigger type (conversation / schedule / webhook) — a file-free
+  // SOP never reaches it and so never allocates an empty dir. Idempotent with
+  // the conv-io seed's own mkdir when input files were also present.
+  const hasMountedTool = [...endpointMap.values()].some((info) => info.needsFileMount === true)
+  if (hasMountedTool) {
+    await allocateSopFiles(sopExecutionId)
+  }
 
   for (const [toolName, info] of endpointMap) {
     if (!info.needsFileMount || !info.skill) continue

@@ -1478,6 +1478,7 @@ export const en: LooseMessages = {
     nodeConfigApproverSelfHint:
       "The card is sent back to whoever triggered this flow (resolved from their Feishu/DingTalk/WeCom channel identity) — no need to pick a person. When the channel identity can't be resolved, it falls back to the collaborator below.",
     nodeConfigFallbackApprover: 'Fallback approver (optional)',
+    nodeConfigNoFallbackApprover: 'None (no fallback approver)',
     nodeConfigSelectHuman: 'Select Collaborator',
     nodeConfigNotifyMethod: 'Approval Notification',
     nodeConfigNotifySelected: '({count} platforms selected)',
@@ -2296,6 +2297,8 @@ export const en: LooseMessages = {
     formSaving: 'Saving...',
     contactPlaceholder: 'Enter contact info',
     addContact: 'Add Contact',
+    contactDuplicate: 'This channel is already added',
+    formContactDuplicate: 'Duplicate contact channel — do not add the same channel twice',
   },
 
   // ── Skills ──
@@ -3509,6 +3512,8 @@ You are a general-purpose intelligent assistant that can handle various daily wo
       wecomFieldsMissing: 'WeCom channel requires corpId, corpSecret, agentId',
       invalidParams: 'Missing parameters',
       typeUnsupported: 'Unsupported channel type: {type}',
+      duplicateCredential:
+        'A channel with the same credentials (identical API Key and Secret) already exists — it cannot be added again. Edit the existing channel instead.',
     },
     sop: {
       notFound: 'SOP not found',
@@ -4191,6 +4196,9 @@ You are a general-purpose intelligent assistant that can handle various daily wo
         connecting: 'Connecting…',
         working: 'Working…',
         errorPrefix: 'Error: ',
+        retrying: 'Model busy — retrying automatically…',
+        retryAttempt: 'Retry {attempt}',
+        retryCountdown: 'Retrying in {seconds}s',
       },
       error: {
         unknown: 'The opencode session hit an unknown error',
@@ -4399,7 +4407,6 @@ You are a general-purpose intelligent assistant that can handle various daily wo
     },
     adopt: {
       button: 'Adopt',
-      gatedHint: 'Approve dependencies in the chat first',
       confirmTitle: 'Adopt this tool?',
       confirmBody:
         'Adopting destroys the runtime container and archives the session. You can still view it later. This action is irreversible.',
@@ -4411,6 +4418,13 @@ You are a general-purpose intelligent assistant that can handle various daily wo
       registered: 'Tool registered',
       goToSkills: 'Go to Skills to deploy',
       needsRedeploy: 'Tool updated. Please redeploy instances for changes to take effect.',
+    },
+    dependencyGate: {
+      title: 'Auto-approve dependencies?',
+      hint: 'This tool still has AI-declared library / domain dependencies pending approval. Auto-approve them and continue adopting?',
+      confirm: 'Approve & continue',
+      cancel: 'Cancel',
+      failed: 'Approval failed, please retry',
     },
     session: {
       newIteration: 'New iteration',

@@ -37,10 +37,15 @@ import { db, toolDevMessages, toolDevPendingActions } from '@crewmeld/db'
 import { createLogger } from '@crewmeld/logger'
 import { and, desc, eq } from 'drizzle-orm'
 import { getCurrentUserRole } from '@/lib/auth/rbac/check-role'
+import type { ConnectionEnvKeyInfo } from '@/lib/connectors/resolve-conn-env'
+import { resolveConnectionEnvKeys } from '@/lib/connectors/resolve-conn-env'
 import { AskExtractor } from '@/lib/dev-studio/ask-extractor'
+import { getCoderProvider } from '@/lib/dev-studio/coder-providers'
 import { getDevStudioEnv } from '@/lib/dev-studio/env'
 import { FileActivityDetector } from '@/lib/dev-studio/file-activity-detector'
+import { createOpencodeSession, promptOpencodeAsync } from '@/lib/dev-studio/opencode-rest'
 import { OpenSandboxClient } from '@/lib/dev-studio/opensandbox-client'
+import { getOpencodeStudioInstructions } from '@/lib/dev-studio/persona-extensions'
 import { detectPhase } from '@/lib/dev-studio/phase-detector'
 import { MarkerExtractor } from '@/lib/dev-studio/phase-marker-extractor'
 import { mergePipelineUnion } from '@/lib/dev-studio/pipeline-union'
@@ -50,9 +55,61 @@ import type { SessionRecord } from '@/lib/dev-studio/session-store'
 import { sessionStore } from '@/lib/dev-studio/session-store'
 import { createNDJSONInterceptor } from '@/lib/dev-studio/webui-proxy'
 import { resolveLocale } from '@/lib/i18n/server-locale'
+import type { Locale } from '@/locales'
 import { messages as locales } from '@/locales'
 
 const log = createLogger('dev-studio:chat')
+
+/**
+ * Write the opencode workspace instructions to `/root/workspace/AGENTS.md`,
+ * including the bound connection's real `CONN_*` variable names.
+ *
+ * Called before every opencode prompt rather than once per session: opencode
+ * re-reads AGENTS.md on each prompt, so rewriting it is what lets a connection
+ * bound — or swapped — after the first message reach the model. Rewriting every
+ * turn also keeps the file correct without tracking which connection it was
+ * last written for.
+ *
+ * Best-effort by design: any failure leaves whatever the file already held and
+ * never fails the turn. It is awaited rather than fire-and-forget only for
+ * ordering — the caller's prompt would otherwise race this write and could be
+ * served against the previous content.
+ */
+async function writeOpencodeAgentsMd(args: {
+  client: OpenSandboxClient
+  sandboxId: string
+  sessionId: string
+  connectionId: string | null | undefined
+  locale: Locale
+}): Promise<void> {
+  let conn: ConnectionEnvKeyInfo | undefined
+  if (args.connectionId) {
+    try {
+      conn = await resolveConnectionEnvKeys(args.connectionId)
+    } catch (err) {
+      // Omit the section rather than emit one naming no variables — an empty
+      // list reads to the model as "this connection injects nothing", which is
+      // worse than falling back to the generic CONN_* guidance.
+      log.warn('opencode: bound connection unresolved; AGENTS.md omits the connection section', {
+        err: String(err),
+        sessionId: args.sessionId,
+        connectionId: args.connectionId,
+      })
+    }
+  }
+  try {
+    await args.client.exec({
+      sandboxId: args.sandboxId,
+      cmd: ['sh', '-c', 'mkdir -p /root/workspace && cat > /root/workspace/AGENTS.md'],
+      stdin: getOpencodeStudioInstructions(args.locale, conn),
+    })
+  } catch (err) {
+    log.warn('opencode: failed to write AGENTS.md; turn continues without workspace instructions', {
+      err: String(err),
+      sessionId: args.sessionId,
+    })
+  }
+}
 
 interface RouteContext {
   params: Promise<{ sessionId: string }>
@@ -324,7 +381,9 @@ export async function POST(req: Request, ctx: RouteContext): Promise<Response> {
   if (!session || session.userId !== auth.userId) {
     return new Response('Not Found', { status: 404 })
   }
-  if (!session.activeContainerId) {
+  // For claudecode sessions, a missing container is a 409 (caller must rehydrate first).
+  // Opencode sessions handle their container check inside the opencode branch below.
+  if (session.coderType !== 'opencode' && !session.activeContainerId) {
     return new Response(
       JSON.stringify({
         error: 'no-active-container',
@@ -367,9 +426,12 @@ export async function POST(req: Request, ctx: RouteContext): Promise<Response> {
           )
         )
       for (const row of answered) {
-        const val = row.answer && typeof row.answer === 'object' && 'value' in (row.answer as Record<string, unknown>)
-          ? (row.answer as { value: unknown }).value
-          : row.answer
+        const val =
+          row.answer &&
+          typeof row.answer === 'object' &&
+          'value' in (row.answer as Record<string, unknown>)
+            ? (row.answer as { value: unknown }).value
+            : row.answer
         notes.push(`<answer id="${row.askId}">${JSON.stringify(val)}</answer>`)
         await db
           .update(toolDevPendingActions)
@@ -427,12 +489,86 @@ export async function POST(req: Request, ctx: RouteContext): Promise<Response> {
     useProxy: env.OPENSANDBOX_USE_PROXY,
   })
 
+  // ── opencode branch ─────────────────────────────────────────────────────────
+  // opencode sessions use a REST+SSE transport instead of the claudecode NDJSON
+  // stream. History lives exclusively in opencode.db — we MUST NOT write to
+  // tool_dev_messages here.
+  if (session.coderType === 'opencode') {
+    const provider = getCoderProvider('opencode')
+    if (!session.activeContainerId) {
+      return new Response(
+        JSON.stringify({
+          error: 'sandbox-unreachable',
+          detail: 'no active container',
+          retryable: false,
+        }),
+        { status: 502, headers: { 'content-type': 'application/json' } }
+      )
+    }
+    let baseUrl: string
+    try {
+      baseUrl = await client.getEndpoint(session.activeContainerId, provider.port)
+    } catch (e) {
+      return new Response(
+        JSON.stringify({ error: 'sandbox-unreachable', detail: String(e), retryable: true }),
+        { status: 502, headers: { 'content-type': 'application/json' } }
+      )
+    }
+    const headers: Record<string, string> = {
+      ...(provider.authHeader(env) ?? {}),
+      ...client.proxyHeaders(),
+    }
+
+    let opencodeSessionId = session.opencodeSessionId
+    try {
+      const isFirstMessage = !opencodeSessionId
+      if (isFirstMessage) {
+        const created = await createOpencodeSession(baseUrl, headers)
+        opencodeSessionId = created.id
+        await sessionStore.update(sessionId, { opencodeSessionId })
+      }
+      // Workspace/IO/manifest conventions (plus the bound connection's CONN_*
+      // names) reach opencode through AGENTS.md rather than the user message —
+      // prepending the persona to the prompt used to render the instructions
+      // verbatim in the chat bubble, along with claudecode-only marker
+      // protocols opencode shows as raw text.
+      await writeOpencodeAgentsMd({
+        client,
+        // activeContainerId is guaranteed non-null here — the null check at
+        // line ~444 returns 502 before we ever reach this point.
+        sandboxId: session.activeContainerId!,
+        sessionId,
+        connectionId: session.connectionId,
+        locale: resolveLocale(req),
+      })
+      // Mirror the claudecode path: route the first turn through the
+      // brainstorming skill unless the operator typed an explicit slash command.
+      const promptText =
+        isFirstMessage && !userMessage.trim().startsWith('/')
+          ? `/brainstorming ${userMessage.trim()}`
+          : userMessage
+      await promptOpencodeAsync(baseUrl, headers, opencodeSessionId, promptText, undefined)
+    } catch (e) {
+      return new Response(
+        JSON.stringify({ error: 'opencode-upstream-failed', detail: String(e), retryable: true }),
+        { status: 502, headers: { 'content-type': 'application/json' } }
+      )
+    }
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 202,
+      headers: { 'content-type': 'application/json' },
+    })
+  }
+  // ── end opencode branch ──────────────────────────────────────────────────────
+
   // Fire-and-forget renew so chat latency doesn't compound with sandbox TTL ops.
-  client.renew(session.activeContainerId, env.CREWMELD_SANDBOX_TTL_SECONDS).catch(() => {})
+  client.renew(session.activeContainerId!, env.CREWMELD_SANDBOX_TTL_SECONDS).catch(() => {})
 
   let webuiUrl: string
   try {
-    webuiUrl = await client.getEndpoint(session.activeContainerId, 8080)
+    // activeContainerId is guaranteed non-null here: claudecode sessions hit the
+    // 409 guard above when it is missing; the opencode branch has already returned.
+    webuiUrl = await client.getEndpoint(session.activeContainerId!, 8080)
   } catch (e) {
     return new Response(
       JSON.stringify({ error: 'sandbox-unreachable', detail: String(e), retryable: true }),
@@ -463,11 +599,11 @@ export async function POST(req: Request, ctx: RouteContext): Promise<Response> {
   persistMessage(sessionId, sequence, 'user', buildUserFrame(userMessage))
   // Fire-and-forget preview update; errors are swallowed the same way as
   // message persistence so they never break the live stream.
-  Promise.resolve(
-    sessionStore.updateLastMessagePreview(sessionId, parsed.data.message)
-  ).catch((err) => {
-    log.warn('failed to update last message preview', { err: String(err), sessionId })
-  })
+  Promise.resolve(sessionStore.updateLastMessagePreview(sessionId, parsed.data.message)).catch(
+    (err) => {
+      log.warn('failed to update last message preview', { err: String(err), sessionId })
+    }
+  )
 
   const markerExtractor = new MarkerExtractor()
   const askExtractor = new AskExtractor()

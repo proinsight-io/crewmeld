@@ -788,6 +788,7 @@ export default function SkillsPage() {
   const [deletingInstance, setDeletingInstance] = useState(false)
   const [deletingTemplate, setDeletingTemplate] = useState(false)
   const [creatingInstance, setCreatingInstance] = useState(false)
+  const [importing, setImporting] = useState(false)
   const [instanceCounts, setInstanceCounts] = useState<
     Map<string, { total: number; deployed: number }>
   >(new Map())
@@ -1669,16 +1670,23 @@ export default function SkillsPage() {
 
   // Unified import entry: route by file extension
   const importInputRef = useRef<HTMLInputElement>(null)
-  const handleImportFile = (file: File) => {
+  const handleImportFile = async (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase()
-    if (ext === 'zip') {
-      handleImportTemplate(file)
-    } else if (ext === 'cmtool') {
-      handleImportCmtool(file)
-    } else if (ext === 'md' || ext === 'txt') {
-      handleImportTextFile(file)
-    } else {
+    if (ext !== 'zip' && ext !== 'cmtool' && ext !== 'md' && ext !== 'txt') {
       showToast('info', t('skills.onlyZipMdTxt'))
+      return
+    }
+    setImporting(true)
+    try {
+      if (ext === 'zip') {
+        await handleImportTemplate(file)
+      } else if (ext === 'cmtool') {
+        await handleImportCmtool(file)
+      } else {
+        await handleImportTextFile(file)
+      }
+    } finally {
+      setImporting(false)
     }
   }
 
@@ -1759,10 +1767,20 @@ export default function SkillsPage() {
                 <Button
                   variant='outline'
                   onClick={() => importInputRef.current?.click()}
+                  disabled={importing}
                   data-testid='skills:button:import'
                 >
-                  <Download className='mr-2 h-4 w-4' />
-                  {t('skills.importTool')}
+                  {importing ? (
+                    <>
+                      <Loader2 className='mr-2 h-4 w-4 animate-spin' />
+                      {t('skills.importing')}
+                    </>
+                  ) : (
+                    <>
+                      <Download className='mr-2 h-4 w-4' />
+                      {t('skills.importTool')}
+                    </>
+                  )}
                 </Button>
               </PermissionGuard>
               <input

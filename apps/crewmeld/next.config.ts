@@ -74,10 +74,17 @@ const nextConfig: NextConfig = {
     'iconv-lite',
     // Kept: WebSocket implementation; socket.io may fall back to it
     'ws',
-    // Kept: AWS S3 client + presigner (MinIO storage, import-cmtool, SOP files).
-    // Without this Turbopack emits a broken external stub dir -> EISDIR at runtime.
-    '@aws-sdk/client-s3',
-    '@aws-sdk/s3-request-presigner',
+    // Bun builtin SQLite driver used by lib/dev-studio/opencode-db.ts to read
+    // opencode.db off the shared volume; kept external so webpack does not try
+    // to bundle the `bun:` scheme.
+    'bun:sqlite',
+    // Zip reader for cmtool import (app/api/employee/skills/import-cmtool).
+    // unzipper's Open module has a lazy `require('@aws-sdk/client-s3')` (line 98,
+    // S3-source support) that webpack tries to resolve statically at build time —
+    // the S3 SDK was removed with MinIO, so bundling fails. We only use
+    // `unzipper.Open.buffer` (local buffer), never the S3 path, so keeping the
+    // package external skips the static resolve; the lazy require never runs.
+    'unzipper',
   ],
 
   outputFileTracingIncludes: {
@@ -88,6 +95,12 @@ const nextConfig: NextConfig = {
     optimizeCss: true,
     turbopackSourceMaps: false,
     turbopackFileSystemCacheForDev: true,
+    // The middleware matcher covers `/api/:path*`, so Next buffers each API
+    // request body for the proxy layer. The 10MB default truncates large
+    // multipart uploads (conversation files cap at 50MB in the upload route),
+    // breaking FormData parsing. Raise it above 50MB so the file reaches the
+    // route intact and the route's own size check returns a friendly error.
+    proxyClientMaxBodySize: '60mb',
   },
 
   ...(isDev && {

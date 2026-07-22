@@ -140,6 +140,11 @@ export async function buildWorkflowToolConfigs(
           type: 'object',
           properties: {
             input: inputSchema,
+            input_files: {
+              type: 'array',
+              items: { type: 'string' },
+              description: t('convSopInputFilesParam', 'zh'),
+            },
           },
           required: ['input'],
         },

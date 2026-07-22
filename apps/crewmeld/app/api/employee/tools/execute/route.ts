@@ -11,7 +11,6 @@ import { apiAuthErr, apiErr, apiOk } from '@/lib/api/response'
 import { withAudit } from '@/lib/audit/with-audit'
 import { requirePermission } from '@/lib/auth/rbac/check-permission'
 import { resolveConnectionEnvVars } from '@/lib/connectors/resolve-conn-env'
-import { isJobModeAvailable, runToolJob } from '@/lib/k8s/job-runner'
 import { getSandboxSettings } from '@/lib/sandbox/settings'
 import {
   buildJsResolvePrelude,
@@ -70,26 +69,11 @@ function buildSafeEnv(): Record<string, string | undefined> {
 }
 
 /**
- * Execution mode selection:
- *   - 'job'   K8s Job per call (default when K8s configured) — isolated, ephemeral
- *   - 'local' Local subprocess / sandbox — used when K8s is unavailable
- * Operator-facing override: K8S_TOOL_EXEC_MODE=job|local.
- */
-type ExecMode = 'job' | 'local'
-
-function resolveExecMode(): ExecMode {
-  const override = process.env.K8S_TOOL_EXEC_MODE?.toLowerCase()
-  if (override === 'local') return 'local'
-  if (override === 'job' && isJobModeAvailable()) return 'job'
-  return isJobModeAvailable() ? 'job' : 'local'
-}
-
-/**
  * POST /api/employee/tools/execute
  *
- * Execute AI-generated skill code. When K8s is configured the call runs as a
- * one-shot Job (isolated Pod, GC'd after completion); otherwise it falls back
- * to a local subprocess or in-process sandbox.
+ * Execute AI-generated skill code locally (subprocess for Python, in-process
+ * sandbox / ESM module for JS). This is the inline-code tester used by the
+ * legacy tool editors; it never touches the OpenSandbox/dev-studio path.
  */
 async function _POST(request: NextRequest) {
   try {
@@ -175,16 +159,16 @@ async function _POST(request: NextRequest) {
     }
 
     const startTime = Date.now()
-    const mode = resolveExecMode()
     const sandbox = await getSandboxSettings()
 
-    // Local subprocess paths have NO mechanism to enforce a network allowlist
-    // (no NetworkPolicy, no kernel-level firewalling per-process). Letting the
-    // call proceed would silently produce traffic the operator believed was
-    // blocked — refuse instead so the misconfiguration is visible immediately.
-    if (mode === 'local' && sandbox.egressMode === 'allowlist') {
+    // Local subprocess / in-process execution has NO mechanism to enforce a
+    // network allowlist (no NetworkPolicy, no kernel-level firewalling
+    // per-process). Letting the call proceed would silently produce traffic the
+    // operator believed was blocked — refuse instead so the misconfiguration is
+    // visible immediately.
+    if (sandbox.egressMode === 'allowlist') {
       logger.warn(
-        'Refused tool execution: egress allowlist set but K8s job mode unavailable',
+        'Refused tool execution: egress allowlist set but local execution cannot enforce it',
         { userId: auth.userId! }
       )
       return apiErr('api.tool.allowlistRequiresK8s', { status: 400 })
@@ -192,46 +176,23 @@ async function _POST(request: NextRequest) {
 
     let result: unknown
     let pathLabel: string
-    let policyApplied = false
-    let policyCidrs: string[] = []
-    let unresolvedDomains: string[] = []
+    const policyApplied = false
+    const policyCidrs: string[] = []
+    const unresolvedDomains: string[] = []
 
-    if (mode === 'job') {
-      pathLabel = 'job'
-      try {
-        const outcome = await runToolJob({
-          code,
-          params,
-          envVars: mergedEnvVars,
-          language,
-          timeout,
-          resolution,
-        })
-        result = outcome.result
-        policyApplied = outcome.policyApplied
-        policyCidrs = outcome.cidrs
-        unresolvedDomains = outcome.unresolvedDomains
-      } catch (jobErr) {
-        // Surface as a tool-level failure so the caller's normal error path applies.
-        const msg = jobErr instanceof Error ? jobErr.message : String(jobErr)
-        logger.error('Job-mode execution failed', { userId: auth.userId!, error: msg })
-        return apiErr('api.tool.executeFailed', { status: 500, extra: { detail: msg } })
-      }
+    // ---- Local execution path ----
+    const isPython = language === 'python'
+    const hasImport = /\bimport\s/.test(code) || /\brequire\s*\(/.test(code)
+
+    if (isPython) {
+      pathLabel = 'python'
+      result = await executeAsPython(code, params, mergedEnvVars, timeout, resolution)
+    } else if (hasImport) {
+      pathLabel = 'module'
+      result = await executeAsModule(code, params, mergedEnvVars, timeout, resolution)
     } else {
-      // ---- Local execution path ----
-      const isPython = language === 'python'
-      const hasImport = /\bimport\s/.test(code) || /\brequire\s*\(/.test(code)
-
-      if (isPython) {
-        pathLabel = 'python'
-        result = await executeAsPython(code, params, mergedEnvVars, timeout, resolution)
-      } else if (hasImport) {
-        pathLabel = 'module'
-        result = await executeAsModule(code, params, mergedEnvVars, timeout, resolution)
-      } else {
-        pathLabel = 'sandbox'
-        result = await executeInSandbox(code, params, mergedEnvVars, timeout, resolution)
-      }
+      pathLabel = 'sandbox'
+      result = await executeInSandbox(code, params, mergedEnvVars, timeout, resolution)
     }
 
     const executionTime = Date.now() - startTime

@@ -25,48 +25,16 @@ interface MessageBubbleProps {
   createdAt?: string
 }
 
-/**
- * Rewrite MinIO direct URLs to application proxy paths
- *
- * Two strategies:
- * 1. Path contains conversations/ or chat/ — use [...key] proxy (no signing needed)
- *    e.g. http://<minio-host>:19000/tool-files/conversations/xxx/img.png
- *      -> /api/employee/conversations/files/conversations/xxx/img.png
- *
- * 2. Other paths (charts/, exports/) or presigned URLs — use generic proxy
- *    e.g. http://<minio-host>:19000/tool-files/charts/chart.png?X-Amz-...
- *      -> /api/employee/conversations/files/proxy?url=<base64url>
- */
-function rewriteMinioUrl(src: string): string {
-  try {
-    const url = new URL(src, window.location.origin)
-    // Match ports other than the current app (MinIO direct address)
-    if (/:\d{4,5}$/.test(url.host) && url.host !== window.location.host) {
-      const pathParts = url.pathname.split('/')
-      // Strategy 1: conversations/ or chat/ path — use [...key] proxy
-      const convIdx = pathParts.findIndex((p) => p === 'conversations' || p === 'chat')
-      if (convIdx > 0 && !url.search) {
-        const key = pathParts.slice(convIdx).join('/')
-        return `/api/employee/conversations/files/${key}`
-      }
-      // Strategy 2: other paths or presigned URL — use generic proxy
-      const encoded = btoa(src).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-      return `/api/employee/conversations/files/proxy?url=${encoded}`
-    }
-  } catch {
-    // Not a valid URL, return as-is
-  }
-  return src
-}
-
 /** Custom rendering components for react-markdown */
 const markdownComponents: Components = {
   img({ src, alt, ...props }) {
-    const proxiedSrc = src ? rewriteMinioUrl(src as string) : ''
+    // Tool-generated files are served same-origin from NFS conv-io via
+    // /api/employee/conversations/files/{key}; image URLs are used as-is.
+    const imgSrc = src ? (src as string) : ''
     return (
-      <a href={proxiedSrc} target='_blank' rel='noopener noreferrer' className='my-2 block'>
+      <a href={imgSrc} target='_blank' rel='noopener noreferrer' className='my-2 block'>
         <img
-          src={proxiedSrc}
+          src={imgSrc}
           alt={alt ?? ''}
           className='max-h-64 max-w-full rounded-lg border border-gray-200 object-contain'
           loading='lazy'

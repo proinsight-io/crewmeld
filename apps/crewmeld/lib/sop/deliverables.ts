@@ -19,8 +19,8 @@
 import { createLogger } from '@crewmeld/logger'
 import {
   type ConversationAttachment,
-  copySopFilesToConversation,
-} from './file-workspace'
+  promoteSopFilesToConversation,
+} from './sop-files-workspace'
 
 const logger = createLogger('SopDeliverables')
 
@@ -32,9 +32,16 @@ const logger = createLogger('SopDeliverables')
  * The hostname is optional: LLMs sometimes emit absolute URLs (when
  * SOP_FILE_URL_PREFIX is set) and sometimes relative paths. Both must be
  * detected.
+ *
+ * The filename group accepts BALANCED parentheses so collision-renamed files
+ * like `output(2).png` (see sop-files-workspace `${base}(${counter})${ext}`)
+ * are captured whole. A trailing UNBALANCED `)` is left unconsumed so a
+ * markdown link `[name](…/output(2).png)` stops before its closing paren
+ * rather than swallowing it. The group is thus a run of ordinary filename
+ * chars OR a single `(…)` group whose interior has no further parens.
  */
 const SOP_FILE_URL_RE =
-  /(?:https?:\/\/[^\s)>\]"']+)?\/api\/sop\/([A-Za-z0-9_-]{12,})\/files\/([^\s)>\]"'`?#]+)/g
+  /(?:https?:\/\/[^\s)>\]"']+)?\/api\/sop\/([A-Za-z0-9_-]{12,})\/files\/((?:[^\s()>\]"'`?#]|\([^\s()>\]"'`?#]*\))+)/g
 
 export interface ExtractedReference {
   /** SOP execution id from the URL path. */
@@ -84,30 +91,42 @@ export interface ProcessDeliverablesResult {
 /**
  * End-to-end deliverables flow:
  *   - Extract referenced files from the message.
- *   - Copy each into conversations/{convId}/ via MinIO server-side copy.
+ *   - Promote each from the NFS sop-files workspace into the conversation's
+ *     conv-io dir (where dev-studio / opensandbox tools write their outputs).
  *   - Rewrite the raw URLs in the message to point at the conversation
  *     download route (`/api/employee/conversations/files/{key}`).
  *
- * When no URLs are found, the original message is returned and no MinIO
- * work happens.
+ * When no URLs are found, the original message is returned and no copy work
+ * happens.
+ *
+ * `conversationCreatedAt` locates the conversation's date-layered conv-io dir;
+ * when omitted (no conversation row) promotion is skipped.
  */
 export async function processDeliverables(opts: {
   sopExecutionId: string
   conversationId: string
+  conversationCreatedAt?: Date | string
   finalMessage: string
 }): Promise<ProcessDeliverablesResult> {
-  const { sopExecutionId, conversationId, finalMessage } = opts
+  const { sopExecutionId, conversationId, conversationCreatedAt, finalMessage } = opts
   const refs = extractDeliverableFileNames(finalMessage, sopExecutionId)
 
   if (refs.length === 0) {
     return { message: finalMessage, attachments: [] }
   }
 
-  const attachments = await copySopFilesToConversation(
-    sopExecutionId,
-    conversationId,
-    refs.map((r) => r.fileName)
-  )
+  const fileNames = refs.map((r) => r.fileName)
+
+  // Promote files that dev-studio / opensandbox tools wrote to the NFS
+  // sop-files workspace into the conversation's conv-io dir.
+  const attachments: ConversationAttachment[] = conversationCreatedAt
+    ? await promoteSopFilesToConversation(
+        sopExecutionId,
+        conversationId,
+        conversationCreatedAt,
+        fileNames
+      )
+    : []
 
   // Build a name → new key map so we can rewrite URLs in the message body.
   const nameToKey = new Map<string, string>()
