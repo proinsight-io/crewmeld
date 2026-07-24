@@ -52,7 +52,7 @@ const EnvSchema = z.object({
   // row whose decrypted key is injected by model-resolver.ts. Only required at
   // session-create time when no modelConfigId is supplied (enforced there).
   ANTHROPIC_AUTH_TOKEN: z.string().min(1).optional(),
-  ANTHROPIC_BASE_URL: z.string().url().default('https://qianfan.baidubce.com/anthropic/coding'),
+  ANTHROPIC_BASE_URL: z.string().url().default('https://qianfan.baidubce.com/v2/coding'),
   ANTHROPIC_MODEL: z.string().min(1).default('qianfan-code-latest'),
   ANTHROPIC_SMALL_FAST_MODEL: z.string().optional(),
 })

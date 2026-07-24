@@ -23,6 +23,7 @@ import { buildManifestFixPrompt } from '@/lib/dev-studio/manifest-fix-prompt'
 import { useTranslation } from '@/hooks/use-translation'
 import { useDevStudioUI } from '@/stores/dev-studio-ui/store'
 import { ClaudeChatSurface } from './claude-chat-surface'
+import { AdoptProgressDialog } from './adopt-progress-dialog'
 import { type CloseAction, CloseConfirmDialog } from './close-confirm-dialog'
 import { CreateSessionDialog } from './create-session-dialog'
 import { DevStudioHeader } from './dev-studio-header'
@@ -30,6 +31,7 @@ import { DevStudioInput } from './dev-studio-input'
 import { useDevStudioSession } from './hooks/use-dev-studio-session'
 import { useManifest } from './hooks/use-manifest'
 import { useManifestFirstAppearance } from './hooks/use-manifest-first-appearance'
+import { useAdoptProgress } from './hooks/use-adopt-progress'
 import { useSessionList } from './hooks/use-session-list'
 import { useSplitRatio } from './hooks/use-split-ratio'
 import { useStreamChat } from './hooks/use-stream-chat'
@@ -157,6 +159,7 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
    * a session switch.
    */
   const [pendingSwitchId, setPendingSwitchId] = useState<string | null>(null)
+  const adoptSwitchTargetRef = useRef<string | null>(null)
   // Mid-session model switch: a switch recreates the container (~10-30s), so it
   // is gated behind a confirm. `pendingModelSwitch` holds the target until the
   // operator confirms; `switchingModel` disables the selector while in flight.
@@ -165,6 +168,7 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
     modelConfigId: string | null
   } | null>(null)
   const [switchingModel, setSwitchingModel] = useState(false)
+  const [switchModelError, setSwitchModelError] = useState<string | null>(null)
   // Container-spawning entry actions (~10-30s each). These gate a full-body
   // LoadingOverlay so the operator gets visible feedback instead of a frozen
   // dialog while a new container is created.
@@ -178,6 +182,23 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
     mutate: mutateManifest,
     error: manifestError,
   } = useManifest(open ? session.sessionId : null)
+
+  const handleAdoptComplete = useCallback(async () => {
+    await mutateSessions()
+    await mutateManifest()
+    const switchTarget = adoptSwitchTargetRef.current
+    adoptSwitchTargetRef.current = null
+    if (switchTarget) {
+      session.setSessionId(switchTarget)
+    } else {
+      onClose()
+    }
+  }, [mutateManifest, mutateSessions, onClose, session])
+
+  const adoptProgress = useAdoptProgress({
+    onComplete: handleAdoptComplete,
+    networkErrorMessage: t('devStudio.adopt.progressNetworkError'),
+  })
 
   // First time the AI writes .crewmeld-studio/manifest.json for this session,
   // auto-open the right workspace panel so the operator sees the freshly
@@ -299,16 +320,15 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
       }
       return
     }
+    if (action.kind === 'adopt') {
+      adoptSwitchTargetRef.current = switchTarget
+      await adoptProgress.start(id)
+      return
+    }
     try {
-      if (action.kind === 'adopt') {
-        await fetch(`/api/employee/dev-studio/sessions/${encodeURIComponent(id)}/adopt`, {
-          method: 'PATCH',
-        })
-      } else {
-        await fetch(`/api/employee/dev-studio/sessions/${encodeURIComponent(id)}`, {
-          method: 'DELETE',
-        })
-      }
+      await fetch(`/api/employee/dev-studio/sessions/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      })
       await mutateSessions()
       await mutateManifest()
     } finally {
@@ -464,9 +484,9 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
     setPendingModelSwitch(null)
     if (!target) return
     setSwitchingModel(true)
+    setSwitchModelError(null)
     try {
-      await chat.abort()
-      await fetch(
+      const res = await fetch(
         `/api/employee/dev-studio/sessions/${encodeURIComponent(target.sessionId)}/model`,
         {
           method: 'PATCH',
@@ -474,8 +494,16 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
           body: JSON.stringify({ modelConfigId: target.modelConfigId }),
         }
       )
+      const body = (await res.json().catch(() => ({}))) as { detail?: string; error?: string; replay?: string }
+      if (!res.ok) {
+        throw new Error(body.detail ?? body.error ?? t('devStudio.errors.createSandboxFailed'))
+      }
+      if (body.replay === 'failed') {
+        setSwitchModelError(t('devStudio.modelSwitch.replayFailed'))
+      }
       await mutateSessions()
-    } catch {
+    } catch (e) {
+      setSwitchModelError(e instanceof Error ? e.message : String(e))
       await mutateSessions().catch(() => {})
     } finally {
       setSwitchingModel(false)
@@ -605,6 +633,14 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
 
         {session.status === 'ready' && session.sessionId && (
           <>
+            {switchModelError && (
+              <div
+                className='mx-3 mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive'
+                data-testid='dev-studio:model-switch-error'
+              >
+                {switchModelError}
+              </div>
+            )}
             <div className='flex-1 flex overflow-hidden'>
               {/* Always wrap in SplitPane so toggling the right panel never
                   remounts the chat surface — that used to throw away scroll
@@ -709,6 +745,16 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
         onCancel={() => {
           setCloseConfirmOpen(false)
           setPendingSwitchId(null)
+        }}
+      />
+      <AdoptProgressDialog
+        state={adoptProgress.state}
+        onRetry={() => {
+          void adoptProgress.retry()
+        }}
+        onClose={() => {
+          adoptSwitchTargetRef.current = null
+          adoptProgress.dismissError()
         }}
       />
       <AlertDialog

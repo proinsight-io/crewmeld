@@ -29,6 +29,7 @@ import { getCurrentUserRole } from '@/lib/auth/rbac/check-role'
 import { getCoderProvider } from '@/lib/dev-studio/coder-providers'
 import { getDevStudioEnv } from '@/lib/dev-studio/env'
 import { resolveModelEnv } from '@/lib/dev-studio/model-resolver'
+import { buildOpenCodeConfig } from '@/lib/dev-studio/opencode-config'
 import { OpenSandboxClient } from '@/lib/dev-studio/opensandbox-client'
 import { paths } from '@/lib/dev-studio/paths'
 import type { ApiError } from '@/lib/dev-studio/schemas'
@@ -280,6 +281,16 @@ export async function POST(req: Request, _ctx: RouteContext): Promise<Response> 
           ? {
               OPENCODE_SERVER_PASSWORD: env.OPENCODE_SERVER_PASSWORD,
               OPENCODE_PORT: String(env.OPENCODE_PORT),
+            }
+          : {}),
+        ...(provider.id === 'opencode'
+          ? {
+              OPENCODE_CONFIG_CONTENT: buildOpenCodeConfig({
+                providerID: 'myprovider',
+                modelID: modelEnv.opencodeModelID,
+                baseURL: modelEnv.opencodeBaseURL,
+                apiKey: modelEnv.opencodeApiKey,
+              }),
             }
           : {}),
       },

@@ -6,6 +6,7 @@ import type { StreamingExecution } from '@/lib/types/execution'
 import { PROVIDER_DEFINITIONS } from '@/providers/models'
 import { getProviderExecutor } from '@/providers/registry'
 import type { ProviderId, ProviderResponse } from '@/providers/types'
+import type { CodingProtocol } from '@/providers/models/types'
 
 const logger = createLogger('ModelTester')
 
@@ -60,7 +61,8 @@ export async function testModelConnection(
   apiKey: string | undefined,
   model: string,
   apiEndpoint?: string,
-  lang: 'zh' | 'en' = 'zh'
+  lang: 'zh' | 'en' = 'zh',
+  protocol?: CodingProtocol
 ): Promise<ModelTestResult> {
   const startTime = Date.now()
   const testPrompt = t('modelTestHello', lang)
@@ -70,7 +72,7 @@ export async function testModelConnection(
   // OpenAI-compat executor would POST /chat/completions and 404 against these
   // /anthropic endpoints. Kimi/Qwen on their OpenAI endpoints fall through to
   // the existing path below.
-  if (isCodingProvider(providerId) && isAnthropicEndpoint(apiEndpoint)) {
+  if (isCodingProvider(providerId) && (protocol === 'anthropic' || (!protocol && isAnthropicEndpoint(apiEndpoint)))) {
     return testCodingAnthropic(apiKey, model, apiEndpoint as string, lang, startTime, testPrompt)
   }
 

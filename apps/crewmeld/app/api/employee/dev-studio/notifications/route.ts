@@ -42,6 +42,7 @@ interface DependencyNotification {
   sessionTitle: string
   pendingLibraries: string[]
   pendingDomains: string[]
+  pendingIps: string[]
   streaming: boolean
 }
 
@@ -108,12 +109,17 @@ export async function GET(req: Request): Promise<Response> {
         manifest.dependencies.domains,
         s.approvedDependencies.domains
       )
-      if (pendingLibraries.length === 0 && pendingDomains.length === 0) return null
+      const pendingIps = difference(
+        manifest.dependencies.ips,
+        s.approvedDependencies.ips ?? []
+      )
+      if (pendingLibraries.length === 0 && pendingDomains.length === 0 && pendingIps.length === 0) return null
       return {
         sessionId: s.id,
         sessionTitle: s.title ?? DEFAULT_TITLE,
         pendingLibraries,
         pendingDomains,
+        pendingIps,
         streaming: sessionStore.hasActiveStreaming(s.id),
       }
     })

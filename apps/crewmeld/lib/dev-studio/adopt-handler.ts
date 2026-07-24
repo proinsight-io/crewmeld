@@ -25,6 +25,7 @@ import { db, toolInstances, tools } from '@crewmeld/db'
 import { createLogger } from '@crewmeld/logger'
 import { eq } from 'drizzle-orm'
 import { nanoid } from 'nanoid'
+import type { AdoptProgressReporter } from './adopt-progress'
 import { syncWorkspaceToCode } from './code-sync'
 import { AdoptError, prewarmDependencies } from './dependency-prewarmer'
 import { readManifestFromSession } from './manifest-reader'
@@ -50,7 +51,11 @@ export interface AdoptResult {
  *   (manifest-missing, session-not-found, dependency-install-failed, etc.).
  *   The adopt route maps these to HTTP 404 / 422 with the retryable flag.
  */
-export async function adoptSession(sessionId: string, userId: string): Promise<AdoptResult> {
+export async function adoptSession(
+  sessionId: string,
+  userId: string,
+  reporter?: AdoptProgressReporter,
+): Promise<AdoptResult> {
   // 1. Read the manifest from the live workspace.
   const manifest = await readManifestFromSession(sessionId)
   if (!manifest) {
@@ -71,17 +76,23 @@ export async function adoptSession(sessionId: string, userId: string): Promise<A
   const toolId = existingToolId ?? nanoid()
 
   // 3. Atomic NFS sync — workspace → tools-workspace/<toolId>/code/.
+  await reporter?.({ type: 'progress', step: 'syncing' })
   const syncResult = await syncWorkspaceToCode(sessionId, toolId)
   logger.info(
+    'workspace synced to NFS code dir',
     { sessionId, toolId, sha256: syncResult.sha256, cached: syncResult.cached },
-    'workspace synced to NFS code dir'
   )
 
   // 4. Prewarm pip dependencies. May throw AdoptError (install).
+  const libraries = manifest.dependencies?.libraries ?? []
+  if (libraries.length > 0) {
+    await reporter?.({ type: 'progress', step: 'installing-dependencies', libraries })
+  }
   await prewarmDependencies(toolId, manifest)
 
   // 5. Upsert the tools row — convertManifestToTool returns the manifest-derived
   //    columns; the caller supplies id/createdBy/timestamps.
+  await reporter?.({ type: 'progress', step: 'saving' })
   const toolData = convertManifestToTool({ manifest, sha256: syncResult.sha256 })
   let needsRedeploy = false
 
@@ -99,7 +110,7 @@ export async function adoptSession(sessionId: string, userId: string): Promise<A
     needsRedeploy = instances.some(
       (i) => (i.deploy as { status?: string } | null)?.status === 'deployed'
     )
-    logger.info({ toolId, needsRedeploy }, 'existing tool updated')
+    logger.info('existing tool updated', { toolId, needsRedeploy })
   } else {
     await db.insert(tools).values({ id: toolId, ...toolData, createdBy: userId })
 
@@ -120,7 +131,7 @@ export async function adoptSession(sessionId: string, userId: string): Promise<A
       presetParams: Object.keys(defaultPresetParams).length > 0 ? defaultPresetParams : null,
       createdBy: userId,
     })
-    logger.info({ toolId, instanceId }, 'new tool + default instance created')
+    logger.info('new tool + default instance created', { toolId, instanceId })
   }
 
   // 6. Mark session adopted. Container teardown is handled by the route layer

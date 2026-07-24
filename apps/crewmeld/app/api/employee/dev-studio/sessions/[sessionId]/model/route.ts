@@ -20,6 +20,14 @@ import { getCurrentUserRole } from '@/lib/auth/rbac/check-role'
 import { getCoderProvider } from '@/lib/dev-studio/coder-providers'
 import { getDevStudioEnv } from '@/lib/dev-studio/env'
 import { resolveModelEnv } from '@/lib/dev-studio/model-resolver'
+import { buildOpenCodeConfig } from '@/lib/dev-studio/opencode-config'
+import {
+  abortOpencodeSession,
+  CREWMELD_OPENCODE_PROVIDER_ID,
+  findLastVisibleUserText,
+  listOpencodeMessages,
+  promptOpencodeAsync,
+} from '@/lib/dev-studio/opencode-rest'
 import { OpenSandboxClient } from '@/lib/dev-studio/opensandbox-client'
 import type { ApiError } from '@/lib/dev-studio/schemas'
 import { sessionStore } from '@/lib/dev-studio/session-store'
@@ -90,6 +98,28 @@ export async function PATCH(req: Request, ctx: RouteContext): Promise<Response> 
     useProxy: env.OPENSANDBOX_USE_PROXY,
   })
 
+  let replayText: string | null = null
+  let aborted = false
+
+  // OpenCode persists its session independently of the container. Snapshot the
+  // operator's last question and explicitly abort the active turn before
+  // destroying the container, otherwise it can keep the old model reference.
+  if (provider.id === 'opencode' && session.activeContainerId && session.opencodeSessionId) {
+    try {
+      const oldEndpoint = await client.getEndpoint(session.activeContainerId, provider.port)
+      const headers = {
+        ...(provider.authHeader(env) ?? {}),
+        ...client.proxyHeaders(),
+      }
+      const history = await listOpencodeMessages(oldEndpoint, headers, session.opencodeSessionId)
+      replayText = findLastVisibleUserText(history)
+      await abortOpencodeSession(oldEndpoint, headers, session.opencodeSessionId)
+      aborted = true
+    } catch (e) {
+      return errorResponse(502, 'abort-failed', String(e), true)
+    }
+  }
+
   // 1. Tear down the current container (best-effort) and pin the row to the new
   // model in a single 'creating' update. The old container must die so the
   // single-running-per-user partial unique index stays satisfiable.
@@ -97,7 +127,7 @@ export async function PATCH(req: Request, ctx: RouteContext): Promise<Response> 
     await client.destroy(session.activeContainerId).catch(() => {})
   }
   await sessionStore.update(sessionId, {
-    modelConfigId,
+    modelConfigId: modelEnv.modelConfigId ?? modelConfigId,
     modelName: modelEnv.displayLabel,
     containerStatus: 'creating',
     activeContainerId: null,
@@ -133,6 +163,16 @@ export async function PATCH(req: Request, ctx: RouteContext): Promise<Response> 
           ? {
               OPENCODE_SERVER_PASSWORD: env.OPENCODE_SERVER_PASSWORD,
               OPENCODE_PORT: String(env.OPENCODE_PORT),
+            }
+          : {}),
+        ...(provider.id === 'opencode'
+          ? {
+              OPENCODE_CONFIG_CONTENT: buildOpenCodeConfig({
+                providerID: CREWMELD_OPENCODE_PROVIDER_ID,
+                modelID: modelEnv.opencodeModelID,
+                baseURL: modelEnv.opencodeBaseURL,
+                apiKey: modelEnv.opencodeApiKey,
+              }),
             }
           : {}),
       },
@@ -175,5 +215,35 @@ export async function PATCH(req: Request, ctx: RouteContext): Promise<Response> 
     containerStatus: 'running',
   })
 
-  return Response.json({ endpoint, modelName: modelEnv.displayLabel })
+  let replay: 'started' | 'skipped' | 'failed' = replayText ? 'started' : 'skipped'
+  let replayError: string | undefined
+  if (replayText && provider.id === 'opencode' && session.opencodeSessionId) {
+    try {
+      await promptOpencodeAsync(
+        endpoint,
+        {
+          ...(provider.authHeader(env) ?? {}),
+          ...client.proxyHeaders(),
+        },
+        session.opencodeSessionId,
+        `[系统提示] 编程模型已切换。请重新回答用户上一条问题：\n${replayText}`,
+        {
+          providerID: CREWMELD_OPENCODE_PROVIDER_ID,
+          modelID: modelEnv.ANTHROPIC_MODEL,
+        }
+      )
+    } catch (e) {
+      replay = 'failed'
+      replayError = String(e)
+    }
+  }
+
+  return Response.json({
+    endpoint,
+    modelName: modelEnv.displayLabel,
+    modelConfigId: modelEnv.modelConfigId ?? modelConfigId,
+    aborted,
+    replay,
+    ...(replayError ? { replayError } : {}),
+  })
 }

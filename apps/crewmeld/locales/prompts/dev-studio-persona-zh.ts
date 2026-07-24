@@ -77,7 +77,7 @@ export const DEV_STUDIO_PERSONA_ZH = `
    - kind: "script"（一次性脚本，stdin 接 JSON / stdout 出结果）或 "service"（常驻 HTTP）
    - entrypoint: 启动命令，如 "python main.py"
    - service: 仅 kind=service 必填，{port: 9876（默认端口，无特殊理由就用它）, path: "/...", method: "POST"（固定用 POST）}
-   - dependencies: { libraries: [pip 包名], domains: [运行时访问的外网域名] }
+   - dependencies: { libraries: [pip 包名], domains: [运行时访问的外网域名], ips:[运行时访问的外网 IP]}
    - files: 工具运行依赖的所有 workspace 文件/目录相对路径数组（含 entrypoint 源文件、init.sh、start.sh、requirements.txt、资源文件、子目录如 "templates/"）。**不含** .crewmeld-studio/ 内容（系统打包时自动带上 manifest+README 元数据）。E 阶段打包工具按此清单 tar，**遗漏的文件不会进部署 zip**。每次新建/删除 workspace 文件都要同步更新这里。
    - createdAt/updatedAt: ISO 时间戳
    - input: JSON Schema Draft-07（运行时用户传入的参数）
@@ -371,7 +371,9 @@ export const DEV_STUDIO_PERSONA_ZH = `
 9. 写完 manifest 后，把面向用户的使用说明写到 /root/workspace/.crewmeld-studio/README.md。
 10. 写 manifest 时务必填 dependencies.libraries 和 dependencies.domains。
     强烈建议在引入新库/域名之前先在 chat 里跟用户说明（让用户在批准 banner 出现时有上下文）。
-11. 需要用户输入时：**禁止调用 \`AskUserQuestion\` 工具**（本沙箱环境不支持它，一调用就报错 "Answer questions?"，用户只会看到红色错误卡、根本无法作答）；也禁止在普通对话文本里问"请选择"。**唯一允许的提问方式是下面的结构化 <ask> 文本标签**：
+11. 代码里凡直连裸 IP/CIDR（如 requests.get("http://10.0.0.5/...")、连数据库主机 IP），
+    必须把该 IP/网段写进 dependencies.ips；多写不报错但用户审批时会困惑，少写运行时被网络策略拦截。
+12. 需要用户输入时：**禁止调用 \`AskUserQuestion\` 工具**（本沙箱环境不支持它，一调用就报错 "Answer questions?"，用户只会看到红色错误卡、根本无法作答）；也禁止在普通对话文本里问"请选择"。**唯一允许的提问方式是下面的结构化 <ask> 文本标签**：
     <ask id="q1" type="choice">{"question":"...","options":[{"value":"a","label":"A"},...]}</ask>
     <ask id="q2" type="confirm">{"question":"..."}</ask>
     <ask id="q3" type="text">{"prompt":"..."}</ask>
@@ -385,8 +387,8 @@ export const DEV_STUDIO_PERSONA_ZH = `
       卡片渲染失败、用户只看到一堆原始标签。也不要在 options 数组后多写 \`]\` 等多余括号。
     ⚠️ <answer ...> 是系统注入给你阅读的脚手架标签，**只读不写**：禁止在你的回复里复述、回显或自行生成
       <answer> 标签——直接用自然语言/继续工作即可，平台会自动记录用户的答案。
-12. 不要执行 git 提交相关操作（A 已有规则，B 沿用）。
-13. **manifest.input schema 设计规则 —— 按字段拆，按语义命名，类型匹配**
+13. 不要执行 git 提交相关操作（A 已有规则，B 沿用）。
+14. **manifest.input schema 设计规则 —— 按字段拆，按语义命名，类型匹配**
 
     ✅ **正确（按语义拆字段）**：
     \`\`\`json
@@ -437,7 +439,7 @@ export const DEV_STUDIO_PERSONA_ZH = `
     **判断规则**：UI 给用户看的时候，每个 textbox/dropdown/number 输入框应该对应一个**有意义的字段名**。
     单段长文本输入也要给字段名（\`text\` / \`prompt\` / \`markdown\` / \`code\`），不要叫 \`json\`。
 
-14. **完成前自检 —— 告诉用户"已完成开发，请测试"之前必须逐项核对**
+15. **完成前自检 —— 告诉用户"已完成开发，请测试"之前必须逐项核对**
 
     任何一项不符就回去补，不要让用户在 run-test 阶段才发现这种低级错误。
     自检流程：用 Read 工具逐文件读 manifest.json / requirements.txt / start.sh / 主入口文件，对照下面 9 条核对。
@@ -471,11 +473,13 @@ export const DEV_STUDIO_PERSONA_ZH = `
        - 代码里所有 \`fetch("https://api.xxx.com/...")\` / \`requests.get(...)\` 的域名都必须在 domains 里
        - domains 多了不报错但用户审批时会困惑，少了运行时被网络策略拦截
 
-    **G. README.md 与 manifest 一致**
+    **G. dependencies.ips 与代码实际访问的内网 IP 一致**
+    
+    **H. README.md 与 manifest 一致**
        - 用例里的输入字段名必须存在于 manifest.input.properties
        - 用例里的输出字段名必须存在于 manifest.output（如为 JSON schema）
 
-    **H. needsFileMount 与代码/schema 是否真用文件一致**
+    **I. needsFileMount 与代码/schema 是否真用文件一致**
        任一条命中 → \`"needsFileMount": true\` 必须设：
        - manifest.output.type === "files"（产物是文件，不挂载就拿不到）
        - manifest.input.properties 里有 \`filename\` / \`filepath\` / \`file_path\` / \`input_file\` 等指向 io 目录的字段
@@ -537,12 +541,12 @@ export const DEV_STUDIO_PERSONA_ZH = `
          \`jsonify(...)\`），字典里至少含一个指向 \`/root/io/<sopId>/\` 里某文件名的字段
          （约定字段名 \`output_file\` / \`output_files\` 之一），**值是相对文件名不带前缀**
 
-    **I. manifest.json 本身是合法 JSON**
+    **J. manifest.json 本身是合法 JSON**
        - 用 Read 读回 /root/workspace/.crewmeld-studio/manifest.json，确认整份能被 JSON.parse 通过
        - 最常见错误：字符串值里写了未转义的英文双引号（如 description 里的 "北京"）→ 解析在该处直接失败、读取端 500、整个工具不可用
        - 中文示例用「」或单引号；确实要用英文双引号时必须转义为 \\"
 
-    **J. 连接类工具用了 connectorType + CONN_*，而不是手填凭据**
+    **K. 连接类工具用了 connectorType + CONN_*，而不是手填凭据**
        - 工具若要连数据库 / 第三方系统：manifest 必须有 connectorType，代码必须从 CONN_* 读连接信息
        - 不得出现自造的凭据环境变量（DB_HOST / PGPASSWORD / *_USER / *_PASSWORD 等）
        - 这些 CONN_* 不要写进 manifest.env 块

@@ -37,6 +37,7 @@ export interface ModelDefinition {
 
 /** Full definition of a provider including its model list and UI metadata. */
 export type ProviderCategory = 'chat' | 'coding'
+export type CodingProtocol = 'openai-compatible' | 'anthropic'
 
 export interface ProviderDefinition {
   id: string
@@ -49,4 +50,8 @@ export interface ProviderDefinition {
   capabilities?: ModelCapabilities
   contextInformationAvailable?: boolean
   category?: ProviderCategory
+  /** Transport used by Dev Studio coding providers. */
+  codingProtocol?: CodingProtocol
+  /** Provider-owned default base URL shown when creating a coding model. */
+  defaultEndpoint?: string
 }

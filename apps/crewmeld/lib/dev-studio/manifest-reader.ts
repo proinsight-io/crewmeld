@@ -351,6 +351,39 @@ export async function setToolManifestEgress(
   return next
 }
 
+/**
+ * Replace the egress allow-list (`dependencies.domains` + `dependencies.ips`)
+ * in a *session* workspace manifest. Mirrors {@link setToolManifestEgress} but
+ * targets the in-progress session workspace rather than an adopted tool's code
+ * dir. Libraries and all other fields are preserved; `updatedAt` is bumped;
+ * written atomically.
+ *
+ * @throws When the manifest does not yet exist (prefix `CONFLICT:`) — the AI
+ *   must create it first, mirroring {@link setManifestLibraries}.
+ */
+export async function setSessionManifestEgress(
+  sessionId: string,
+  egress: { domains: string[]; ips: string[] }
+): Promise<ManifestT> {
+  const workspaceDir = paths.sessionWorkspace.forBff(sessionId)
+  const current = await readManifestFromDir(workspaceDir)
+  if (!current) {
+    throw new Error('CONFLICT: manifest does not exist; AI must create it first')
+  }
+
+  const next: ManifestT = {
+    ...current,
+    dependencies: {
+      ...current.dependencies,
+      domains: egress.domains,
+      ips: egress.ips,
+    },
+    updatedAt: new Date().toISOString(),
+  }
+  await writeManifestAtomic(workspaceDir, next)
+  return next
+}
+
 async function readManifestFromDir(workspaceDir: string): Promise<ManifestT | null> {
   const fp = path.join(workspaceDir, MANIFEST_RELATIVE_PATH)
   let raw: string

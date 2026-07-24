@@ -873,7 +873,7 @@ CREATE TABLE "tool_dev_sessions" (
 	"workspace_dir" text NOT NULL,
 	"claude_state_dir" text NOT NULL,
 	"right_panel_visible" boolean DEFAULT false NOT NULL,
-	"approved_dependencies" jsonb DEFAULT '{"libraries":[],"domains":[]}'::jsonb NOT NULL,
+	"approved_dependencies" jsonb DEFAULT '{"libraries":[],"domains":[],"ip":[]}'::jsonb NOT NULL,
 	"last_package" jsonb,
 	"model_config_id" text,
 	"model_name" text,

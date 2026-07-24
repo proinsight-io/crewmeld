@@ -17,10 +17,25 @@ export async function copyToClipboard(text: string): Promise<void> {
   // Fallback: textarea + execCommand
   const ta = document.createElement('textarea')
   ta.value = text
+  ta.readOnly = true
   ta.style.position = 'fixed'
-  ta.style.left = '-9999px'
-  document.body.appendChild(ta)
-  ta.select()
-  document.execCommand('copy')
-  document.body.removeChild(ta)
+  ta.style.top = '0'
+  ta.style.left = '0'
+  ta.style.opacity = '0'
+  ta.style.pointerEvents = 'none'
+  const activeDialog = document.activeElement?.closest('[role="dialog"]')
+  const container = activeDialog instanceof HTMLElement ? activeDialog : document.body
+  container.appendChild(ta)
+
+  try {
+    ta.focus()
+    ta.select()
+    ta.setSelectionRange(0, ta.value.length)
+
+    if (!document.execCommand('copy')) {
+      throw new Error('Unable to copy to clipboard')
+    }
+  } finally {
+    ta.remove()
+  }
 }

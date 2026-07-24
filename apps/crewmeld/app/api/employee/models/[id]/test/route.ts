@@ -9,6 +9,7 @@ import { requirePermission } from '@/lib/auth/rbac/check-permission'
 import { decryptConfig } from '@/lib/connectors/encryption'
 import { resolveLocale } from '@/lib/i18n/server-locale'
 import { testModelConnection } from '@/lib/models/tester'
+import { resolveCodingProtocol } from '@/lib/models/coding-protocol'
 import { getAllProviders } from '@/providers/registry'
 
 const logger = createLogger('ModelsTestAPI')
@@ -48,7 +49,8 @@ async function _POST(request: NextRequest, { params }: { params: Promise<{ id: s
       apiKey,
       testModel,
       config.apiEndpoint ?? undefined,
-      lang
+      lang,
+      resolveCodingProtocol(config.providerId, config.apiEndpoint)
     )
 
     // Prefix lastTestResult with stable marker so list-filter doesn't need

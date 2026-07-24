@@ -1,4 +1,4 @@
-import { AliyunIcon, AnthropicIcon, BaiduIcon, MoonshotIcon } from '@/components/icons'
+import { AliyunIcon, AnthropicIcon, BaiduIcon, MoonshotIcon, ZhipuIcon } from '@/components/icons'
 import type { ProviderDefinition } from '@/providers/models/types'
 
 /** Provider definitions for coding-specialized LLM providers. */
@@ -11,6 +11,8 @@ export const codingProviders: Record<string, ProviderDefinition> = {
     modelPatterns: [/^kimi/, /^moonshot/],
     icon: MoonshotIcon,
     category: 'coding',
+    codingProtocol: 'openai-compatible',
+    defaultEndpoint: 'https://api.moonshot.cn/v1',
     capabilities: { toolUsageControl: true },
     models: [
       { id: 'kimi-code-latest', pricing: { input: 0, output: 0, updatedAt: '2026-05-26' }, capabilities: {} },
@@ -26,6 +28,8 @@ export const codingProviders: Record<string, ProviderDefinition> = {
     modelPatterns: [/^qianfan-code/],
     icon: BaiduIcon,
     category: 'coding',
+    codingProtocol: 'openai-compatible',
+    defaultEndpoint: 'https://qianfan.baidubce.com/v2/coding',
     capabilities: { toolUsageControl: true },
     models: [
       { id: 'qianfan-code-latest', pricing: { input: 0, output: 0, updatedAt: '2026-05-26' }, capabilities: {} },
@@ -39,11 +43,30 @@ export const codingProviders: Record<string, ProviderDefinition> = {
     modelPatterns: [/^qwen-code/, /^qwen.*coder/, /^qwen3/],
     icon: AliyunIcon,
     category: 'coding',
+    codingProtocol: 'openai-compatible',
+    defaultEndpoint: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     capabilities: { toolUsageControl: true },
     models: [
       { id: 'qwen-code-latest', pricing: { input: 0, output: 0, updatedAt: '2026-05-26' }, capabilities: {} },
       { id: 'qwen2.5-coder-32b-instruct', pricing: { input: 0, output: 0, updatedAt: '2026-05-26' }, capabilities: {} },
       { id: 'qwen3-max', pricing: { input: 0, output: 0, updatedAt: '2026-05-26' }, capabilities: {} },
+    ],
+  },
+  'zhipu-coding': {
+    id: 'zhipu-coding',
+    name: '智谱 GLM 编程',
+    description: '智谱 GLM Coding 模型（OpenAI 兼容协议）',
+    defaultModel: 'glm-5.2',
+    modelPatterns: [/^glm/i],
+    icon: ZhipuIcon,
+    category: 'coding',
+    codingProtocol: 'openai-compatible',
+    defaultEndpoint: 'https://open.bigmodel.cn/api/coding/paas/v4',
+    capabilities: { toolUsageControl: true },
+    models: [
+      { id: 'glm-5.2', pricing: { input: 0, output: 0, updatedAt: '2026-07-24' }, capabilities: {} },
+      { id: 'GLM-5', pricing: { input: 0, output: 0, updatedAt: '2026-07-24' }, capabilities: {} },
+      { id: 'glm-4.7', pricing: { input: 0, output: 0, updatedAt: '2026-07-24' }, capabilities: {} },
     ],
   },
   'claude-coding': {
@@ -54,6 +77,8 @@ export const codingProviders: Record<string, ProviderDefinition> = {
     modelPatterns: [/^claude/],
     icon: AnthropicIcon,
     category: 'coding',
+    codingProtocol: 'anthropic',
+    defaultEndpoint: 'https://api.anthropic.com/v1',
     capabilities: { toolUsageControl: true },
     models: [
       { id: 'claude-4-sonnet', pricing: { input: 0, output: 0, updatedAt: '2026-05-26' }, capabilities: {} },
