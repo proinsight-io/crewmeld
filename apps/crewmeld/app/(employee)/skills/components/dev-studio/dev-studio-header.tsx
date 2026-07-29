@@ -2,6 +2,7 @@
 
 import { Sparkles } from 'lucide-react'
 import type { OnConnectionChange } from '@/lib/dev-studio/connection-context'
+import type { SessionRecord } from '@/lib/dev-studio/session-store'
 import { ConnectionSelector } from './connection-selector'
 import { ConnectionStatus } from './connection-status'
 import { useSessionList } from './hooks/use-session-list'
@@ -14,6 +15,11 @@ import { ToolMetaBar } from './tool-meta-bar'
 interface DevStudioHeaderProps {
   /** Currently displayed session id, or `null` when none is selected. */
   sessionId: string | null
+  /** Fresh row returned by session creation, before SWR's list revalidates. */
+  sessionRecord?: SessionRecord | null
+  /** Persisted right-panel state, optionally overridden by the active dialog. */
+  rightPanelVisible?: boolean
+  onRightPanelVisibleChange?: (visible: boolean) => void
   /** Pivot the dialog to a different session (see useDevStudioSession.setSessionId). */
   onSwitch: (id: string) => void
   /** Create a new session with the chosen coding model (null = system default). */
@@ -52,6 +58,9 @@ interface DevStudioHeaderProps {
  */
 export function DevStudioHeader({
   sessionId,
+  sessionRecord,
+  rightPanelVisible,
+  onRightPanelVisibleChange,
   onSwitch,
   onCreateNew,
   onSwitchModel,
@@ -64,7 +73,9 @@ export function DevStudioHeader({
 }: DevStudioHeaderProps) {
   const sessionListOpts = toolId ? { toolId } : undefined
   const { sessions } = useSessionList(sessionListOpts)
-  const session = sessionId ? (sessions.find((s) => s.id === sessionId) ?? null) : null
+  const session = sessionId
+    ? (sessionRecord ?? sessions.find((s) => s.id === sessionId) ?? null)
+    : null
 
   return (
     <div
@@ -111,7 +122,11 @@ export function DevStudioHeader({
         )}
       </div>
       <ConnectionStatus session={session} />
-      <RightPanelToggle sessionId={sessionId} visible={session?.rightPanelVisible ?? false} />
+      <RightPanelToggle
+        sessionId={sessionId}
+        visible={rightPanelVisible ?? session?.rightPanelVisible ?? false}
+        onVisibleChange={onRightPanelVisibleChange}
+      />
     </div>
   )
 }

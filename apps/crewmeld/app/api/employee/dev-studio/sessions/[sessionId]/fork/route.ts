@@ -72,7 +72,7 @@ export async function POST(req: Request, _ctx: RouteContext): Promise<Response> 
   const userId = auth.userId
 
   // Parse body
-  let body: { toolId?: string }
+  let body: { toolId?: string; modelConfigId?: string | null }
   try {
     body = await req.json()
   } catch {
@@ -118,7 +118,9 @@ export async function POST(req: Request, _ctx: RouteContext): Promise<Response> 
   // and never persisted modelConfigId, so the forked session showed no model).
   let modelEnv: Awaited<ReturnType<typeof resolveModelEnv>>
   try {
-    modelEnv = await resolveModelEnv(sourceSession.modelConfigId)
+    modelEnv = await resolveModelEnv(
+      body.modelConfigId === undefined ? sourceSession.modelConfigId : body.modelConfigId
+    )
   } catch (e) {
     return errorResponse(400, 'model-resolve-failed', String(e), false)
   }
@@ -151,7 +153,7 @@ export async function POST(req: Request, _ctx: RouteContext): Promise<Response> 
     await sessionStore
       .update(running.id, { containerStatus: 'destroyed', activeContainerId: null })
       .catch(() => {})
-    log.info({ oldSessionId: running.id, userId }, 'suspended running session for fork')
+    log.info('suspended running session for fork',{ oldSessionId: running.id, userId })
   }
 
   // Materialise the new session's OWN workspace + coder-state dirs by copying
@@ -243,9 +245,11 @@ export async function POST(req: Request, _ctx: RouteContext): Promise<Response> 
     }
   } catch (e) {
     log.warn(
-      { err: e, sourceSessionId: sourceSession.id, newSessionId },
-      'failed to copy chat history into fork'
-    )
+      'failed to copy chat history into fork',{ 
+        err: e, 
+        sourceSessionId: sourceSession.id, 
+        newSessionId, 
+      })
   }
 
   // Spawn sandbox bound to the NEW session's dirs using the provider's mounts.
@@ -286,7 +290,8 @@ export async function POST(req: Request, _ctx: RouteContext): Promise<Response> 
         ...(provider.id === 'opencode'
           ? {
               OPENCODE_CONFIG_CONTENT: buildOpenCodeConfig({
-                providerID: 'myprovider',
+                providerID: modelEnv.opencodeProtocol === 'anthropic' ? 'anthropic' : 'myprovider',
+                protocol: modelEnv.opencodeProtocol,
                 modelID: modelEnv.opencodeModelID,
                 baseURL: modelEnv.opencodeBaseURL,
                 apiKey: modelEnv.opencodeApiKey,
@@ -319,16 +324,19 @@ export async function POST(req: Request, _ctx: RouteContext): Promise<Response> 
   }
 
   // Promote to running
+  let runningSession
   try {
-    await sessionStore.update(session.id, {
+    runningSession = await sessionStore.update(session.id, {
       activeContainerId: sandbox.id,
       containerStatus: 'running',
     })
   } catch (e) {
     log.warn(
-      { err: e, sessionId: session.id, userId },
-      'failed to mark forked session as running, cleaning up orphan'
-    )
+      'failed to mark forked session as running, cleaning up orphan',{ 
+        err: e, 
+        sessionId: session.id,
+        userId, 
+        })
     client.destroy(sandbox.id).catch(() => {})
     await sessionStore
       .update(session.id, { containerStatus: 'destroyed', activeContainerId: null })
@@ -346,5 +354,6 @@ export async function POST(req: Request, _ctx: RouteContext): Promise<Response> 
     sessionId: session.id,
     containerId: sandbox.id,
     containerStatus: 'running' as const,
+    session: runningSession,
   })
 }

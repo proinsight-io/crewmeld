@@ -4,8 +4,8 @@ export const qwenCodingProvider = createOpenAICompatibleProvider({
   id: 'qwen-coding',
   name: '通义编程',
   description: '阿里云通义编程模型（Qwen Coder）',
-  defaultBaseURL: 'https://dashscope.aliyuncs.com/apps/anthropic',
-  defaultModel: 'qwen-code-latest',
-  models: ['qwen-code-latest', 'qwen2.5-coder-32b-instruct', 'qwen3-max'],
+  defaultBaseURL: 'https://coding.dashscope.aliyuncs.com/v1',
+  defaultModel: 'qwen3-coder-plus',
+  models: ['qwen3-coder-plus', 'qwen3-coder-next'],
   logPrefix: 'QwenCoding',
 })

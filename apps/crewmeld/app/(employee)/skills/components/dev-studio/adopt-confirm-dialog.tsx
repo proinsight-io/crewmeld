@@ -30,6 +30,12 @@ interface AdoptConfirmDialogProps {
    * brief flash of empty content.
    */
   onSuccess?: () => void
+  /**
+   * Optional handoff for callers that stream adoption progress themselves.
+   * When provided, this dialog remains the final operator confirmation but
+   * leaves the actual request and its lifecycle to the caller.
+   */
+  onConfirm?: () => void
 }
 
 /**
@@ -45,12 +51,18 @@ export function AdoptConfirmDialog({
   sessionId,
   onClose,
   onSuccess,
+  onConfirm: onConfirmHandoff,
 }: AdoptConfirmDialogProps) {
   const { t } = useTranslation()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   async function onConfirm() {
+    if (onConfirmHandoff) {
+      onConfirmHandoff()
+      onClose()
+      return
+    }
     setBusy(true)
     setError(null)
     try {

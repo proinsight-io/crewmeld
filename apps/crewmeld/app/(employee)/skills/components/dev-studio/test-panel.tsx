@@ -37,6 +37,8 @@ interface TestPanelProps {
    * container is destroyed; passing it through is harmless when omitted.
    */
   onAdoptSuccess?: () => void
+  /** Starts the parent-owned SSE adoption progress flow after final confirmation. */
+  onAdoptRequested?: (sessionId: string) => void
   /**
    * Session-bound system connection id. Lifted to the dialog so this picker
    * and the header selector stay in sync. The run-test POST sends it so the
@@ -72,6 +74,7 @@ export function TestPanel({
   manifest,
   manifestError,
   onAdoptSuccess,
+  onAdoptRequested,
   connectionId = null,
   onConnectionChange,
 }: TestPanelProps) {
@@ -422,6 +425,13 @@ export function TestPanel({
         sessionId={sessionId}
         onClose={() => setAdoptOpen(false)}
         onSuccess={onAdoptSuccess}
+        onConfirm={
+          onAdoptRequested
+            ? () => {
+                onAdoptRequested(sessionId)
+              }
+            : undefined
+        }
       />
 
       {/* Log viewer modal for retained sandbox */}

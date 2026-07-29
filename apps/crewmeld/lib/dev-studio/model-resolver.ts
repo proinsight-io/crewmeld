@@ -17,6 +17,7 @@ import { decryptConfig } from '@/lib/connectors/encryption'
 import type { ModelDefaultParams } from '@/lib/models/types'
 import { getProviderDefaultModel, PROVIDER_DEFINITIONS } from '@/providers/models'
 import { getDevStudioEnv } from './env'
+import type { CodingProtocol } from '@/providers/models/types'
 
 /**
  * Container env derived from a model selection. Mirrors the variables
@@ -34,6 +35,7 @@ export interface ResolvedModelEnv {
   opencodeBaseURL: string
   opencodeApiKey: string
   opencodeModelID: string
+  opencodeProtocol: CodingProtocol
   ANTHROPIC_AUTH_TOKEN: string
   ANTHROPIC_BASE_URL: string
   ANTHROPIC_MODEL: string
@@ -71,6 +73,8 @@ function buildEnvFromConfig(config: ModelConfigRow): ResolvedModelEnv {
   const baseUrl = config.apiEndpoint || DEFAULT_BASE_URL
   const model = config.modelName || getProviderDefaultModel(config.providerId) || DEFAULT_MODEL
   const providerName = PROVIDER_DEFINITIONS[config.providerId]?.name ?? config.providerId
+  const opencodeProtocol =
+    PROVIDER_DEFINITIONS[config.providerId]?.codingProtocol ?? 'openai-compatible'
 
   // Optional Claude tier overrides. `codingFastModel` (UI "快速模型") sets both
   // SMALL_FAST and HAIKU; SONNET/OPUS map 1:1. Empty/undefined → the env var
@@ -86,6 +90,7 @@ function buildEnvFromConfig(config: ModelConfigRow): ResolvedModelEnv {
     opencodeBaseURL: baseUrl,
     opencodeApiKey: apiKey,
     opencodeModelID: model,
+    opencodeProtocol,
     ANTHROPIC_AUTH_TOKEN: apiKey,
     ANTHROPIC_BASE_URL: baseUrl,
     ANTHROPIC_MODEL: model,
@@ -150,6 +155,7 @@ export async function resolveModelEnv(modelConfigId: string | null): Promise<Res
       opencodeBaseURL: env.ANTHROPIC_BASE_URL,
       opencodeApiKey: env.ANTHROPIC_AUTH_TOKEN,
       opencodeModelID: env.ANTHROPIC_MODEL,
+      opencodeProtocol: 'openai-compatible',
       ANTHROPIC_AUTH_TOKEN: env.ANTHROPIC_AUTH_TOKEN,
       ANTHROPIC_BASE_URL: env.ANTHROPIC_BASE_URL,
       ANTHROPIC_MODEL: env.ANTHROPIC_MODEL,

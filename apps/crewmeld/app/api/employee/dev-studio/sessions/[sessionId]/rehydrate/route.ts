@@ -171,7 +171,8 @@ export async function POST(_req: Request, ctx: RouteContext): Promise<Response> 
         ...(provider.id === 'opencode'
           ? {
               OPENCODE_CONFIG_CONTENT: buildOpenCodeConfig({
-                providerID: 'myprovider',
+                providerID: modelEnv.opencodeProtocol === 'anthropic' ? 'anthropic' : 'myprovider',
+                protocol: modelEnv.opencodeProtocol,
                 modelID: modelEnv.opencodeModelID,
                 baseURL: modelEnv.opencodeBaseURL,
                 apiKey: modelEnv.opencodeApiKey,

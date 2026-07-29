@@ -22,6 +22,8 @@ interface WorkspacePanelProps {
    * tear down its chrome once the container is destroyed.
    */
   onAdoptSuccess?: () => void
+  /** Starts the outer dialog's SSE adoption progress flow. */
+  onAdoptRequested?: (sessionId: string) => void
   /** Session-bound system connection id (shared with the header selector). */
   connectionId?: string | null
   /** Fired when the test-panel picker changes the bound connection. */
@@ -54,6 +56,7 @@ const TAB_DEFS: ReadonlyArray<{ id: WorkspaceTab; labelKey: string; icon: string
 export function WorkspacePanel({
   sessionId,
   onAdoptSuccess,
+  onAdoptRequested,
   connectionId,
   onConnectionChange,
 }: WorkspacePanelProps) {
@@ -134,6 +137,7 @@ export function WorkspacePanel({
           manifest={manifest}
           manifestError={manifestError}
           onAdoptSuccess={onAdoptSuccess}
+          onAdoptRequested={onAdoptRequested}
           connectionId={connectionId ?? null}
           onConnectionChange={onConnectionChange}
         />

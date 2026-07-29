@@ -168,7 +168,11 @@ export async function PATCH(req: Request, ctx: RouteContext): Promise<Response> 
         ...(provider.id === 'opencode'
           ? {
               OPENCODE_CONFIG_CONTENT: buildOpenCodeConfig({
-                providerID: CREWMELD_OPENCODE_PROVIDER_ID,
+                providerID:
+                  modelEnv.opencodeProtocol === 'anthropic'
+                    ? 'anthropic'
+                    : CREWMELD_OPENCODE_PROVIDER_ID,
+                protocol: modelEnv.opencodeProtocol,
                 modelID: modelEnv.opencodeModelID,
                 baseURL: modelEnv.opencodeBaseURL,
                 apiKey: modelEnv.opencodeApiKey,
@@ -228,8 +232,11 @@ export async function PATCH(req: Request, ctx: RouteContext): Promise<Response> 
         session.opencodeSessionId,
         `[系统提示] 编程模型已切换。请重新回答用户上一条问题：\n${replayText}`,
         {
-          providerID: CREWMELD_OPENCODE_PROVIDER_ID,
-          modelID: modelEnv.ANTHROPIC_MODEL,
+          providerID:
+            modelEnv.opencodeProtocol === 'anthropic'
+              ? 'anthropic'
+              : CREWMELD_OPENCODE_PROVIDER_ID,
+          modelID: modelEnv.opencodeModelID,
         }
       )
     } catch (e) {

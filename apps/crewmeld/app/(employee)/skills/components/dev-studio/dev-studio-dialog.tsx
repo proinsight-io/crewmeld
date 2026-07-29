@@ -24,6 +24,7 @@ import { useTranslation } from '@/hooks/use-translation'
 import { useDevStudioUI } from '@/stores/dev-studio-ui/store'
 import { ClaudeChatSurface } from './claude-chat-surface'
 import { AdoptProgressDialog } from './adopt-progress-dialog'
+import { AdoptConfirmDialog } from './adopt-confirm-dialog'
 import { type CloseAction, CloseConfirmDialog } from './close-confirm-dialog'
 import { CreateSessionDialog } from './create-session-dialog'
 import { DevStudioHeader } from './dev-studio-header'
@@ -40,6 +41,8 @@ import { OpencodeChatSurface } from './opencode/opencode-chat-surface'
 import { ResumeOverlay } from './resume-overlay'
 import { SplitPane } from './split-pane'
 import { WorkspacePanel } from './workspace-panel'
+import { DependencyGateDialog } from './dependency-gate-dialog'
+import type { ReviewLibrary } from './dependency-review-card'
 
 interface Props {
   open: boolean
@@ -87,14 +90,19 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
   const chat = useStreamChat(session.sessionId, connectionInitialContext)
   const sessionListOpts = toolId ? { toolId } : undefined
   const { sessions, mutate: mutateSessions } = useSessionList(sessionListOpts)
+  // The POST response carries the new row before the separately cached list
+  // finishes revalidating. Prefer it so an OpenCode session is never mistaken
+  // for a Claude session during that short window.
   const sessionRecord = session.sessionId
-    ? (sessions.find((s) => s.id === session.sessionId) ?? null)
+    ? (sessions.find((s) => s.id === session.sessionId) ?? session.createdSession ?? null)
     : null
-  const showRightPanel = sessionRecord?.rightPanelVisible ?? false
-  // Determine the coder backend for this session. Defaults to 'claudecode' while
-  // the session list is loading (before sessionRecord resolves) so the claude
-  // surface is mounted first and swaps to opencode once the row arrives — the
-  // user sees the spinner state rather than a flash of the wrong surface.
+  const [rightPanelVisibleOverride, setRightPanelVisibleOverride] = useState<boolean | null>(null)
+  useEffect(() => {
+    setRightPanelVisibleOverride(null)
+  }, [session.sessionId])
+  const showRightPanel = rightPanelVisibleOverride ?? sessionRecord?.rightPanelVisible ?? false
+  // A new session has its backend in `createdSession`; existing sessions obtain
+  // it from the session list.
   const coderType: 'claudecode' | 'opencode' = sessionRecord?.coderType ?? 'claudecode'
 
   // Hydrate the bound connection from the session row once it first loads for
@@ -160,6 +168,11 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
    */
   const [pendingSwitchId, setPendingSwitchId] = useState<string | null>(null)
   const adoptSwitchTargetRef = useRef<string | null>(null)
+  const [closeAdoptConfirmOpen, setCloseAdoptConfirmOpen] = useState(false)
+  const [closeDepGateOpen, setCloseDepGateOpen] = useState(false)
+  const [closeDepGateLibraries, setCloseDepGateLibraries] = useState<ReviewLibrary[]>([])
+  const [closeDepGateDomains, setCloseDepGateDomains] = useState<string[]>([])
+  const [closeDepGateIps, setCloseDepGateIps] = useState<string[]>([])
   // Mid-session model switch: a switch recreates the container (~10-30s), so it
   // is gated behind a confirm. `pendingModelSwitch` holds the target until the
   // operator confirms; `switchingModel` disables the selector while in flight.
@@ -199,6 +212,41 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
     onComplete: handleAdoptComplete,
     networkErrorMessage: t('devStudio.adopt.progressNetworkError'),
   })
+
+  const startAdoptProgress = useCallback(
+    (sessionId: string) => {
+      void adoptProgress.start(sessionId)
+    },
+    [adoptProgress]
+  )
+
+  const requestCloseAdopt = useCallback(async () => {
+    const id = session.sessionId
+    if (!id) return
+    try {
+      const res = await fetch(
+        `/api/employee/dev-studio/sessions/${encodeURIComponent(id)}/dependencies`
+      )
+      if (res.ok) {
+        const data = (await res.json()) as {
+          pendingLibraries: ReviewLibrary[]
+          domains: string[]
+          ips: string[]
+          needsReview: boolean
+        }
+        if (data.needsReview) {
+          setCloseDepGateLibraries(data.pendingLibraries)
+          setCloseDepGateDomains(data.domains)
+          setCloseDepGateIps(data.ips)
+          setCloseDepGateOpen(true)
+          return
+        }
+      }
+    } catch {
+      // Preserve the existing direct-adopt fallback when the preflight check is unavailable.
+    }
+    setCloseAdoptConfirmOpen(true)
+  }, [session.sessionId])
 
   // First time the AI writes .crewmeld-studio/manifest.json for this session,
   // auto-open the right workspace panel so the operator sees the freshly
@@ -322,7 +370,7 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
     }
     if (action.kind === 'adopt') {
       adoptSwitchTargetRef.current = switchTarget
-      await adoptProgress.start(id)
+      await requestCloseAdopt()
       return
     }
     try {
@@ -572,6 +620,9 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
         </DialogDescription>
         <DevStudioHeader
           sessionId={session.sessionId}
+          sessionRecord={sessionRecord}
+          rightPanelVisible={showRightPanel}
+          onRightPanelVisibleChange={setRightPanelVisibleOverride}
           onSwitch={handleSwitchRequest}
           onCreateNew={handleCreateNew}
           onSwitchModel={handleSwitchModel}
@@ -687,6 +738,7 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
                 <WorkspacePanel
                   sessionId={session.sessionId}
                   onAdoptSuccess={onClose}
+                  onAdoptRequested={startAdoptProgress}
                   connectionId={selectedConnectionId}
                   onConnectionChange={handleConnectionChange}
                 />
@@ -745,6 +797,27 @@ export function DevStudioDialog({ open, onClose, initialSessionId, toolId }: Pro
         onCancel={() => {
           setCloseConfirmOpen(false)
           setPendingSwitchId(null)
+        }}
+      />
+      <DependencyGateDialog
+        open={closeDepGateOpen}
+        sessionId={session.sessionId ?? ''}
+        libraries={closeDepGateLibraries}
+        domains={closeDepGateDomains}
+        ips={closeDepGateIps}
+        onApproved={() => {
+          setCloseDepGateOpen(false)
+          setCloseAdoptConfirmOpen(true)
+        }}
+        onCancel={() => setCloseDepGateOpen(false)}
+      />
+      <AdoptConfirmDialog
+        open={closeAdoptConfirmOpen}
+        sessionId={session.sessionId ?? ''}
+        onClose={() => setCloseAdoptConfirmOpen(false)}
+        onConfirm={() => {
+          const id = session.sessionId
+          if (id) startAdoptProgress(id)
         }}
       />
       <AdoptProgressDialog

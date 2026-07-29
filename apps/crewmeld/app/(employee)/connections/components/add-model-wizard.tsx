@@ -16,6 +16,7 @@ import {
   ExtraParamsEditor,
   rowsToExtraParams,
 } from './extra-params-editor'
+import { QwenCodingPlanRadio } from './qwen-coding-plan-radio'
 
 interface AddModelWizardProps {
   open: boolean
@@ -196,6 +197,7 @@ export function AddModelWizard({
     ? PROVIDER_DEFINITIONS[selectedProvider.id]?.category === 'coding'
     : false
   const isClaudeCoding = selectedProvider?.id === 'claude-coding'
+  const isQwenCoding = selectedProvider?.id === 'qwen-coding'
   const canSave =
     !!displayName.trim() &&
     (!isCodingProvider ||
@@ -382,16 +384,21 @@ export function AddModelWizard({
             </div>
 
             <div className='space-y-2'>
-              <Label htmlFor='wiz-apiEndpoint'>
-                {t('connections.modelEndpointLabel')}{' '}
-                {isCodingProvider && !isClaudeCoding ? (
-                  requiredMark
-                ) : (
-                  <span className='text-gray-400 text-xs'>
-                    {t('connections.modelEndpointOptional')}
-                  </span>
+              <div className='flex items-center justify-between gap-3'>
+                <Label htmlFor='wiz-apiEndpoint'>
+                  {t('connections.modelEndpointLabel')}{' '}
+                  {isCodingProvider && !isClaudeCoding ? (
+                    requiredMark
+                  ) : (
+                    <span className='text-gray-400 text-xs'>
+                      {t('connections.modelEndpointOptional')}
+                    </span>
+                  )}
+                </Label>
+                {isQwenCoding && (
+                  <QwenCodingPlanRadio value={apiEndpoint} onChange={setApiEndpoint} />
                 )}
-              </Label>
+              </div>
               <Input
                 id='wiz-apiEndpoint'
                 value={apiEndpoint}

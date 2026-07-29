@@ -93,7 +93,10 @@ export async function testModelConnection(
       apiKey,
       messages: [{ role: 'user' as const, content: testPrompt }],
       maxTokens: 100,
-      temperature: 0.1,
+      // Kimi Coding rejects every value except 1; use its documented fixed
+      // value for the connection probe while retaining the low-variance probe
+      // for all other providers.
+      temperature: providerId === 'kimi-coding' ? 1 : 0.1,
       ...(apiEndpoint ? { apiEndpoint } : {}),
     }
 

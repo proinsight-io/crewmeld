@@ -22,6 +22,7 @@ import {
   extraParamsToRows,
   rowsToExtraParams,
 } from './extra-params-editor'
+import { QwenCodingPlanRadio } from './qwen-coding-plan-radio'
 
 /**
  * Fallback endpoint for the Claude coding provider. When the user leaves the
@@ -187,6 +188,7 @@ export function ModelConfigDialog({ open, onOpenChange, config, onSaved }: Model
   // Claude coding is exempt on the endpoint (empty falls back to the default).
   const isCodingProvider = PROVIDER_DEFINITIONS[config.providerId]?.category === 'coding'
   const isClaudeCoding = config.providerId === 'claude-coding'
+  const isQwenCoding = config.providerId === 'qwen-coding'
   const canSave =
     !!displayName.trim() &&
     (!isCodingProvider ||
@@ -262,16 +264,21 @@ export function ModelConfigDialog({ open, onOpenChange, config, onSaved }: Model
           </div>
 
           <div className='space-y-2'>
-            <Label htmlFor='apiEndpoint'>
-              {t('connections.modelConfigEndpointLabel')}{' '}
-              {isCodingProvider && !isClaudeCoding ? (
-                requiredMark
-              ) : (
-                <span className='text-gray-400 text-xs'>
-                  {t('connections.modelConfigEndpointOptional')}
-                </span>
+            <div className='flex items-center justify-between gap-3'>
+              <Label htmlFor='apiEndpoint'>
+                {t('connections.modelConfigEndpointLabel')}{' '}
+                {isCodingProvider && !isClaudeCoding ? (
+                  requiredMark
+                ) : (
+                  <span className='text-gray-400 text-xs'>
+                    {t('connections.modelConfigEndpointOptional')}
+                  </span>
+                )}
+              </Label>
+              {isQwenCoding && (
+                <QwenCodingPlanRadio value={apiEndpoint} onChange={setApiEndpoint} />
               )}
-            </Label>
+            </div>
             <Input
               id='apiEndpoint'
               value={apiEndpoint}

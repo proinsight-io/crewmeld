@@ -91,7 +91,7 @@ export async function POST(req: Request): Promise<Response> {
     await sessionStore
       .update(running.id, { containerStatus: 'destroyed', activeContainerId: null })
       .catch(() => {})
-    log.info({ oldSessionId: running.id, userId }, 'suspended running session for new creation')
+    log.info('suspended running session for new creation', { oldSessionId: running.id, userId })
   }
 
   let env: ReturnType<typeof getDevStudioEnv>
@@ -208,7 +208,8 @@ export async function POST(req: Request): Promise<Response> {
         ...(provider.id === 'opencode'
           ? {
               OPENCODE_CONFIG_CONTENT: buildOpenCodeConfig({
-                providerID: 'myprovider',
+                providerID: modelEnv.opencodeProtocol === 'anthropic' ? 'anthropic' : 'myprovider',
+                protocol: modelEnv.opencodeProtocol,
                 modelID: modelEnv.opencodeModelID,
                 baseURL: modelEnv.opencodeBaseURL,
                 apiKey: modelEnv.opencodeApiKey,
@@ -258,16 +259,18 @@ export async function POST(req: Request): Promise<Response> {
   // this UPDATE where a concurrent request can win. The DB partial unique
   // index `tool_dev_sessions_user_running_uidx` will fire in that case; we
   // catch the violation, tear the orphan container down and return 409.
+  let runningSession
   try {
-    await sessionStore.update(session.id, {
+    runningSession = await sessionStore.update(session.id, {
       activeContainerId: sandbox.id,
       containerStatus: 'running',
     })
   } catch (e) {
-    log.warn(
-      { err: e, sessionId: session.id, userId },
-      'failed to mark session as running, cleaning up orphan'
-    )
+    log.warn('failed to mark session as running, cleaning up orphan', {
+      err: e,
+      sessionId: session.id,
+      userId,
+    })
     client.destroy(sandbox.id).catch(() => {})
     await sessionStore
       .update(session.id, { containerStatus: 'destroyed', activeContainerId: null })
@@ -281,7 +284,7 @@ export async function POST(req: Request): Promise<Response> {
     )
   }
 
-  return Response.json({ sessionId: session.id, endpoint: webuiUrl })
+  return Response.json({ sessionId: session.id, endpoint: webuiUrl, session: runningSession })
 }
 
 /**
