@@ -14,6 +14,7 @@ import { getCurrentUserRole } from '@/lib/auth/rbac/check-role'
 import { getCoderProvider } from '@/lib/dev-studio/coder-providers'
 import { getDevStudioEnv } from '@/lib/dev-studio/env'
 import { resolveModelEnv } from '@/lib/dev-studio/model-resolver'
+import { buildOpenCodeConfig } from '@/lib/dev-studio/opencode-config'
 import { OpenSandboxClient } from '@/lib/dev-studio/opensandbox-client'
 import { paths } from '@/lib/dev-studio/paths'
 import type { ApiError } from '@/lib/dev-studio/schemas'
@@ -90,7 +91,7 @@ export async function POST(req: Request): Promise<Response> {
     await sessionStore
       .update(running.id, { containerStatus: 'destroyed', activeContainerId: null })
       .catch(() => {})
-    log.info({ oldSessionId: running.id, userId }, 'suspended running session for new creation')
+    log.info('suspended running session for new creation', { oldSessionId: running.id, userId })
   }
 
   let env: ReturnType<typeof getDevStudioEnv>
@@ -204,6 +205,17 @@ export async function POST(req: Request): Promise<Response> {
               OPENCODE_PORT: String(env.OPENCODE_PORT),
             }
           : {}),
+        ...(provider.id === 'opencode'
+          ? {
+              OPENCODE_CONFIG_CONTENT: buildOpenCodeConfig({
+                providerID: modelEnv.opencodeProtocol === 'anthropic' ? 'anthropic' : 'myprovider',
+                protocol: modelEnv.opencodeProtocol,
+                modelID: modelEnv.opencodeModelID,
+                baseURL: modelEnv.opencodeBaseURL,
+                apiKey: modelEnv.opencodeApiKey,
+              }),
+            }
+          : {}),
       },
       volumes: provider.mounts(sessionId),
       metadata: { 'crewmeld.purpose': 'dev', 'crewmeld.session-id': sessionId },
@@ -247,16 +259,18 @@ export async function POST(req: Request): Promise<Response> {
   // this UPDATE where a concurrent request can win. The DB partial unique
   // index `tool_dev_sessions_user_running_uidx` will fire in that case; we
   // catch the violation, tear the orphan container down and return 409.
+  let runningSession
   try {
-    await sessionStore.update(session.id, {
+    runningSession = await sessionStore.update(session.id, {
       activeContainerId: sandbox.id,
       containerStatus: 'running',
     })
   } catch (e) {
-    log.warn(
-      { err: e, sessionId: session.id, userId },
-      'failed to mark session as running, cleaning up orphan'
-    )
+    log.warn('failed to mark session as running, cleaning up orphan', {
+      err: e,
+      sessionId: session.id,
+      userId,
+    })
     client.destroy(sandbox.id).catch(() => {})
     await sessionStore
       .update(session.id, { containerStatus: 'destroyed', activeContainerId: null })
@@ -270,7 +284,7 @@ export async function POST(req: Request): Promise<Response> {
     )
   }
 
-  return Response.json({ sessionId: session.id, endpoint: webuiUrl })
+  return Response.json({ sessionId: session.id, endpoint: webuiUrl, session: runningSession })
 }
 
 /**

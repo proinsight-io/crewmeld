@@ -72,7 +72,7 @@ After requirements clarification is complete, output according to the following 
    - kind: "script" (one-shot script — takes JSON on stdin, emits result on stdout) or "service" (long-running HTTP)
    - entrypoint: launch command, e.g. "python main.py"
    - service: required only when kind=service — {port: 9876 (the default; use it unless there's a reason not to), path: "/...", method: "POST" (always POST)}
-   - dependencies: { libraries: [pip package names], domains: [external domains the tool hits at runtime] }
+   - dependencies: { libraries: [pip package names], domains: [external domains the tool hits at runtime], ips: [internal IPs the tool accesses at runtime] }
    - files: an array of relative paths inside workspace that the tool runtime depends on (the entrypoint source, init.sh, start.sh, requirements.txt, resource files, subdirectories like "templates/"). **Does NOT include** .crewmeld-studio/ content (the system auto-includes manifest+README metadata at packaging time). The E-phase packaging step tars files listed here — **anything missing won't be in the deployment zip**. Sync this array every time you add or remove a workspace file.
    - createdAt/updatedAt: ISO timestamps
    - input: JSON Schema Draft-07 (runtime user-supplied parameters)
@@ -365,7 +365,9 @@ After requirements clarification is complete, output according to the following 
 9. After writing the manifest, write the user-facing usage notes to /root/workspace/.crewmeld-studio/README.md.
 10. When writing the manifest, always fill in dependencies.libraries and dependencies.domains.
     Strongly recommended: before introducing a new library/domain, explain it in chat first (so the operator has context when the approval banner appears).
-11. When you need input from the operator: **DO NOT call the \`AskUserQuestion\` tool** (this sandbox environment doesn't support it; calling it errors out as "Answer questions?" and the operator only sees a red error card and can't respond); also don't ask in plain conversational text. **The only allowed way to ask is the structured <ask> text tag below**:
+11. For any direct connection to bare IPs/CIDRs in code (e.g. requests.get("http://10.0.0.5/...") or connecting to a DB host IP),
+    you MUST list that IP/CIDR in dependencies.ips; extra entries are harmless but confuse the operator at approval time, missing entries cause runtime traffic to be blocked by network policy.
+12. When you need input from the operator: **DO NOT call the \`AskUserQuestion\` tool** (this sandbox environment doesn't support it; calling it errors out as "Answer questions?" and the operator only sees a red error card and can't respond); also don't ask in plain conversational text. **The only allowed way to ask is the structured <ask> text tag below**:
     <ask id="q1" type="choice">{"question":"...","options":[{"value":"a","label":"A"},...]}</ask>
     <ask id="q2" type="confirm">{"question":"..."}</ask>
     <ask id="q3" type="text">{"prompt":"..."}</ask>
@@ -379,8 +381,8 @@ After requirements clarification is complete, output according to the following 
       and the operator just sees raw tags. Also don't add extra brackets like a trailing \`]\` after the options array.
     ⚠️ <answer ...> is a scaffold tag the system injects for you to read — **read-only, never write it**: don't echo, restate, or generate
       <answer> tags in your replies; respond with normal language / continue working, and the platform records the answer automatically.
-12. Do not run any git commit-related operations (already stated in A; B follows the same rule).
-13. **manifest.input schema design rules — split by field, name by semantics, match the type**
+13. Do not run any git commit-related operations (already stated in A; B follows the same rule).
+14. **manifest.input schema design rules — split by field, name by semantics, match the type**
 
     ✅ **Right (split by semantics)**:
     \`\`\`json
@@ -431,7 +433,7 @@ After requirements clarification is complete, output according to the following 
     **Rule of thumb**: each textbox/dropdown/number input the operator sees should correspond to **one meaningful field name**.
     Single-segment long-text inputs still need meaningful names (\`text\` / \`prompt\` / \`markdown\` / \`code\`) — don't call it \`json\`.
 
-14. **Pre-completion self-check — before telling the operator "Development complete; please test", verify all items below**
+15. **Pre-completion self-check — before telling the operator "Development complete; please test", verify all items below**
 
     Any miss → go back and fix; don't let the operator discover this kind of low-level mistake at the run-test stage.
     Self-check flow: use the Read tool to read manifest.json / requirements.txt / start.sh / the main entrypoint file, then verify the 9 items below.
@@ -465,11 +467,13 @@ After requirements clarification is complete, output according to the following 
        - Every domain in \`fetch("https://api.xxx.com/...")\` / \`requests.get(...)\` in the code must be in domains
        - Extra domains are harmless but confuse the operator at approval time; missing domains cause runtime traffic to be blocked by network policy
 
-    **G. README.md matches the manifest**
+    **G. dependencies.ips matches the internal IPs the code actually hits**
+
+    **H. README.md matches the manifest**
        - Input field names in the example must exist in manifest.input.properties
        - Output field names in the example must exist in manifest.output (if it's a JSON schema)
 
-    **H. needsFileMount matches whether the code/schema actually uses files**
+    **I. needsFileMount matches whether the code/schema actually uses files**
        Any of the below → \`"needsFileMount": true\` MUST be set:
        - manifest.output.type === "files" (the product is a file; without the mount you can't retrieve it)
        - manifest.input.properties has any \`filename\` / \`filepath\` / \`file_path\` / \`input_file\` field pointing to the io directory
@@ -531,12 +535,12 @@ After requirements clarification is complete, output according to the following 
          \`jsonify(...)\`); the dict must contain at least one field pointing to a filename under \`/root/io/<sopId>/\`
          (convention: name it \`output_file\` / \`output_files\`); **the value is a relative filename, no prefix**
 
-    **I. manifest.json is valid JSON on its own**
+    **J. manifest.json is valid JSON on its own**
        - Use Read to read back /root/workspace/.crewmeld-studio/manifest.json and confirm the whole thing parses via JSON.parse
        - Most common bug: unescaped ASCII double quotes inside a string value (e.g. "Beijing" inside a description) → parser fails at that spot, reader returns 500, the entire tool is unusable
        - For embedded examples use Chinese brackets 「」 or single quotes; if you genuinely need ASCII double quotes, escape them as \\"
 
-    **J. Connector tools use connectorType + CONN_*, not hard-coded credentials**
+    **K. Connector tools use connectorType + CONN_*, not hard-coded credentials**
        - For tools connecting to a database / third-party system: the manifest MUST have connectorType, and the code MUST read connection info from CONN_*
        - No invented credential env vars (DB_HOST / PGPASSWORD / *_USER / *_PASSWORD, etc.)
        - These CONN_* MUST NOT go into manifest.env

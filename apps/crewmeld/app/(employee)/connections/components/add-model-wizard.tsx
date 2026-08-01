@@ -10,11 +10,13 @@ import { cn } from '@/lib/core/utils/cn'
 import type { ProviderDisplayInfo } from '@/lib/models/types'
 import { type TranslationKey, useTranslation } from '@/hooks/use-translation'
 import { PROVIDER_DEFINITIONS } from '@/providers/models'
+import { getCodingProviderDefaults } from '@/lib/models/coding-provider-defaults'
 import {
   type ExtraParamRow,
   ExtraParamsEditor,
   rowsToExtraParams,
 } from './extra-params-editor'
+import { QwenCodingPlanRadio } from './qwen-coding-plan-radio'
 
 interface AddModelWizardProps {
   open: boolean
@@ -22,17 +24,6 @@ interface AddModelWizardProps {
   availableProviders: ProviderDisplayInfo[]
   existingConfigCounts: Record<string, number>
   onCreated: () => void
-}
-
-const CODING_DEFAULT_ENDPOINTS: Record<string, string> = {
-  // Coding providers are driven by Claude Code in dev-studio, which speaks the
-  // Anthropic Messages protocol — so these must be each vendor's
-  // Anthropic-compatible endpoint (ending in /anthropic), NOT their OpenAI
-  // (/v1, /compatible-mode/v1) endpoints.
-  'kimi-coding': 'https://api.moonshot.cn/anthropic',
-  'qianfan-coding': 'https://qianfan.baidubce.com/anthropic/coding',
-  'qwen-coding': 'https://dashscope.aliyuncs.com/apps/anthropic',
-  'claude-coding': 'https://api.anthropic.com/v1',
 }
 
 const PROVIDER_GROUP_IDS = [
@@ -50,7 +41,7 @@ const PROVIDER_GROUP_IDS = [
   },
   {
     key: 'coding' as const,
-    ids: ['kimi-coding', 'qianfan-coding', 'qwen-coding', 'claude-coding'],
+    ids: ['kimi-coding', 'qianfan-coding', 'qwen-coding', 'zhipu-coding', 'claude-coding'],
   },
   // Platform aggregator group is hidden for now
   // { key: 'platform' as const, ids: ['openrouter', 'groq', 'cerebras', 'bedrock', 'vertex'] },
@@ -129,7 +120,7 @@ export function AddModelWizard({
     setDisplayName(selectedProvider.name)
     const def = PROVIDER_DEFINITIONS[selectedProvider.id]
     if (def?.category === 'coding') {
-      setApiEndpoint(CODING_DEFAULT_ENDPOINTS[selectedProvider.id] ?? '')
+      setApiEndpoint(getCodingProviderDefaults(selectedProvider.id)?.endpoint ?? '')
       setModelName(def.defaultModel)
     }
     setStep(2)
@@ -140,12 +131,14 @@ export function AddModelWizard({
     setSaving(true)
     setError(null)
     try {
-      // Claude coding: an empty endpoint falls back to the system default so
-      // the dev-studio container always receives a concrete base URL.
-      const effectiveEndpoint =
-        selectedProvider.id === 'claude-coding' && !apiEndpoint.trim()
-          ? CODING_DEFAULT_ENDPOINTS['claude-coding']
-          : apiEndpoint
+      const effectiveEndpoint = apiEndpoint.trim() || getCodingProviderDefaults(selectedProvider.id)?.endpoint
+      if (
+        getCodingProviderDefaults(selectedProvider.id)?.protocol === 'openai-compatible' &&
+        /\/anthropic(?:\/|$)/i.test(effectiveEndpoint ?? '')
+      ) {
+        setError(t('connections.modelEndpointProtocolMismatch'))
+        return
+      }
       const res = await fetch('/api/employee/models', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -204,6 +197,7 @@ export function AddModelWizard({
     ? PROVIDER_DEFINITIONS[selectedProvider.id]?.category === 'coding'
     : false
   const isClaudeCoding = selectedProvider?.id === 'claude-coding'
+  const isQwenCoding = selectedProvider?.id === 'qwen-coding'
   const canSave =
     !!displayName.trim() &&
     (!isCodingProvider ||
@@ -390,16 +384,21 @@ export function AddModelWizard({
             </div>
 
             <div className='space-y-2'>
-              <Label htmlFor='wiz-apiEndpoint'>
-                {t('connections.modelEndpointLabel')}{' '}
-                {isCodingProvider && !isClaudeCoding ? (
-                  requiredMark
-                ) : (
-                  <span className='text-gray-400 text-xs'>
-                    {t('connections.modelEndpointOptional')}
-                  </span>
+              <div className='flex items-center justify-between gap-3'>
+                <Label htmlFor='wiz-apiEndpoint'>
+                  {t('connections.modelEndpointLabel')}{' '}
+                  {isCodingProvider && !isClaudeCoding ? (
+                    requiredMark
+                  ) : (
+                    <span className='text-gray-400 text-xs'>
+                      {t('connections.modelEndpointOptional')}
+                    </span>
+                  )}
+                </Label>
+                {isQwenCoding && (
+                  <QwenCodingPlanRadio value={apiEndpoint} onChange={setApiEndpoint} />
                 )}
-              </Label>
+              </div>
               <Input
                 id='wiz-apiEndpoint'
                 value={apiEndpoint}
@@ -425,6 +424,15 @@ export function AddModelWizard({
               {isClaudeCoding && (
                 <p className='text-gray-400 text-xs'>
                   {t('connections.modelEndpointClaudeDefaultHint')}
+                </p>
+              )}
+              {isCodingProvider && (
+                <p className='text-gray-400 text-xs'>
+                  {t(
+                    getCodingProviderDefaults(selectedProvider.id)?.protocol === 'anthropic'
+                      ? 'connections.modelProtocolAnthropic'
+                      : 'connections.modelProtocolOpenAICompatible'
+                  )}
                 </p>
               )}
             </div>

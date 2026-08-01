@@ -3,9 +3,9 @@ import { createOpenAICompatibleProvider } from '@/providers/_openai-compat-facto
 export const kimiCodingProvider = createOpenAICompatibleProvider({
   id: 'kimi-coding',
   name: 'Kimi 编程',
-  description: '月之暗面 Kimi 编程模型（Anthropic 兼容协议）',
-  defaultBaseURL: 'https://api.moonshot.cn/anthropic',
-  defaultModel: 'kimi-code-latest',
-  models: ['kimi-code-latest', 'kimi-k2.5', 'moonshot-v1-8k'],
+  description: '月之暗面 Kimi 编程模型（OpenAI 兼容协议）',
+  defaultBaseURL: 'https://api.kimi.com/coding/v1',
+  defaultModel: 'kimi-for-coding',
+  models: ['kimi-for-coding', 'kimi-for-coding-highspeed'],
   logPrefix: 'KimiCoding',
 })

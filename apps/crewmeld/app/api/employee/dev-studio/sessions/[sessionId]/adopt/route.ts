@@ -19,6 +19,10 @@
 import { createLogger } from '@crewmeld/logger'
 import { getCurrentUserRole } from '@/lib/auth/rbac/check-role'
 import { adoptSession } from '@/lib/dev-studio/adopt-handler'
+import {
+  type AdoptProgressEvent,
+  encodeSseEvent,
+} from '@/lib/dev-studio/adopt-progress'
 import { AdoptError } from '@/lib/dev-studio/dependency-prewarmer'
 import { getDevStudioEnv } from '@/lib/dev-studio/env'
 import { OpenSandboxClient } from '@/lib/dev-studio/opensandbox-client'
@@ -30,15 +34,40 @@ interface RouteContext {
   params: Promise<{ sessionId: string }>
 }
 
-export async function PATCH(_req: Request, ctx: RouteContext): Promise<Response> {
+async function destroyContainerBestEffort(
+  activeContainerId: string | null,
+  sessionId: string,
+): Promise<void> {
+  if (!activeContainerId) return
+
+  const env = getDevStudioEnv()
+  const client = new OpenSandboxClient({
+    serverUrl: env.OPENSANDBOX_SERVER_URL,
+    apiKey: env.OPENSANDBOX_API_KEY,
+    useProxy: env.OPENSANDBOX_USE_PROXY,
+  })
+  await client.destroy(activeContainerId).catch((err) => {
+    logger.warn('container destroy failed (TTL backstop)', { sessionId, err })
+  })
+}
+
+function toProgressError(err: unknown): Extract<AdoptProgressEvent, { type: 'error' }> {
+  if (err instanceof AdoptError) {
+    return { type: 'error', message: err.detail, retryable: err.retryable }
+  }
+  return { type: 'error', message: 'Adopt failed', retryable: true }
+}
+
+export async function PATCH(req: Request, ctx: RouteContext): Promise<Response> {
   const { sessionId } = await ctx.params
   const auth = await getCurrentUserRole()
   if (!auth.authenticated || !auth.userId) {
     return new Response('Unauthorized', { status: 401 })
   }
+  const userId = auth.userId
 
   const session = await sessionStore.get(sessionId)
-  if (!session || session.userId !== auth.userId) {
+  if (!session || session.userId !== userId) {
     return new Response('Not Found', { status: 404 })
   }
 
@@ -49,35 +78,52 @@ export async function PATCH(_req: Request, ctx: RouteContext): Promise<Response>
     )
   }
 
+  if (req.headers.get('accept')?.includes('text/event-stream')) {
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const emit = (event: AdoptProgressEvent) => controller.enqueue(encodeSseEvent(event))
+        try {
+          const result = await adoptSession(sessionId, userId, emit)
+          emit({ type: 'progress', step: 'closing' })
+          await destroyContainerBestEffort(session.activeContainerId, sessionId)
+          emit({ type: 'complete', ...result })
+        } catch (err) {
+          logger.warn('streamed adopt failed', { sessionId, err })
+          emit(toProgressError(err))
+        } finally {
+          controller.close()
+        }
+      },
+    })
+
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      },
+    })
+  }
+
   try {
-    const result = await adoptSession(sessionId, auth.userId)
+    const result = await adoptSession(sessionId, userId)
 
     // Best-effort container destroy AFTER adopt completes.
-    if (session.activeContainerId) {
-      const env = getDevStudioEnv()
-      const client = new OpenSandboxClient({
-        serverUrl: env.OPENSANDBOX_SERVER_URL,
-        apiKey: env.OPENSANDBOX_API_KEY,
-        useProxy: env.OPENSANDBOX_USE_PROXY,
-      })
-      await client.destroy(session.activeContainerId).catch((err) => {
-        logger.warn({ sessionId, err }, 'container destroy failed (TTL backstop)')
-      })
-    }
+    await destroyContainerBestEffort(session.activeContainerId, sessionId)
 
     return Response.json(result)
   } catch (err) {
     if (err instanceof AdoptError) {
       logger.warn(
+        'adopt failed (AdoptError)',
         { sessionId, code: err.code, detail: err.detail, retryable: err.retryable },
-        'adopt failed (AdoptError)'
       )
       return Response.json(
         { error: err.code, detail: err.detail, retryable: err.retryable },
         { status: err.code === 'session-not-found' ? 404 : 422 }
       )
     }
-    logger.error({ sessionId, err }, 'adopt failed (unhandled)')
+    logger.error('adopt failed (unhandled)', { sessionId, err })
     throw err
   }
 }

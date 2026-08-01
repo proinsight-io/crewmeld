@@ -46,10 +46,21 @@ export interface ToolDevPhaseHistoryEntry {
  *
  * `libraries` are package identifiers (pip/npm names); `domains` are network
  * egress hostnames the operator has accepted for outbound traffic.
+ *
+ * `rejectedDomains` and `rejectedIps` are optional (backward-compatible with
+ * existing session rows that pre-date the rejected-set feature). They accumulate
+ * egress targets the operator explicitly dismissed so the static scanner does not
+ * re-surface them on subsequent polls.
  */
 export interface ToolDevApprovedDependencies {
   libraries: string[]
   domains: string[]
+  ips: string[]
+  /** Scanned egress domains the operator explicitly rejected; kept so the
+   *  static scanner does not re-surface them on every poll. */
+  rejectedDomains?: string[]
+  /** Scanned egress IPs the operator explicitly rejected. */
+  rejectedIps?: string[]
 }
 
 /**
@@ -115,7 +126,7 @@ export const toolDevSessions = pgTable(
     approvedDependencies: jsonb('approved_dependencies')
       .$type<ToolDevApprovedDependencies>()
       .notNull()
-      .default({ libraries: [], domains: [] }),
+      .default({ libraries: [], domains: [], ips: [] }),
 
     /**
      * Cache metadata for the most recent successfully packaged tool code.

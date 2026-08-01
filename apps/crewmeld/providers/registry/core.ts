@@ -17,6 +17,7 @@ import { qwenCodingProvider } from '@/providers/qwen-coding'
 import type { ProviderConfig, ProviderId } from '@/providers/types'
 import { vllmProvider } from '@/providers/vllm'
 import { zhipuProvider } from '@/providers/zhipu'
+import { zhipuCodingProvider } from '@/providers/zhipu-coding'
 
 const logger = createLogger('ProviderRegistry')
 
@@ -50,6 +51,7 @@ const REGISTRY_ENTRIES: RegistryEntry[] = [
   ['kimi-coding', kimiCodingProvider],
   ['qianfan-coding', qianfanCodingProvider],
   ['qwen-coding', qwenCodingProvider],
+  ['zhipu-coding', zhipuCodingProvider],
   ['claude-coding', claudeCodingProvider],
 ]
 
@@ -109,6 +111,7 @@ const CAPABILITY_OVERRIDES: Partial<Record<ProviderId, ProviderCapabilityFlags>>
   'kimi-coding': { streaming: true, functionCalling: true, visionInput: false, domesticHosting: true },
   'qianfan-coding': { streaming: true, functionCalling: true, visionInput: false, domesticHosting: true },
   'qwen-coding': { streaming: true, functionCalling: true, visionInput: false, domesticHosting: true },
+  'zhipu-coding': { streaming: true, functionCalling: true, visionInput: false, domesticHosting: true },
   'claude-coding': { streaming: true, functionCalling: true, visionInput: false, domesticHosting: false },
 }
 
@@ -608,6 +611,7 @@ const TIER_ASSIGNMENTS: Record<ProviderId, ProviderTier> = {
   'qwen-coding': 'enterprise',
   'qianfan-coding': 'enterprise',
   'kimi-coding': 'standard',
+  'zhipu-coding': 'standard',
 }
 
 function getTierFor(pid: ProviderId): ProviderTier {

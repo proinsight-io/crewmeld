@@ -22,6 +22,7 @@ export interface OpencodePart {
 export interface OpencodeUiMessage {
   id: string
   role: 'user' | 'assistant'
+  aborted?: boolean
   parts: OpencodePart[]
 }
 

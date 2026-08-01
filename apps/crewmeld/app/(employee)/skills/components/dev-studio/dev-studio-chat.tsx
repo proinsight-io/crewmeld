@@ -4,7 +4,6 @@ import { useEffect, useRef } from 'react'
 import { Loader2 } from 'lucide-react'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useTranslation } from '@/hooks/use-translation'
-import { DependencyReviewInline } from './dependency-review-card'
 import { DevStudioMessage } from './dev-studio-message'
 import type { ChatMessage } from './hooks/use-stream-chat'
 
@@ -127,11 +126,6 @@ export function DevStudioChat({
             <span>{t('devStudio.chat.thinking')}</span>
           </div>
         )}
-        {/* Package allow-list review — appears as soon as the AI has written a
-            manifest with unapproved deps (in step with the test panel's
-            dependency list), gating adoption until the operator approves or cancels.
-            Not gated on the turn finishing, so it no longer lags the test page. */}
-        <DependencyReviewInline sessionId={sessionId} />
         <div ref={bottomRef} />
       </div>
     </ScrollArea>

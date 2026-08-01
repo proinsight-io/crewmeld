@@ -9,7 +9,8 @@ const SESSIONS_SWR_KEY_PREFIX = SESSIONS_URL
 
 interface CreateSessionResponse {
   sessionId: string
-  status: 'ready'
+  /** Returned for a newly-created session, before the session-list cache refreshes. */
+  session?: SessionRecord
 }
 
 interface ApiError {
@@ -22,6 +23,7 @@ export type SessionStatus = 'idle' | 'resolving' | 'select-model' | 'creating' |
 
 export interface UseDevStudioSessionResult {
   sessionId: string | null
+  createdSession: SessionRecord | null
   status: SessionStatus
   error: ApiError | null
   retry: () => void
@@ -65,9 +67,11 @@ export function useDevStudioSession(
 ): UseDevStudioSessionResult {
   const { initialSessionId = null, toolId } = opts
   const [sessionId, setSessionId] = useState<string | null>(null)
+  const [createdSession, setCreatedSession] = useState<SessionRecord | null>(null)
   const [status, setStatus] = useState<SessionStatus>('idle')
   const [error, setError] = useState<ApiError | null>(null)
   const [attempt, setAttempt] = useState(0)
+  const [forkFromAdoptedToolId, setForkFromAdoptedToolId] = useState<string | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   // Track which session id (if any) was created by this hook instance so the
   // unmount cleanup only destroys our own — never a session the user pivoted
@@ -103,6 +107,7 @@ export function useDevStudioSession(
       const body = (await res.json()) as CreateSessionResponse
       sessionIdRef.current = body.sessionId
       ownedSessionIdRef.current = body.sessionId
+      setCreatedSession(body.session ?? null)
       setSessionId(body.sessionId)
       setStatus('ready')
       // The BFF just created a new tool_dev_sessions row with
@@ -124,10 +129,48 @@ export function useDevStudioSession(
    */
   const resume = useCallback((id: string) => {
     sessionIdRef.current = id
+    setCreatedSession(null)
     setSessionId(id)
     setStatus('ready')
     setError(null)
   }, [])
+
+  const forkTool = useCallback(
+    async (signal: AbortSignal, modelConfigId: string | null) => {
+      if (!toolId) return false
+      setStatus('creating')
+      setError(null)
+      try {
+        const res = await fetch(`${SESSIONS_URL}/${encodeURIComponent(toolId)}/fork`, {
+          method: 'POST',
+          signal,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ toolId, modelConfigId }),
+        })
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as Partial<ApiError>
+          setError({ error: body.error ?? 'unknown', detail: body.detail, retryable: body.retryable ?? false })
+          setStatus('error')
+          return false
+        }
+        const body = (await res.json()) as CreateSessionResponse
+        sessionIdRef.current = body.sessionId
+        ownedSessionIdRef.current = body.sessionId
+        setCreatedSession(body.session ?? null)
+        setSessionId(body.sessionId)
+        setForkFromAdoptedToolId(null)
+        setStatus('ready')
+        void globalMutate((key) => typeof key === 'string' && key.startsWith(SESSIONS_SWR_KEY_PREFIX))
+        return true
+      } catch (e) {
+        if ((e as Error).name === 'AbortError') return false
+        setError({ error: 'network', detail: String(e), retryable: true })
+        setStatus('error')
+        return false
+      }
+    },
+    [toolId]
+  )
 
   /**
    * Resolve which session the dev-studio entry should land on — without ever
@@ -168,12 +211,14 @@ export function useDevStudioSession(
           // The list is ordered by lastActiveAt desc. Prefer the most recent
           // active iteration; for the tool-scoped entry only, fall back to the
           // adopted original (read-only landing on the published baseline).
-          const recent = toolId
-            ? (sessions.find((s) => s.status === 'active') ??
-              sessions.find((s) => s.status === 'adopted'))
-            : sessions.find((s) => s.status === 'active')
-          if (recent) {
-            resume(recent.id)
+          const active = sessions.find((s) => s.status === 'active')
+          if (active) {
+            resume(active.id)
+            return
+          }
+          if (toolId && sessions.some((s) => s.status === 'adopted')) {
+            setForkFromAdoptedToolId(toolId)
+            setStatus('select-model')
             return
           }
         }
@@ -249,17 +294,23 @@ export function useDevStudioSession(
    */
   const startWithModel = useCallback(
     (modelConfigId: string | null) => {
-      void create(new AbortController().signal, modelConfigId)
+      const signal = new AbortController().signal
+      if (forkFromAdoptedToolId === toolId) {
+        void forkTool(signal, modelConfigId)
+        return
+      }
+      void create(signal, modelConfigId)
     },
-    [create]
+    [create, forkFromAdoptedToolId, forkTool, toolId]
   )
 
   const switchTo = useCallback((id: string) => {
     sessionIdRef.current = id
+    setCreatedSession(null)
     setSessionId(id)
     setStatus('ready')
     setError(null)
   }, [])
 
-  return { sessionId, status, error, retry, startWithModel, setSessionId: switchTo }
+  return { sessionId, createdSession, status, error, retry, startWithModel, setSessionId: switchTo }
 }

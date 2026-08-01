@@ -52,6 +52,7 @@ export const providers: Record<ProviderId, ProviderMetadata> = {
   'kimi-coding': buildProviderMetadata('kimi-coding'),
   'qianfan-coding': buildProviderMetadata('qianfan-coding'),
   'qwen-coding': buildProviderMetadata('qwen-coding'),
+  'zhipu-coding': buildProviderMetadata('zhipu-coding'),
 }
 
 export function updateOllamaProviderModels(models: string[]): void {

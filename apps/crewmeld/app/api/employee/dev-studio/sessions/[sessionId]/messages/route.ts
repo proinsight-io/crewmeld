@@ -21,6 +21,7 @@ interface RouteContext {
 interface OpencodeMessageInfo {
   id: string
   role: 'user' | 'assistant'
+  aborted: boolean
 }
 
 function parseMessageInfo(info: unknown): OpencodeMessageInfo | null {
@@ -28,7 +29,12 @@ function parseMessageInfo(info: unknown): OpencodeMessageInfo | null {
   const o = info as Record<string, unknown>
   if (typeof o['id'] !== 'string') return null
   if (o['role'] !== 'user' && o['role'] !== 'assistant') return null
-  return { id: o['id'], role: o['role'] }
+  const error = o['error'] as { name?: unknown } | undefined
+  return {
+    id: o['id'],
+    role: o['role'],
+    aborted: o['finish'] === 'abort' || error?.name === 'MessageAbortedError',
+  }
 }
 
 /**
@@ -45,6 +51,7 @@ interface OpencodePart {
 interface OpencodeUiMessage {
   id: string
   role: 'user' | 'assistant'
+  aborted?: boolean
   parts: OpencodePart[]
 }
 
@@ -69,7 +76,7 @@ function toUiMessages(raw: OpencodeMessageWithParts[]): OpencodeUiMessage[] {
     const parts = Array.isArray(item.parts)
       ? item.parts.map(parsePart).filter((p): p is OpencodePart => p !== null)
       : []
-    mapped.push({ id: info.id, role: info.role, parts })
+    mapped.push({ id: info.id, role: info.role, aborted: info.aborted, parts })
   }
   return mapped
 }

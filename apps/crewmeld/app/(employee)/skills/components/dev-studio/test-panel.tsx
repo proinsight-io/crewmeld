@@ -11,7 +11,7 @@ import { AdoptConfirmDialog } from './adopt-confirm-dialog'
 import { ConnectionPicker } from './connection-picker'
 import { DependencyGateDialog } from './dependency-gate-dialog'
 import { DependencyListEditor } from './dependency-list-editor'
-import type { ReviewLibrary } from './dependency-review-card'
+import { DependencyReviewInline, type ReviewLibrary } from './dependency-review-card'
 import { useEgressMode } from './hooks/use-egress-mode'
 import { IoFilesPanel } from './io-files-panel'
 import { RunControls } from './run-controls'
@@ -37,6 +37,8 @@ interface TestPanelProps {
    * container is destroyed; passing it through is harmless when omitted.
    */
   onAdoptSuccess?: () => void
+  /** Starts the parent-owned SSE adoption progress flow after final confirmation. */
+  onAdoptRequested?: (sessionId: string) => void
   /**
    * Session-bound system connection id. Lifted to the dialog so this picker
    * and the header selector stay in sync. The run-test POST sends it so the
@@ -72,6 +74,7 @@ export function TestPanel({
   manifest,
   manifestError,
   onAdoptSuccess,
+  onAdoptRequested,
   connectionId = null,
   onConnectionChange,
 }: TestPanelProps) {
@@ -109,6 +112,7 @@ export function TestPanel({
   const [depGateOpen, setDepGateOpen] = useState(false)
   const [depGateLibraries, setDepGateLibraries] = useState<ReviewLibrary[]>([])
   const [depGateDomains, setDepGateDomains] = useState<string[]>([])
+  const [depGateIps, setDepGateIps] = useState<string[]>([])
 
   const handleAdoptClick = useCallback(async () => {
     try {
@@ -119,11 +123,13 @@ export function TestPanel({
         const data = (await res.json()) as {
           pendingLibraries: ReviewLibrary[]
           domains: string[]
+          ips: string[]
           needsReview: boolean
         }
         if (data.needsReview) {
           setDepGateLibraries(data.pendingLibraries)
           setDepGateDomains(data.domains)
+          setDepGateIps(data.ips)
           setDepGateOpen(true)
           return
         }
@@ -303,6 +309,8 @@ export function TestPanel({
     <div className='space-y-4 p-4' data-testid='dev-studio:test-panel'>
       <ToolMetaSummary manifest={manifest} />
 
+      <DependencyReviewInline sessionId={sessionId} refreshKey={manifest.updatedAt} />
+
       {/* Actual dependency list — pre-filled, optional to edit/save. */}
       <DependencyListEditor sessionId={sessionId} />
 
@@ -404,6 +412,7 @@ export function TestPanel({
         sessionId={sessionId}
         libraries={depGateLibraries}
         domains={depGateDomains}
+        ips={depGateIps}
         onApproved={() => {
           setDepGateOpen(false)
           setAdoptOpen(true)
@@ -416,6 +425,13 @@ export function TestPanel({
         sessionId={sessionId}
         onClose={() => setAdoptOpen(false)}
         onSuccess={onAdoptSuccess}
+        onConfirm={
+          onAdoptRequested
+            ? () => {
+                onAdoptRequested(sessionId)
+              }
+            : undefined
+        }
       />
 
       {/* Log viewer modal for retained sandbox */}
@@ -515,6 +531,7 @@ function EnvForm({ schema, values, onChange }: EnvFormProps) {
     <div className='space-y-3' data-testid='dev-studio:env-form'>
       {Object.entries(properties).map(([key, prop]) => {
         const isPassword = (prop as Record<string, unknown>).format === 'password'
+        const description = (prop as Record<string, unknown>).description
         const val = values[key]
         const id = `test-panel-env-${key}`
 
@@ -522,9 +539,9 @@ function EnvForm({ schema, values, onChange }: EnvFormProps) {
           <div key={key} className='space-y-1'>
             <label htmlFor={id} className='block text-sm'>
               {((prop as Record<string, unknown>).title as string) ?? key}
-              {(prop as Record<string, unknown>).description && (
+              {typeof description === 'string' && description.length > 0 && (
                 <span className='ml-2 text-muted-foreground text-xs'>
-                  {(prop as Record<string, unknown>).description as string}
+                  {description}
                 </span>
               )}
             </label>

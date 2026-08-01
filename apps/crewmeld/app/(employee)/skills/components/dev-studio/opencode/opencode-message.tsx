@@ -29,6 +29,7 @@ interface OpencodePart {
 export interface OpencodeUiMessage {
   id: string
   role: 'user' | 'assistant'
+  aborted?: boolean
   parts: OpencodePart[]
 }
 
@@ -298,6 +299,11 @@ export function OpencodeMessage({ message }: { message: OpencodeUiMessage }): Re
         ) : (
           <OpencodePartView key={g.part.id} part={g.part} />
         )
+      )}
+      {message.aborted && (
+        <div className='text-xs text-muted-foreground' data-testid='opencode-message:aborted'>
+          已中止
+        </div>
       )}
     </div>
   )

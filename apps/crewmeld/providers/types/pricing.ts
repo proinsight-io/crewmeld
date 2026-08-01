@@ -25,6 +25,7 @@ export type ProviderId =
   | 'qwen-coding'
   | 'vllm'
   | 'zhipu'
+  | 'zhipu-coding'
 
 /** Rate card for a single model, denominated in USD per one-million tokens. */
 export interface ModelPricing {

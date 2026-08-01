@@ -43,8 +43,13 @@ import { AskExtractor } from '@/lib/dev-studio/ask-extractor'
 import { getCoderProvider } from '@/lib/dev-studio/coder-providers'
 import { getDevStudioEnv } from '@/lib/dev-studio/env'
 import { FileActivityDetector } from '@/lib/dev-studio/file-activity-detector'
-import { createOpencodeSession, promptOpencodeAsync } from '@/lib/dev-studio/opencode-rest'
+import {
+  CREWMELD_OPENCODE_PROVIDER_ID,
+  createOpencodeSession,
+  promptOpencodeAsync,
+} from '@/lib/dev-studio/opencode-rest'
 import { OpenSandboxClient } from '@/lib/dev-studio/opensandbox-client'
+import { resolveModelEnv } from '@/lib/dev-studio/model-resolver'
 import { getOpencodeStudioInstructions } from '@/lib/dev-studio/persona-extensions'
 import { detectPhase } from '@/lib/dev-studio/phase-detector'
 import { MarkerExtractor } from '@/lib/dev-studio/phase-marker-extractor'
@@ -547,7 +552,11 @@ export async function POST(req: Request, ctx: RouteContext): Promise<Response> {
         isFirstMessage && !userMessage.trim().startsWith('/')
           ? `/brainstorming ${userMessage.trim()}`
           : userMessage
-      await promptOpencodeAsync(baseUrl, headers, opencodeSessionId, promptText, undefined)
+      const modelEnv = await resolveModelEnv(session.modelConfigId ?? null)
+      await promptOpencodeAsync(baseUrl, headers, opencodeSessionId!, promptText, {
+        providerID: CREWMELD_OPENCODE_PROVIDER_ID,
+        modelID: modelEnv.opencodeModelID,
+      })
     } catch (e) {
       return new Response(
         JSON.stringify({ error: 'opencode-upstream-failed', detail: String(e), retryable: true }),

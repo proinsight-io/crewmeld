@@ -20,6 +20,7 @@ interface DependencyGateDialogProps {
   /** Declared domains (read-only, shown for context). */
   domains: string[]
   /** Called after a successful auto-approve; caller proceeds to the adopt-confirm dialog. */
+  ips: string[]
   onApproved: () => void
   onCancel: () => void
 }
@@ -37,6 +38,7 @@ export function DependencyGateDialog({
   sessionId,
   libraries,
   domains,
+  ips,
   onApproved,
   onCancel,
 }: DependencyGateDialogProps) {
@@ -89,6 +91,12 @@ export function DependencyGateDialog({
               {t('devStudio.dependencyReview.domainsLabel')}:
             </span>{' '}
             <span className='font-mono'>{domains.join(', ')}</span>
+          </div>
+        )}
+        {ips.length > 0 && (
+          <div className='text-xs' data-testid='dev-studio:dependency-gate-dialog:ips'>
+            <span className='font-semibold text-muted-foreground'>IP:</span>{' '}
+            <span className='font-mono'>{ips.join(', ')}</span>
           </div>
         )}
 

@@ -31,6 +31,7 @@ const RejectSchema = z
   .object({
     libraries: z.array(z.string()).optional(),
     domains: z.array(z.string()).optional(),
+    ips: z.array(z.string()).optional(),
     note: z.string().max(500).optional(),
   })
   .strict()
@@ -42,11 +43,13 @@ function formatNote(
   inject: RejectInject,
   libraries: string[],
   domains: string[],
+  ips: string[],
   note?: string
 ): string {
   const items = [
     ...libraries.map((l) => `${inject.depsRejectedLibLabel}${l}`),
     ...domains.map((d) => `${inject.depsRejectedDomLabel}${d}`),
+    ...ips.map((ip) => `${inject.depsRejectedIpLabel}${ip}`),
   ].join(inject.depsRejectedItemSep)
   const reason = note ? `${inject.depsRejectedReasonPrefix}${note}` : ''
   return inject.depsRejectedPrompt.replace('{items}', items).replace('{reason}', reason)
@@ -76,11 +79,12 @@ export async function POST(req: Request, ctx: RouteContext): Promise<Response> {
 
   const libraries = parsed.data.libraries ?? []
   const domains = parsed.data.domains ?? []
-  if (libraries.length === 0 && domains.length === 0) {
+  const ips = parsed.data.ips ?? []
+  if (libraries.length === 0 && domains.length === 0 && ips.length === 0) {
     return new Response(
       JSON.stringify({
         error: 'nothing-to-reject',
-        detail: 'At least one library or domain must be supplied.',
+        detail: 'At least one library, domain, or IP must be supplied.',
         retryable: false,
       }),
       { status: 400, headers: { 'content-type': 'application/json' } }
@@ -88,7 +92,7 @@ export async function POST(req: Request, ctx: RouteContext): Promise<Response> {
   }
 
   const inject = locales[resolveLocale(req)].devStudio.inject
-  const message = formatNote(inject, libraries, domains, parsed.data.note)
+  const message = formatNote(inject, libraries, domains, ips, parsed.data.note)
   sessionStore.queueSystemNote(sessionId, message)
   return new Response(null, { status: 204 })
 }

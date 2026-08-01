@@ -7,6 +7,14 @@ export interface OpencodeMessageWithParts {
   parts: unknown[]
 }
 
+/** The provider id registered by the CrewMeld OpenCode container image. */
+export const CREWMELD_OPENCODE_PROVIDER_ID = 'myprovider'
+
+export interface OpencodeModelRef {
+  providerID: string
+  modelID: string
+}
+
 type Headers = Record<string, string>
 
 function jsonHeaders(headers: Headers): Headers {
@@ -91,10 +99,9 @@ export async function promptOpencodeAsync(
   headers: Headers,
   sessionId: string,
   text: string,
-  model?: { providerID: string; modelID: string }
+  model: OpencodeModelRef
 ): Promise<void> {
-  const body: Record<string, unknown> = { parts: [{ type: 'text', text }] }
-  if (model) body.model = model
+  const body = { parts: [{ type: 'text', text }], model }
   const res = await fetch(
     withAuthToken(`${baseUrl}/session/${encodeURIComponent(sessionId)}/prompt_async`, headers),
     {
@@ -104,6 +111,43 @@ export async function promptOpencodeAsync(
     }
   )
   if (!res.ok) throw new Error(`opencode prompt_async failed: ${res.status}`)
+}
+
+/** Abort an in-flight OpenCode session while preserving its partial history. */
+export async function abortOpencodeSession(
+  baseUrl: string,
+  headers: Headers,
+  sessionId: string
+): Promise<boolean> {
+  const res = await fetch(
+    withAuthToken(`${baseUrl}/session/${encodeURIComponent(sessionId)}/abort`, headers),
+    { method: 'POST', headers: jsonHeaders(headers) }
+  )
+  if (!res.ok) throw new Error(`opencode abort failed: ${res.status}`)
+  return (await res.json()) as boolean
+}
+
+/** Return the newest operator message, excluding internal replay/system prompts. */
+export function findLastVisibleUserText(messages: OpencodeMessageWithParts[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const item = messages[i]
+    const info = item.info as { role?: unknown } | null
+    if (info?.role !== 'user') continue
+
+    const text = item.parts
+      .flatMap((part) => {
+        if (!part || typeof part !== 'object') return []
+        const candidate = part as { type?: unknown; text?: unknown }
+        return candidate.type === 'text' && typeof candidate.text === 'string'
+          ? [candidate.text]
+          : []
+      })
+      .join('\n')
+      .trim()
+
+    if (text && !text.startsWith('[系统提示]') && !text.startsWith('[System]')) return text
+  }
+  return null
 }
 
 /** Read message+part history (time ascending). */

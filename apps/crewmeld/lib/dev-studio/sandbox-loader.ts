@@ -382,12 +382,12 @@ export async function runFreshTest(args: RunFreshTestArgs): Promise<void> {
       args.executionId
     )
     needsIoMount = true
-    logger.info({
+    logger.info('seeded session io into sop-files (test mode: sopExecId = executionId)', {
       sessionId: args.sessionId,
       executionId: args.executionId,
       seededFiles: seedResult.copied,
       sopFilesDir: seedResult.sopFilesDir,
-    }, 'seeded session io into sop-files (test mode: sopExecId = executionId)')
+    })
   }
 
   // ── Step 2: cache-libs ─────────────────────────────────────────
