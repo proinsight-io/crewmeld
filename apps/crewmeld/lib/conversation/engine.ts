@@ -31,7 +31,7 @@ import {
   workLogs,
 } from '@crewmeld/db'
 import { createLogger } from '@crewmeld/logger'
-import { and, eq, sql } from 'drizzle-orm'
+import { and, eq, inArray, sql } from 'drizzle-orm'
 import { detect } from 'tinyld'
 import { v4 as uuidv4 } from 'uuid'
 import { CodedError } from '@/lib/core/errors'
@@ -48,6 +48,7 @@ import { getEmployeeKnowledgeBaseIds, queryEmployeeKnowledge } from './knowledge
 import { mergeExtraParams, resolveModelConfig } from './model-config'
 import { buildSystemPrompt } from './persona'
 import { executeSopFromConversation } from './sop-bridge'
+import { extractSopExecutionIds, findUnverifiedActiveSopClaims } from './sop-claim-guard'
 import type {
   ChatCompletionChunk,
   ConversationEvent,
@@ -76,6 +77,23 @@ import { queryUserTasks, type TaskFilter } from './task-query'
 const logger = createLogger('ConversationEngine')
 
 const MAX_TOOL_ROUNDS = 5
+
+/**
+ * Prefix stamped on historical assistant replies that were genuinely derived
+ * from a real SOP trigger / check_sop_status call (see `sopDerived` in
+ * `conversationMessages.metadata`). Keeps the model from treating its own
+ * past SOP acknowledgements as a plain-chat pattern to imitate on a later,
+ * similar-looking request without actually invoking the tool again.
+ */
+const SOP_DERIVED_MARKER = '[Grounded in a real tool result] '
+
+function isSopDerived(metadata: unknown): boolean {
+  return (
+    typeof metadata === 'object' &&
+    metadata !== null &&
+    (metadata as Record<string, unknown>).sopDerived === true
+  )
+}
 
 /**
  * Process user message — returns SSE stream
@@ -192,6 +210,7 @@ export async function processMessage(
       toolCallId: conversationMessages.toolCallId,
       toolName: conversationMessages.toolName,
       createdAt: conversationMessages.createdAt,
+      metadata: conversationMessages.metadata,
     })
     .from(conversationMessages)
     .where(eq(conversationMessages.conversationId, conversationId))
@@ -241,7 +260,10 @@ export async function processMessage(
     }
     return {
       role: row.role as EngineMessage['role'],
-      content: row.content,
+      content:
+        row.role === 'assistant' && isSopDerived(row.metadata) && row.content
+          ? `${SOP_DERIVED_MARKER}${row.content}`
+          : row.content,
       tool_calls: row.toolCalls as ToolCall[] | undefined,
       tool_call_id: row.toolCallId ?? undefined,
       name: row.toolName ?? undefined,
@@ -779,6 +801,15 @@ async function runMessageLoop(
   /** Set of SOP IDs triggered in this conversation round — prevent cross-round duplicate triggers */
   const triggeredSopIds = new Set<string>()
 
+  /**
+   * Whether the PREVIOUS round genuinely triggered a SOP or queried its status
+   * (as opposed to an intercepted/denied call). The next round's plain-text
+   * summary of that result gets stamped `metadata.sopDerived = true` so future
+   * turns can tell this reply is grounded in a real tool call, not imitation
+   * of an earlier one — see sop-claim-guard.ts for the companion safety net.
+   */
+  let previousRoundHadSopOutput = false
+
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     // Notify frontend message started
     const startEvent: ConversationEvent = {
@@ -831,6 +862,38 @@ async function runMessageLoop(
 
     // Plain text reply — save and end
     if (!toolCalls || toolCalls.length === 0) {
+      // Safety net: the model may skip the required sop_<id> tool_call and
+      // instead free-write a "task started" acknowledgement, copying the
+      // wording/ID format it has seen in its own earlier (real) replies.
+      // Verify every execution ID it claims as active against sop_executions
+      // before this reply is persisted/sent — an unverified claim is blocked
+      // and the model gets one more round to actually invoke the tool.
+      const claimedIds = extractSopExecutionIds(content ?? '')
+      if (claimedIds.length > 0) {
+        const existingRows = await db
+          .select({ id: sopExecutions.id })
+          .from(sopExecutions)
+          .where(inArray(sopExecutions.id, claimedIds))
+        const existingIds = new Set(existingRows.map((r) => r.id))
+        const bogusIds = findUnverifiedActiveSopClaims(content ?? '', existingIds)
+
+        if (bogusIds.length > 0) {
+          logger.warn('Blocked unverified SOP execution claim from LLM reply', {
+            conversationId,
+            employeeId,
+            model: modelConfig.model,
+            round,
+            bogusIds,
+          })
+          messages.push({ role: 'assistant', content })
+          messages.push({
+            role: 'system',
+            content: t('sopClaimUnverified', lang, { ids: bogusIds.join(', ') }),
+          })
+          continue
+        }
+      }
+
       const assistantMsgId = uuidv4()
 
       await db.insert(conversationMessages).values({
@@ -842,6 +905,7 @@ async function runMessageLoop(
         metadata: {
           ...(knowledgeReferences.length > 0 ? { references: knowledgeReferences } : {}),
           ...(collectedFileMetadata.length > 0 ? { files: collectedFileMetadata } : {}),
+          ...(previousRoundHadSopOutput ? { sopDerived: true } : {}),
         },
       })
 
@@ -886,6 +950,8 @@ async function runMessageLoop(
     // Process each tool_call (max 1 SOP per round)
     let sopCalledThisRound = false
     let hasRealToolExecution = false
+    /** This round's SOP-output flag — copied to `previousRoundHadSopOutput` after the loop. */
+    let sopOutputThisRound = false
     for (const tc of toolCalls) {
       const toolDisplayName = tc.function.name.startsWith('sop_')
         ? t('sopLabel', lang)
@@ -922,6 +988,7 @@ async function runMessageLoop(
         } else {
           const statusResult = await querySopExecutionStatus(executionId, lang)
           toolResult = statusResult.summary
+          sopOutputThisRound = true
         }
       } else if (tc.function.name === 'query_my_tasks') {
         // User task list query
@@ -998,6 +1065,7 @@ async function runMessageLoop(
         } else {
           triggeredSopIds.add(sopId)
           sopCalledThisRound = true
+          sopOutputThisRound = true
 
           // Push progress: inform user which SOP is being executed
           const sopDisplayName = sopNameMap.get(tc.function.name) ?? 'SOP'
@@ -1300,6 +1368,8 @@ async function runMessageLoop(
       }
       enqueue(encodeSSE(toolResultEvent))
     }
+
+    previousRoundHadSopOutput = sopOutputThisRound
 
     // Continue loop to let LLM process tool results
   }
