@@ -10,6 +10,7 @@ import { generateApiKey, hashApiKey, keyPrefix } from '@/lib/tools/api-key-servi
 
 const createSchema = z.object({
   name: z.string().min(1, 'api.skill.apiKeyNameRequired').max(100, 'api.skill.apiKeyNameTooLong'),
+  userId: z.string().trim().min(1).optional().nullable(),
 })
 
 async function _POST(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
@@ -35,7 +36,7 @@ async function _POST(request: NextRequest, { params }: { params: Promise<{ id: s
   if (!parsed.success) {
     return apiErr('api.skill.apiKeyNameRequired', { status: 400 })
   }
-  const { name } = parsed.data
+  const { name, userId } = parsed.data
 
   const plaintext = generateApiKey()
   const hashed = hashApiKey(plaintext)
@@ -47,6 +48,7 @@ async function _POST(request: NextRequest, { params }: { params: Promise<{ id: s
     id: keyId,
     instanceId: id,
     name,
+    userId: userId ?? null,
     keyPrefix: prefix,
     hashedKey: hashed,
     active: true,
@@ -76,6 +78,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
     .select({
       id: toolInstanceApiKeys.id,
       name: toolInstanceApiKeys.name,
+      userId: toolInstanceApiKeys.userId,
       keyPrefix: toolInstanceApiKeys.keyPrefix,
       active: toolInstanceApiKeys.active,
       createdAt: toolInstanceApiKeys.createdAt,
@@ -89,6 +92,7 @@ export async function GET(_request: NextRequest, { params }: { params: Promise<{
       keys: rows.map((r) => ({
         id: r.id,
         name: r.name,
+        userId: r.userId,
         keyPrefix: r.keyPrefix,
         active: r.active,
         createdAt: r.createdAt.toISOString(),

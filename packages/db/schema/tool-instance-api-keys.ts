@@ -18,6 +18,7 @@ export const toolInstanceApiKeys = pgTable(
     instanceId: text('instance_id')
       .notNull()
       .references(() => toolInstances.id, { onDelete: 'cascade' }),
+    userId: text('user_id'),
     /** Human-readable label, e.g. "生产环境" */
     name: text('name').notNull(),
     /** First 12 chars of the plaintext key, for display (e.g. "cmk_a1b2c3d4") */
@@ -30,6 +31,7 @@ export const toolInstanceApiKeys = pgTable(
   },
   (table) => ({
     instanceIdx: index('tiak_instance_id_idx').on(table.instanceId),
+    userIdx: index('tiak_user_id_idx').on(table.userId),
     hashedKeyIdx: index('tiak_hashed_key_idx').on(table.hashedKey),
   })
 )

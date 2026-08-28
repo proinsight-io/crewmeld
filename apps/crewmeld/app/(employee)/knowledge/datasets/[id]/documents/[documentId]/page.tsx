@@ -443,6 +443,22 @@ export default function DocumentDetailPage() {
                     >
                       {chunk.content}
                     </p>
+                    {chunk.images && chunk.images.length > 0 && (
+                      <div className='mt-3 flex flex-wrap gap-2'>
+                        {chunk.images.map((image, imageIndex) => (
+                          <img
+                            key={image.id}
+                            src={image.url}
+                            alt={`${doc?.name ?? t('knowledge.ragflowFileContent')} - ${imageIndex + 1}`}
+                            loading='lazy'
+                            className='max-h-64 max-w-full rounded-md border object-contain'
+                            onError={(event) => {
+                              event.currentTarget.hidden = true
+                            }}
+                          />
+                        ))}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

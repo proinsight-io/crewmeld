@@ -9,6 +9,8 @@ import {
   RagflowClientError,
   stopDocumentsParsing,
 } from '@/lib/ragflow'
+import { enqueueDocumentImageBinding } from '@/lib/knowledge/document-images/binding-queue'
+import { invalidateDocumentImageBindings } from '@/lib/knowledge/document-images/repository'
 
 const logger = createLogger('RagflowParseAPI')
 
@@ -38,7 +40,34 @@ async function _POST(request: NextRequest, { params }: { params: Promise<{ id: s
     } catch {
       // ignore
     }
+    const generations: Array<{ documentId: string; generation: number }> = []
+    for (const documentId of documentIds) {
+      generations.push({
+        documentId,
+        generation: await invalidateDocumentImageBindings(documentId),
+      })
+    }
     await parseDocuments(config, id, documentIds)
+    for (const { documentId, generation } of generations) {
+      if (generation === 0) continue
+      try {
+        const queued = await enqueueDocumentImageBinding(id, documentId, generation)
+        if (!queued) {
+          logger.warn('Document image rebinding remains pending because Redis is unavailable', {
+            datasetId: id,
+            documentId,
+            generation,
+          })
+        }
+      } catch (queueError) {
+        logger.warn('Document image rebinding enqueue failed; pending state will be recovered', {
+          datasetId: id,
+          documentId,
+          generation,
+          error: queueError instanceof Error ? queueError.message : String(queueError),
+        })
+      }
+    }
 
     logger.info(`Manually triggered document parsing: dataset=${id}, docs=${documentIds.join(',')}`)
 

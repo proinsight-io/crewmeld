@@ -54,14 +54,40 @@ export function getDevStudioPersona(locale: Locale): string {
  * as "Access denied for user 'root'" against credentials that were in the
  * sandbox the whole time. Pass it whenever the session has a connection bound.
  */
-export function getOpencodeStudioInstructions(
-  locale: Locale,
-  conn?: ConnectionEnvKeyInfo
-): string {
+export function getOpencodeStudioInstructions(locale: Locale, conn?: ConnectionEnvKeyInfo): string {
   const base = locale === 'en' ? OPENCODE_INSTRUCTIONS_EN : OPENCODE_INSTRUCTIONS_ZH
-  if (!conn) return base
-  return `${base}\n\n${buildConnectionSection(locale, conn)}`
+  const serviceContract =
+    locale === 'en' ? SERVICE_TYPE_INSTRUCTIONS_EN : SERVICE_TYPE_INSTRUCTIONS_ZH
+  const instructions = `${base}\n\n${serviceContract}`
+  if (!conn) return instructions
+  return `${instructions}\n\n${buildConnectionSection(locale, conn)}`
 }
+
+const SERVICE_TYPE_INSTRUCTIONS_EN = `
+## HTTP service types
+Every kind=service manifest MUST set service.type to exactly one of:
+- "json": JSON tool invocation. Use the declared path and method (POST by default) and return JSON.
+- "http": transparent HTTP/Web service. Serve HTML and assets under service.path and accept normal HTTP methods. Every URL that targets this service MUST stay relative because the gateway publishes it below a dynamic /services/{id}/ prefix. This includes HTML assets, navigation, fetch/XHR, EventSource, and WebSocket paths.
+  - Correct: \`static/style.css\`, \`./static/app.js\`, and \`fetch('api/weather')\`.
+  - Wrong: \`/static/style.css\`, \`fetch('/api/weather')\`, hard-coded application hosts, or a hard-coded \`/services/{id}/\` prefix.
+  - A full URL such as \`https://api.example.com/data\` is allowed only for an external third-party service, and its domain must be declared in dependencies.domains.
+  - Before finishing, scan all HTML, CSS, and JavaScript for root-relative or hard-coded self-service URLs and replace them with relative URLs.
+- "sse": streaming HTTP service. Return Content-Type: text/event-stream, flush each event, and keep the connection open.
+Choose the type from the requested behavior. Do not use "json" for an HTML site or SSE stream.
+`.trim()
+
+const SERVICE_TYPE_INSTRUCTIONS_ZH = `
+## HTTP 服务类型
+所有 kind=service 的 manifest 都必须设置 service.type，且只能是以下三种之一：
+- "json"：JSON 工具调用，使用声明的 path 和 method（默认 POST），返回 JSON。
+- "http"：透明 HTTP/Web 服务，在 service.path 下提供 HTML 和静态资源并接受常规 HTTP 方法。所有指向本服务的 URL 都必须使用相对路径，因为网关会把服务发布到动态的 /services/{id}/ 前缀下；这包括 HTML 资源、页面跳转、fetch/XHR、EventSource 和 WebSocket 路径。
+  - 正确：\`static/style.css\`、\`./static/app.js\`、\`fetch('api/weather')\`。
+  - 错误：\`/static/style.css\`、\`fetch('/api/weather')\`、硬编码本服务主机名或硬编码 \`/services/{id}/\` 前缀。
+  - 只有访问外部第三方服务时才允许使用 \`https://api.example.com/data\` 这类完整 URL，并且必须在 dependencies.domains 中声明域名。
+  - 完成前扫描所有 HTML、CSS 和 JavaScript，把根路径或硬编码的本服务 URL 改为相对 URL。
+- "sse"：流式 HTTP 服务，返回 Content-Type: text/event-stream，逐条刷新事件并保持连接。
+根据用户要求选择类型；HTML 网站或 SSE 流禁止使用 "json"。
+`.trim()
 
 /**
  * The bound-connection section appended to AGENTS.md. Names the connection and
@@ -122,7 +148,7 @@ Required manifest fields:
 - description: one-line capability summary, 500 characters max
 - kind: "script" (one-shot script, takes JSON on stdin, emits result on stdout) or "service" (long-running HTTP)
 - entrypoint: launch command, e.g. "python main.py"
-- service: required only when kind=service — {port: 9876 (the default), path: "/...", method: "POST" (always POST)}
+- service: required only when kind=service — {type: "json" | "http" | "sse", port: 9876 (the default), path: "/...", method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH"}
 - dependencies: { libraries: [pip package names], domains: [external domains the tool hits at runtime] }
 - files: relative paths inside workspace that the tool runtime depends on. Does NOT include .crewmeld-studio/ content. Sync this array every time you add or remove a workspace file.
 - createdAt/updatedAt: ISO timestamps
@@ -167,7 +193,7 @@ After writing the manifest, write usage notes to /root/workspace/.crewmeld-studi
 Also write a launch script /root/workspace/start.sh (workspace root, not under .crewmeld-studio/).
 
 kind=script — JSON parameters are piped via stdin (no command-line arguments). Read with json.load(sys.stdin) in Python. Output result as JSON to stdout.
-kind=service — method is always POST, default listen port is 9876. Read parameters from JSON request body. Launch with exec python3 main.py.
+kind=service — set service.type to json, http, or sse; default listen port is 9876. JSON services read parameters from the JSON request body; HTTP services preserve normal methods/routes and package relative assets; SSE services flush text/event-stream events. Launch with exec python3 main.py.
 
 Connector tools (databases / third-party systems) — use connectorType field {"type": "...", "subtype": "..."} and read credentials from CONN_* environment variables. Do NOT invent your own credential env vars.
 
@@ -187,7 +213,7 @@ Run this self-check item by item before you finish, and fix anything that fails:
    - \`_sopFileDir\` / \`_sopExecutionId\` do NOT appear in manifest.input.properties.
 5. Runtime conventions:
    - kind=script reads params via json.load(sys.stdin) and emits JSON on stdout;
-   - kind=service launches via POST + default port 9876 + exec python3, consistent with the manifest.service block;
+   - kind=service uses the declared service.type/path/method + default port 9876 + exec python3, consistent with the manifest.service block;
    - start.sh launches the command declared in manifest.entrypoint.
 6. Credentials & version control:
    - connector tools use the connectorType field and read credentials from CONN_* env vars, with no self-invented credential env vars;
@@ -227,7 +253,7 @@ manifest 必填字段：
 - description: 一句话功能描述 500 字以内
 - kind: "script"（一次性脚本，stdin 接 JSON / stdout 出结果）或 "service"（常驻 HTTP）
 - entrypoint: 启动命令，如 "python main.py"
-- service: 仅 kind=service 必填，{port: 9876（默认端口）, path: "/...", method: "POST"（固定用 POST）}
+- service: 仅 kind=service 必填，{type: "json" | "http" | "sse", port: 9876（默认端口）, path: "/...", method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH"}
 - dependencies: { libraries: [pip 包名], domains: [运行时访问的外网域名] }
 - files: 工具运行依赖的 workspace 文件路径数组，不含 .crewmeld-studio/ 内容，每次新建/删除文件都要同步更新
 - createdAt/updatedAt: ISO 时间戳
@@ -272,7 +298,7 @@ needsFileMount — 当工具的输入或输出涉及文件，manifest 中必须�
 同时写一个标准启动脚本 /root/workspace/start.sh（workspace 根，不是 .crewmeld-studio/）。
 
 kind=script —— JSON 参数通过 stdin 灌入（不传命令行参数）。用 json.load(sys.stdin) 读取。处理完将结果以 JSON 格式打印到 stdout。
-kind=service —— method 一律用 POST，默认监听端口 9876。从 JSON 请求体读参数。用 exec python3 main.py 启动。
+kind=service —— service.type 必须设为 json、http 或 sse，默认监听端口 9876。JSON 服务从请求体读参数；HTTP 服务保留常规方法/路由并打包相对资源；SSE 服务逐条刷新 text/event-stream 事件。用 exec python3 main.py 启动。
 
 连接类工具（数据库 / 第三方系统）—— 使用 connectorType 字段（JSON 对象 {"type": "...", "subtype": "..."}），从平台注入的 CONN_* 环境变量读取连接信息/凭据。禁止自造凭据环境变量。
 
@@ -292,7 +318,7 @@ kind=service —— method 一律用 POST，默认监听端口 9876。从 JSON �
    - \`_sopFileDir\` / \`_sopExecutionId\` 没有出现在 manifest.input.properties。
 5. 运行约定：
    - kind=script 用 json.load(sys.stdin) 读参数、stdout 出 JSON 结果；
-   - kind=service 用 POST + 默认端口 9876 + exec python3 启动，与 manifest.service 声明一致；
+   - kind=service 使用声明的 service.type/path/method + 默认端口 9876 + exec python3 启动，与 manifest.service 声明一致；
    - start.sh 能启动 manifest.entrypoint 声明的命令。
 6. 凭据与版本控制：
    - 连接类工具用 connectorType 字段并从 CONN_* 环境变量读凭据，没有自造凭据 env；

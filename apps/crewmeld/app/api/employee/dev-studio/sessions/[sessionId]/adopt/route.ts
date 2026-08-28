@@ -19,13 +19,11 @@
 import { createLogger } from '@crewmeld/logger'
 import { getCurrentUserRole } from '@/lib/auth/rbac/check-role'
 import { adoptSession } from '@/lib/dev-studio/adopt-handler'
-import {
-  type AdoptProgressEvent,
-  encodeSseEvent,
-} from '@/lib/dev-studio/adopt-progress'
+import { type AdoptProgressEvent, encodeSseEvent } from '@/lib/dev-studio/adopt-progress'
 import { AdoptError } from '@/lib/dev-studio/dependency-prewarmer'
 import { getDevStudioEnv } from '@/lib/dev-studio/env'
 import { OpenSandboxClient } from '@/lib/dev-studio/opensandbox-client'
+import { destroySessionServicePreview } from '@/lib/dev-studio/service-preview-lifecycle'
 import { sessionStore } from '@/lib/dev-studio/session-store'
 
 const logger = createLogger('adopt-route')
@@ -36,7 +34,7 @@ interface RouteContext {
 
 async function destroyContainerBestEffort(
   activeContainerId: string | null,
-  sessionId: string,
+  sessionId: string
 ): Promise<void> {
   if (!activeContainerId) return
 
@@ -85,6 +83,7 @@ export async function PATCH(req: Request, ctx: RouteContext): Promise<Response> 
         try {
           const result = await adoptSession(sessionId, userId, emit)
           emit({ type: 'progress', step: 'closing' })
+          await destroySessionServicePreview(sessionId)
           await destroyContainerBestEffort(session.activeContainerId, sessionId)
           emit({ type: 'complete', ...result })
         } catch (err) {
@@ -107,6 +106,7 @@ export async function PATCH(req: Request, ctx: RouteContext): Promise<Response> 
 
   try {
     const result = await adoptSession(sessionId, userId)
+    await destroySessionServicePreview(sessionId)
 
     // Best-effort container destroy AFTER adopt completes.
     await destroyContainerBestEffort(session.activeContainerId, sessionId)
@@ -114,10 +114,12 @@ export async function PATCH(req: Request, ctx: RouteContext): Promise<Response> 
     return Response.json(result)
   } catch (err) {
     if (err instanceof AdoptError) {
-      logger.warn(
-        'adopt failed (AdoptError)',
-        { sessionId, code: err.code, detail: err.detail, retryable: err.retryable },
-      )
+      logger.warn('adopt failed (AdoptError)', {
+        sessionId,
+        code: err.code,
+        detail: err.detail,
+        retryable: err.retryable,
+      })
       return Response.json(
         { error: err.code, detail: err.detail, retryable: err.retryable },
         { status: err.code === 'session-not-found' ? 404 : 422 }

@@ -6,6 +6,7 @@
 export {
   EMBEDDING_MODEL_PRICING,
   getComputerUseModels,
+  getContextWindowForModel,
   getEmbeddingModelPricing,
   getHostedModels,
   getMaxOutputTokensForModel,

@@ -71,8 +71,14 @@ const PROVIDER_BASE_URLS: Record<string, string> = {
  */
 export async function resolveModelConfig(
   employeeId: string,
-  workspaceId: string
+  workspaceId: string,
+  overrideModelConfigId?: string
 ): Promise<ConversationModelConfig> {
+  if (overrideModelConfigId) {
+    const overridden = await resolveFromModelConfig(overrideModelConfigId, workspaceId)
+    if (overridden) return overridden
+    throw new Error(`Configured model ${overrideModelConfigId} was not found`)
+  }
   // 1. Query employee config (with bound model ID)
   const [employee] = await db
     .select({

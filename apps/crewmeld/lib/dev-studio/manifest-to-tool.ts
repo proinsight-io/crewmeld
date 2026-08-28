@@ -46,6 +46,8 @@ export interface ToolInsertRecord {
   packageSha256: string
   connectorType?: { type: string; subtype?: string }
   needsFileMount: boolean
+  kind: 'script' | 'service'
+  serviceSpec?: ManifestT['service']
   /** Markdown API documentation auto-generated from the manifest. */
   apiDoc: string
 }
@@ -98,8 +100,8 @@ export function generateApiDoc(manifest: ManifestT): string {
   lines.push('## Call Type')
   lines.push('')
   if (manifest.kind === 'service' && manifest.service) {
-    const { port, path, method } = manifest.service
-    lines.push(`Type: **service**`)
+    const { type, port, path, method } = manifest.service
+    lines.push(`Type: **service/${type}**`)
     lines.push('')
     lines.push(`| Field  | Value |`)
     lines.push(`|--------|-------|`)
@@ -220,6 +222,8 @@ export function convertManifestToTool(input: ConvertManifestInput): ToolInsertRe
     packageSha256: sha256,
     connectorType: manifest.connectorType,
     needsFileMount: manifest.needsFileMount,
+    kind: manifest.kind,
+    serviceSpec: manifest.service,
     apiDoc: generateApiDoc(manifest),
   }
 }

@@ -47,6 +47,7 @@ export interface RagflowChunk {
   positions: string[]
   /** Optional image attached to the chunk (e.g. extracted from PDF). Resolve via getImage / image proxy. */
   image_id?: string
+  images?: Array<{ id: string; url: string; mimeType: string; order: number }>
 }
 
 export interface RagflowRetrievalData {
@@ -59,6 +60,8 @@ export interface RagflowRetrievalData {
   total: number
 }
 
+import type { KnowledgeBaseType } from '@crewmeld/db/schema'
+
 export interface RagflowDataset {
   id: string
   name: string
@@ -69,6 +72,10 @@ export interface RagflowDataset {
   document_count: number
   chunk_count: number
   parse_method: string
+  /** RAGFlow parser identifier, including `qa` for question-answer datasets. */
+  chunk_method?: string
+  /** Local metadata type; defaults to document for legacy datasets. */
+  type?: KnowledgeBaseType
   /** Total bytes of all documents in the knowledge base (returned by some versions) */
   size?: number
   created_at: string | number
@@ -114,6 +121,7 @@ export interface RagflowDocumentChunkItem {
   available_int?: number
   image_id?: string
   positions?: string[]
+  images?: Array<{ id: string; url: string; mimeType: string; order: number }>
 }
 
 export interface RagflowDocumentChunksData {

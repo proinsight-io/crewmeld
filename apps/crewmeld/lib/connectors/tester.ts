@@ -41,6 +41,8 @@ export async function testConnection(
         return await testDiscord(config, startTime)
       case 'ragflow':
         return await testRagflow(config, startTime)
+      case 'baidu_ocr':
+        return await testBaiduOcr(config, startTime)
       case 'wxoa':
         return await testWxoa(config, startTime)
       default:
@@ -53,6 +55,31 @@ export async function testConnection(
       { name: type, error: error instanceof Error ? error.message : '' },
       startTime
     )
+  }
+}
+
+async function testBaiduOcr(
+  config: ConnectionConfig,
+  startTime: number
+): Promise<ConnectionTestResult> {
+  if (!config.baiduOcrApiKey || !config.baiduOcrSecretKey) {
+    return required('API Key & Secret Key', startTime)
+  }
+  try {
+    const { getBaiduOcrAccessToken } = await import('@/lib/ocr/baidu-client')
+    await getBaiduOcrAccessToken({
+      apiKey: config.baiduOcrApiKey,
+      secretKey: config.baiduOcrSecretKey,
+      endpoint: config.baiduOcrEndpoint,
+      tokenEndpoint: config.baiduOcrTokenEndpoint,
+      timeoutMs: config.baiduOcrTimeoutMs,
+    })
+    return ok('connTestSucceeded', { name: '百度智能云 OCR' }, startTime, {
+      api: 'aip.baidubce.com',
+      method: 'oauth/2.0/token',
+    })
+  } catch (error) {
+    return fail('connTestFailed', { name: '百度智能云 OCR', error: errMsg(error) }, startTime)
   }
 }
 

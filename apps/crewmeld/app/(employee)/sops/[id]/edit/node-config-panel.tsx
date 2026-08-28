@@ -26,6 +26,7 @@ interface DigitalEmployeeOption {
   id: string
   name: string
 }
+interface ModelConfigOption { id: string; displayName: string; modelName: string | null; providerId: string }
 
 interface ContactMethod {
   type: string
@@ -74,6 +75,7 @@ export function SopNodeConfigPanel({ nodeId }: SopNodeConfigPanelProps) {
 
   // ALL hooks must be declared before any early return
   const [digitalEmployees, setDigitalEmployees] = useState<DigitalEmployeeOption[]>([])
+  const [modelConfigs, setModelConfigs] = useState<ModelConfigOption[]>([])
   const [boundInstances, setBoundInstances] = useState<BoundInstanceOption[]>([])
   const [humanEmployeeList, setHumanEmployeeList] = useState<HumanEmployeeListOption[]>([])
 
@@ -90,6 +92,10 @@ export function SopNodeConfigPanel({ nodeId }: SopNodeConfigPanelProps) {
             )
           }
         })
+        .catch(() => {})
+      fetch('/api/employee/models?activeOnly=true')
+        .then((r) => r.json())
+        .then((data) => setModelConfigs((data.data?.configs ?? []) as ModelConfigOption[]))
         .catch(() => {})
     }
     if (sopNode.type === 'human_employee') {
@@ -234,6 +240,19 @@ export function SopNodeConfigPanel({ nodeId }: SopNodeConfigPanelProps) {
       </div>
 
       {sopNode.type === 'digital_employee' && (
+        <label className='flex cursor-pointer items-center gap-2 rounded-md border border-gray-100 px-2.5 py-2 text-xs'>
+          <input
+            type='checkbox'
+            checked={sopNode.useKnowledgeBase === true}
+            onChange={(event) => handleChange({ useKnowledgeBase: event.target.checked })}
+            data-testid='sop-editor:config-panel:input:use-knowledge-base'
+            className='h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500'
+          />
+          <span>查询知识库</span>
+        </label>
+      )}
+
+      {sopNode.type === 'digital_employee' && (
         <div>
           <Label className='mb-1.5 text-gray-500 text-xs'>
             {t('sops.nodeConfigAssignEmployee')}
@@ -251,6 +270,30 @@ export function SopNodeConfigPanel({ nodeId }: SopNodeConfigPanelProps) {
               {digitalEmployees.map((e) => (
                 <SelectItem key={e.id} value={e.id}>
                   {e.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
+      {sopNode.type === 'digital_employee' && (
+        <div>
+          <Label className='mb-1.5 text-gray-500 text-xs'>执行模型（可选）</Label>
+          <Select
+            value={sopNode.llmModelConfigId ?? '__employee_default__'}
+            onValueChange={(value) =>
+              handleChange({ llmModelConfigId: value === '__employee_default__' ? undefined : value })
+            }
+          >
+            <SelectTrigger data-testid='sop-editor:config-panel:input:model-config-id'>
+              <SelectValue placeholder='使用数字员工默认模型' />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value='__employee_default__'>使用数字员工默认模型</SelectItem>
+              {modelConfigs.map((config) => (
+                <SelectItem key={config.id} value={config.id}>
+                  {config.displayName} ({config.modelName ?? config.providerId})
                 </SelectItem>
               ))}
             </SelectContent>

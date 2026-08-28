@@ -1,6 +1,7 @@
 'use client'
 
 import { useRef, useState } from 'react'
+import type { KnowledgeBaseType } from '@crewmeld/db/schema'
 import { AlertCircle, FileText, Upload, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -13,9 +14,11 @@ import {
 import { Label } from '@/components/ui/label'
 import { Switch } from '@/components/ui/switch'
 import { useTranslation } from '@/hooks/use-translation'
+import { getQaClientFileError, getQaPreviewUrl } from './ragflow-upload-dialog-logic'
 
 interface RagflowUploadDialogProps {
   datasetId: string
+  datasetType: KnowledgeBaseType
   open: boolean
   onOpenChange: (open: boolean) => void
   onSuccess: () => void
@@ -29,6 +32,14 @@ const MAX_BATCH_FILES = 32
 /** Local deployment: max 1 GB total upload size per batch */
 const MAX_TOTAL_SIZE_BYTES = 1 * 1024 * 1024 * 1024
 
+interface QaPreviewData {
+  headers: string[]
+  rows: Array<Record<string, string | number>>
+  validRowCount: number
+  previewRowLimit: number
+  errors: Array<{ code: string; row?: number; field?: string }>
+}
+
 function formatSize(bytes: number): string {
   if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
@@ -37,6 +48,7 @@ function formatSize(bytes: number): string {
 
 export function RagflowUploadDialog({
   datasetId,
+  datasetType,
   open,
   onOpenChange,
   onSuccess,
@@ -47,9 +59,18 @@ export function RagflowUploadDialog({
   const [selectedFiles, setSelectedFiles] = useState<File[]>([])
   const [parseOnUpload, setParseOnUpload] = useState(true)
   const [dragOver, setDragOver] = useState(false)
+  const [qaPreview, setQaPreview] = useState<QaPreviewData | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const isQa = datasetType === 'qa'
 
   function validateFiles(files: File[]): string | null {
+    if (isQa) {
+      const qaError = getQaClientFileError(files)
+      if (qaError === 'FILE_COUNT') return t('knowledge.qaUploadSingleFile')
+      if (qaError === 'INVALID_TYPE') return t('knowledge.qaUploadInvalidType')
+      if (qaError === 'FILE_TOO_LARGE') return t('knowledge.qaUploadTooLarge')
+      return null
+    }
     if (files.length > MAX_BATCH_FILES) {
       return t('knowledge.uploadErrorTooMany', { max: MAX_BATCH_FILES, count: files.length })
     }
@@ -67,6 +88,7 @@ export function RagflowUploadDialog({
       return
     }
     setSelectedFiles(files)
+    setQaPreview(null)
     setError(null)
   }
 
@@ -95,6 +117,15 @@ export function RagflowUploadDialog({
     setError(null)
 
     try {
+      if (isQa) {
+        const formData = new FormData()
+        formData.append('file', selectedFiles[0] as File)
+        const res = await fetch(getQaPreviewUrl(datasetId), { method: 'POST', body: formData })
+        const json = (await res.json()) as { success?: boolean; data?: QaPreviewData }
+        if (!res.ok || !json.data) throw new Error(t('knowledge.qaPreviewFailed'))
+        setQaPreview(json.data)
+        return
+      }
       for (const file of selectedFiles) {
         const formData = new FormData()
         formData.append('file', file)
@@ -115,6 +146,7 @@ export function RagflowUploadDialog({
       }
 
       setSelectedFiles([])
+      setQaPreview(null)
       if (fileInputRef.current) fileInputRef.current.value = ''
       onSuccess()
       onOpenChange(false)
@@ -172,13 +204,15 @@ export function RagflowUploadDialog({
             <p className='mt-1 text-gray-500 text-xs'>
               {t('knowledge.uploadInfo', { max: MAX_BATCH_FILES })}
             </p>
-            <p className='mt-0.5 text-gray-400 text-xs'>{t('knowledge.uploadFormats')}</p>
+            <p className='mt-0.5 text-gray-400 text-xs'>
+              {t(isQa ? 'knowledge.qaUploadFormats' : 'knowledge.uploadFormats')}
+            </p>
           </div>
 
           <input
             ref={fileInputRef}
             type='file'
-            accept={ACCEPTED_TYPES}
+            accept={isQa ? '.csv,text/csv' : ACCEPTED_TYPES}
             multiple
             className='hidden'
             onChange={handleFileChange}
@@ -224,23 +258,73 @@ export function RagflowUploadDialog({
           </div>
 
           {/* Parse-on-upload option */}
-          <div className='flex items-center gap-2'>
-            <Switch
-              id='parse-on-upload'
-              checked={parseOnUpload}
-              onCheckedChange={setParseOnUpload}
-              data-testid='knowledge:ragflow:upload:parse-on-upload'
-            />
-            <Label htmlFor='parse-on-upload' className='cursor-pointer text-gray-700 text-sm'>
-              {t('knowledge.parseOnUpload')}
-            </Label>
-          </div>
+          {!isQa && (
+            <div className='flex items-center gap-2'>
+              <Switch
+                id='parse-on-upload'
+                checked={parseOnUpload}
+                onCheckedChange={setParseOnUpload}
+                data-testid='knowledge:ragflow:upload:parse-on-upload'
+              />
+              <Label htmlFor='parse-on-upload' className='cursor-pointer text-gray-700 text-sm'>
+                {t('knowledge.parseOnUpload')}
+              </Label>
+            </div>
+          )}
 
           {/* Error message */}
           {error && (
             <div className='flex items-start gap-2 text-red-600 text-sm'>
               <AlertCircle className='mt-0.5 h-4 w-4 shrink-0' />
               <span>{error}</span>
+            </div>
+          )}
+
+          {isQa && qaPreview && (
+            <div className='space-y-3' data-testid='knowledge:ragflow:qa-preview'>
+              <div className='text-gray-700 text-sm'>
+                {t('knowledge.qaPreviewSummary', {
+                  valid: qaPreview.validRowCount,
+                  errors: qaPreview.errors.length,
+                })}
+              </div>
+              <div className='max-h-48 overflow-auto rounded-md border border-gray-200'>
+                <table className='w-full text-left text-xs'>
+                  <thead className='sticky top-0 bg-gray-50'>
+                    <tr>
+                      {qaPreview.headers.map((header) => (
+                        <th key={header} className='px-2 py-1.5 font-medium text-gray-600'>
+                          {header}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {qaPreview.rows.map((row) => (
+                      <tr key={String(row.row)} className='border-gray-100 border-t'>
+                        {qaPreview.headers.map((header) => (
+                          <td key={header} className='max-w-48 truncate px-2 py-1.5 text-gray-700'>
+                            {String(row[header] ?? '')}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {qaPreview.errors.length > 0 && (
+                <ul className='max-h-24 overflow-auto text-red-600 text-xs'>
+                  {qaPreview.errors.map((previewError, index) => (
+                    <li key={`${previewError.code}-${previewError.row ?? 0}-${index}`}>
+                      {t('knowledge.qaPreviewError', {
+                        row: previewError.row ?? '-',
+                        code: previewError.code,
+                      })}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className='text-amber-700 text-xs'>{t('knowledge.qaPreviewImportDeferred')}</p>
             </div>
           )}
         </div>
@@ -251,15 +335,22 @@ export function RagflowUploadDialog({
           </Button>
           <Button
             onClick={handleUpload}
-            disabled={selectedFiles.length === 0 || uploading}
+            disabled={selectedFiles.length === 0 || uploading || (isQa && qaPreview !== null)}
             data-testid='knowledge:ragflow:upload:submit'
           >
-            {uploading
-              ? t('knowledge.uploading')
-              : selectedFiles.length > 0
-                ? t('knowledge.uploadCountSuffix', { count: selectedFiles.length })
-                : t('knowledge.uploadBtn')}
+            {isQa
+              ? t('knowledge.qaUploadPreviewAction')
+              : uploading
+                ? t('knowledge.uploading')
+                : selectedFiles.length > 0
+                  ? t('knowledge.uploadCountSuffix', { count: selectedFiles.length })
+                  : t('knowledge.uploadBtn')}
           </Button>
+          {isQa && qaPreview && (
+            <Button disabled data-testid='knowledge:ragflow:qa-preview:confirm'>
+              {t('knowledge.qaPreviewConfirmDisabled')}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

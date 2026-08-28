@@ -177,7 +177,11 @@ export async function GET(_req: NextRequest, ctx: RouteContext): Promise<Respons
 
   const ext = path.extname(resolved.filename).toLowerCase()
   const mime = MIME_BY_EXT[ext] ?? DEFAULT_MIME
-  return new Response(payload, {
+  const body = payload.buffer.slice(
+    payload.byteOffset,
+    payload.byteOffset + payload.byteLength
+  ) as ArrayBuffer
+  return new Response(body, {
     status: 200,
     headers: {
       'content-type': mime,

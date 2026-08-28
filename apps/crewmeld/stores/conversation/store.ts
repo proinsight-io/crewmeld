@@ -3,6 +3,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { KnowledgeChunkReference } from '@/lib/conversation/types'
+import { normalizeKnowledgeSelection } from '@/lib/conversation/chat-knowledge'
 import { type Locale, messages } from '@/locales'
 import { useLocaleStore } from '@/stores/locale/store'
 
@@ -69,7 +70,8 @@ interface ConversationStore {
   sendMessage: (
     content: string,
     employeeId?: string,
-    files?: MessageFileAttachment[]
+    files?: MessageFileAttachment[],
+    knowledgeBaseIds?: string[]
   ) => Promise<void>
   closeConversation: (conversationId: string) => Promise<void>
 }
@@ -108,9 +110,12 @@ export const useConversationStore = create<ConversationStore>()(
           if (!res.ok) return null
           const json = await res.json()
           const conv = json.data
+          const greetingMessages: ConversationMessage[] = conv.greetingMessage
+            ? [conv.greetingMessage as ConversationMessage]
+            : []
           set((state) => ({
             activeConversationId: conv.id,
-            messages: [],
+            messages: greetingMessages,
             isStreaming: false,
             streamingContent: '',
             activeToolExecutions: [],
@@ -120,8 +125,8 @@ export const useConversationStore = create<ConversationStore>()(
                 employeeId: conv.employeeId,
                 title: null,
                 status: 'active',
-                messageCount: 0,
-                lastMessageAt: null,
+                messageCount: greetingMessages.length,
+                lastMessageAt: greetingMessages[0]?.createdAt ?? null,
                 createdAt: conv.createdAt,
               },
               ...state.conversations,
@@ -184,7 +189,7 @@ export const useConversationStore = create<ConversationStore>()(
         }
       },
 
-      sendMessage: async (content, employeeId, files) => {
+      sendMessage: async (content, employeeId, files, knowledgeBaseIds) => {
         if (get().isStreaming) return
 
         let conversationId = get().activeConversationId
@@ -201,6 +206,9 @@ export const useConversationStore = create<ConversationStore>()(
             const createJson = await createRes.json()
             const conv = createJson.data
             conversationId = conv.id
+            const greetingMessages: ConversationMessage[] = conv.greetingMessage
+              ? [conv.greetingMessage as ConversationMessage]
+              : []
 
             // Atomic set: create conversation + optimistically add user message + isStreaming=true, all in one step
             const userMsg: ConversationMessage = {
@@ -212,7 +220,7 @@ export const useConversationStore = create<ConversationStore>()(
             }
             set((state) => ({
               activeConversationId: conv.id,
-              messages: [userMsg],
+              messages: [...greetingMessages, userMsg],
               isStreaming: true,
               streamingContent: '',
               activeToolExecutions: [],
@@ -223,8 +231,8 @@ export const useConversationStore = create<ConversationStore>()(
                   employeeId: conv.employeeId,
                   title: null,
                   status: 'active',
-                  messageCount: 0,
-                  lastMessageAt: null,
+                  messageCount: greetingMessages.length,
+                  lastMessageAt: greetingMessages[0]?.createdAt ?? null,
                   createdAt: conv.createdAt,
                 },
                 ...state.conversations,
@@ -257,7 +265,12 @@ export const useConversationStore = create<ConversationStore>()(
           const res = await fetch(`/api/employee/conversations/${conversationId}/messages/send`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ content, files, locale: useLocaleStore.getState().locale }),
+            body: JSON.stringify({
+              content,
+              files,
+              locale: useLocaleStore.getState().locale,
+              knowledgeBaseIds: normalizeKnowledgeSelection(knowledgeBaseIds ?? []),
+            }),
           })
 
           if (!res.ok) {

@@ -1,7 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { Copy, KeyRound, Settings } from 'lucide-react'
+import { CheckCircle2, Copy, KeyRound, Settings, TestTube2 } from 'lucide-react'
 import useSWR from 'swr'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -33,6 +33,9 @@ interface ApiKeyPanelProps {
 export function ApiKeyPanel({ instanceId, parameters }: ApiKeyPanelProps) {
   const { t } = useTranslation()
   const [manageOpen, setManageOpen] = useState(false)
+  const [testKey, setTestKey] = useState('')
+  const [testStatus, setTestStatus] = useState<string | null>(null)
+  const [testing, setTesting] = useState(false)
 
   const { data } = useSWR<ApiKeysPayload>(
     `/api/employee/skills/instances/${instanceId}/api-keys`,
@@ -47,6 +50,30 @@ export function ApiKeyPanel({ instanceId, parameters }: ApiKeyPanelProps) {
 
 # ${t('skills.apiDoc.responseExample')}:
 # {"success": true, "result": {...}, "executionTime": 123}`
+
+  const handleTest = async () => {
+    if (!testKey.trim()) {
+      setTestStatus('请输入 API Key')
+      return
+    }
+    setTesting(true)
+    setTestStatus(null)
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': testKey.trim() },
+        body: JSON.stringify({ input: {} }),
+      })
+      const payload = (await response.json()) as { error?: string }
+      setTestStatus(
+        response.ok ? 'API Key 有效，接口可访问' : `测试失败：${payload.error ?? response.status}`
+      )
+    } catch (error) {
+      setTestStatus(`测试失败：${error instanceof Error ? error.message : '网络错误'}`)
+    } finally {
+      setTesting(false)
+    }
+  }
 
   return (
     <div className='mt-4 rounded-lg border border-violet-100 bg-violet-50/30 p-4'>
@@ -95,6 +122,47 @@ export function ApiKeyPanel({ instanceId, parameters }: ApiKeyPanelProps) {
             </button>
           </div>
         </div>
+        <div className='border-t border-gray-100 pt-3'>
+          <div className='mb-1 flex items-center gap-1 text-xs text-gray-500'>
+            <TestTube2 className='h-3.5 w-3.5' /> API Key 测试
+          </div>
+          <div className='flex gap-2'>
+            <input
+              type='password'
+              value={testKey}
+              onChange={(event) => setTestKey(event.target.value)}
+              placeholder='粘贴刚创建的 API Key'
+              className='min-w-0 flex-1 rounded border border-gray-200 px-2 py-1 font-mono text-xs'
+              data-testid={`api-key-panel:input:test:${instanceId}`}
+            />
+            <Button
+              type='button'
+              size='sm'
+              variant='outline'
+              onClick={handleTest}
+              disabled={testing}
+            >
+              {testing ? '测试中…' : '测试'}
+            </Button>
+          </div>
+          {testStatus && (
+            <p className='mt-1 flex items-center gap-1 text-xs text-gray-600'>
+              {testStatus.startsWith('API Key 有效') && (
+                <CheckCircle2 className='h-3.5 w-3.5 text-green-600' />
+              )}
+              {testStatus}
+            </p>
+          )}
+        </div>
+        <a
+          href={`/skills/instances/${instanceId}/swagger`}
+          target='_blank'
+          rel='noreferrer'
+          className='text-violet-700 text-xs underline'
+          data-testid={`api-key-panel:link:swagger:${instanceId}`}
+        >
+          查看 Swagger API 文档
+        </a>
         <div>
           <span className='text-xs text-gray-500'>{t('skills.apiDoc.example')}:</span>
           <pre className='mt-1 overflow-x-auto rounded bg-gray-100 p-2 font-mono text-xs text-gray-700'>

@@ -44,6 +44,7 @@ export async function GET(request: NextRequest) {
         skillName: tools.name,
         skillDescription: tools.description,
         instanceName: toolInstances.name,
+        publishedAsService: toolInstances.publishedAsService,
         instanceDeploy: toolInstances.deploy,
       })
       .from(employeeSkillBindings)
@@ -62,6 +63,8 @@ export async function GET(request: NextRequest) {
         skillDescription: row.skillDescription ?? null,
         deployStatus: deploy?.status ?? 'not_deployed',
         endpoint: deploy?.endpoint ?? null,
+        publishedAsApi: row.publishedAsService ?? false,
+        publishedAsService: row.publishedAsService ?? false,
         createdAt: row.createdAt?.toISOString() ?? '',
       }
     })

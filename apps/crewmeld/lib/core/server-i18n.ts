@@ -118,6 +118,10 @@ const messages = {
     zh: '[任务已启动] 任务「{name}」已启动，正在异步执行中（编号：{id}）。请告知用户已启动并提供执行编号，不要再次调用此工具。',
     en: '[Task started] Task "{name}" has been started and is running asynchronously (ID: {id}). Please inform the user and provide the execution ID.',
   },
+  sopClaimUnverified: {
+    zh: '[执行编号未验证] 你上一条回复中提到的执行编号 {ids} 在系统里没有对应的真实任务记录，不是通过真实工具调用产生的。禁止编造任务已启动或正在执行的状态。如果用户的请求需要执行任务，你必须重新调用对应的工具；如果不确定任务状态，应调用 check_sop_status 查询真实结果后再回复。',
+    en: '[Unverified execution ID] The execution ID(s) {ids} mentioned in your previous reply have no matching record in the system — they were not produced by a real tool call. Do not fabricate a "task started/running" claim. If the user\'s request requires running a task, you must actually invoke the corresponding tool; if unsure of the task\'s status, call check_sop_status to get the real result before replying.',
+  },
   executingTool: { zh: '正在执行{name}...', en: 'Executing {name}...' },
   executedTool: { zh: '{name}执行完成', en: '{name} completed' },
   sopLabel: { zh: '标准操作流程', en: 'Standard Operating Procedure' },

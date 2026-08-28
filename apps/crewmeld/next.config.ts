@@ -34,6 +34,7 @@ function hostnameFromUrl(url: string | undefined): { protocol: 'https'; hostname
 
 const nextConfig: NextConfig = {
   devIndicators: false,
+  skipTrailingSlashRedirect: true,
 
   images: {
     remotePatterns: [

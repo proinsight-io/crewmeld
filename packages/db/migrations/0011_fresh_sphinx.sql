@@ -1,0 +1,2 @@
+ALTER TABLE "tool_dev_sessions" ADD COLUMN "model_config_id" text;--> statement-breakpoint
+ALTER TABLE "tool_dev_sessions" ADD CONSTRAINT "tool_dev_sessions_model_config_id_model_configs_id_fk" FOREIGN KEY ("model_config_id") REFERENCES "public"."model_configs"("id") ON DELETE set null ON UPDATE no action;

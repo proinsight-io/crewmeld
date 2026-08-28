@@ -963,7 +963,7 @@ async function executeDigitalEmployeeWithLLMTools(
     const workspaceId = await resolveWorkspaceIdFromExecution(executionId)
 
     // Resolve model config
-    const modelConfig = await resolveModelConfig(node.executorId, workspaceId)
+    const modelConfig = await resolveModelConfig(node.executorId, workspaceId, node.llmModelConfigId)
 
     // Build tool definitions
     const { tools, endpointMap, apiTools } = node.toolIds?.length
@@ -1115,8 +1115,10 @@ async function executeDigitalEmployeeWithLLMTools(
       })
     }
 
-    // Always query knowledge bases bound to digital employee, inject relevant content into system prompt, let model decide whether to use it
-    try {
+    // Query bound knowledge bases only when explicitly enabled on this node.
+    if (node.useKnowledgeBase !== true) {
+      logger.info('[SOP Node] Knowledge base retrieval disabled for node', { nodeId: node.id })
+    } else try {
       const [empConfig] = await db
         .select({ config: digitalEmployees.config })
         .from(digitalEmployees)

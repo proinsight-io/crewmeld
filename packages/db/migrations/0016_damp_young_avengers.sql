@@ -1,0 +1,2 @@
+ALTER TYPE "public"."sop_execution_status" ADD VALUE 'paused_for_tool' BEFORE 'completed';--> statement-breakpoint
+ALTER TABLE "sop_executions" ADD COLUMN "push_by_engine" boolean DEFAULT true NOT NULL;

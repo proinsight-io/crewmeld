@@ -19,6 +19,7 @@ export const CONNECTION_TYPES = [
   'email',
   'telegram',
   'ragflow',
+  'baidu_ocr',
   'wxoa',
 ] as const
 export type ConnectionType = (typeof CONNECTION_TYPES)[number]

@@ -22,6 +22,8 @@ export interface SopNode {
   workflowId?: string
   toolIds?: string[]
   useKnowledgeBase?: boolean
+  /** Optional model configuration used only for this node. */
+  llmModelConfigId?: string
   description?: string
   timeoutMinutes?: number
   /**

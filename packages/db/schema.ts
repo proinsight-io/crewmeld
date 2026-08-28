@@ -414,6 +414,7 @@ export {
   alertStatusEnum,
   anomalyAlerts,
 } from './schema/audit-alerts'
+export { channelFieldMappings } from './schema/channel-field-mappings'
 export type {
   ConversationChannel,
   ConversationStatus,
@@ -442,6 +443,34 @@ export {
   CONTACT_TO_CONNECTION_TYPE,
   humanEmployees,
 } from './schema/human-employees'
+export { humanHandoffs, humanHandoffStatusEnum } from './schema/human-handoffs'
+export {
+  knowledgeQuestionGroups,
+  knowledgeQuestionMergeOperations,
+  knowledgeQuestionOccurrences,
+  knowledgeUnansweredQuestions,
+} from './schema/knowledge-analytics'
+export type {
+  KnowledgeQuestionMergeSnapshot,
+  KnowledgeUnansweredReason,
+  KnowledgeUnansweredStatus,
+} from './schema/knowledge-analytics'
+export type { HumanHandoffStatus } from './schema/human-handoffs'
+export type { KnowledgeBaseNavigation, KnowledgeBaseType } from './schema/knowledge-bases'
+export { knowledgeBases } from './schema/knowledge-bases'
+export {
+  type KnowledgeDocumentImage,
+  knowledgeDocumentImages,
+  type NewKnowledgeDocumentImage,
+} from './schema/knowledge-document-images'
+export type { QaRecordStatus } from './schema/knowledge-questions'
+export {
+  qaCsvBatches,
+  qaDocumentVersions,
+  qaQuestions,
+  qaRecordStatusEnum,
+  qaSyncJobs,
+} from './schema/knowledge-questions'
 export { modelConfigs } from './schema/model-configs'
 export { modelUsageLogs } from './schema/model-usage-logs'
 export {
@@ -454,7 +483,6 @@ export {
   platformRoleEnum,
 } from './schema/platform-roles'
 export { platformSettings } from './schema/platform-settings'
-export { channelFieldMappings } from './schema/channel-field-mappings'
 // ===== Digital Employee Platform Schema =====
 export { roles } from './schema/roles'
 export type {
@@ -506,7 +534,6 @@ export {
   taskTriggerTypeEnum,
 } from './schema/task-executions'
 export { toolApiKeys } from './schema/tool-api-keys'
-export { toolInstanceApiKeys } from './schema/tool-instance-api-keys'
 export type { ToolDevMessageKind } from './schema/tool-dev-messages'
 export { toolDevMessages } from './schema/tool-dev-messages'
 export type {
@@ -523,7 +550,10 @@ export type {
 export { toolDevSessions } from './schema/tool-dev-sessions'
 export type { NewToolExecution, ToolExecution } from './schema/tool-executions'
 export { toolExecutions } from './schema/tool-executions'
+export { toolInstanceApiKeys } from './schema/tool-instance-api-keys'
+export { employeeApiKeys } from './schema/employee-api-keys'
 export { toolInstances } from './schema/tool-instances'
+export { toolServiceReplicas } from './schema/tool-service-replicas'
 export { tools } from './schema/tools'
 export type { WorkLogType } from './schema/work-logs'
 export {

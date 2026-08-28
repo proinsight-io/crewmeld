@@ -157,6 +157,20 @@ export async function register(): Promise<void> {
   // 30-day retention). Runs once immediately, then on a 24h interval.
   if (process.env.NEXT_RUNTIME === 'nodejs') {
     try {
+      const { initDocumentImageBindingWorker, recoverDocumentImageBindingJobs } = await import(
+        './lib/knowledge/document-images/binding-queue'
+      )
+      initDocumentImageBindingWorker()
+      await recoverDocumentImageBindingJobs()
+    } catch (err) {
+      // biome-ignore lint/suspicious/noConsole: instrumentation startup diagnostic
+      console.warn(
+        '[instrumentation] document image binding worker init failed:',
+        err instanceof Error ? err.message : String(err)
+      )
+    }
+
+    try {
       const { startSopWorkspaceCleanupCron } = await import(
         './lib/sop/workspace-cleanup-cron'
       )

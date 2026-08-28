@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Copy, KeyRound, Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
@@ -26,6 +26,13 @@ interface ApiKeyCreateDialogProps {
   onCreated?: () => void
 }
 
+interface IdentityUser {
+  id: string
+  name: string | null
+  email: string | null
+  isDisabled?: boolean
+}
+
 /**
  * Dialog for creating a new API key for a tool instance.
  *
@@ -42,11 +49,23 @@ export function ApiKeyCreateDialog({
 }: ApiKeyCreateDialogProps) {
   const { t } = useTranslation()
   const [name, setName] = useState('')
+  const [userId, setUserId] = useState('')
   const [creating, setCreating] = useState(false)
   /** Non-null when key has been created — shown only once */
   const [plaintextKey, setPlaintextKey] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
   const [curlCopied, setCurlCopied] = useState(false)
+  const [users, setUsers] = useState<IdentityUser[]>([])
+
+  useEffect(() => {
+    if (!open) return
+    void fetch('/api/employee/users')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload: { data?: IdentityUser[] } | null) => {
+        if (payload?.data) setUsers(payload.data.filter((user) => !user.isDisabled))
+      })
+      .catch(() => setUsers([]))
+  }, [open])
 
   const handleCreate = async () => {
     if (!name.trim() || creating) return
@@ -55,7 +74,7 @@ export function ApiKeyCreateDialog({
       const res = await fetch(`/api/employee/skills/instances/${instanceId}/api-keys`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim() }),
+        body: JSON.stringify({ name: name.trim(), userId: userId || null }),
       })
       if (!res.ok) return
       const data = await res.json()
@@ -149,6 +168,23 @@ export function ApiKeyCreateDialog({
               onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
               data-testid='api-key-create:input:name'
             />
+            <label className='space-y-1 text-sm'>
+              <span className='text-gray-600'>API Key 身份用户</span>
+              <select
+                className='flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm'
+                value={userId}
+                onChange={(event) => setUserId(event.target.value)}
+                data-testid='api-key-create:select:user'
+              >
+                <option value=''>不绑定用户（使用调用方身份）</option>
+                {users.map((user) => (
+                  <option key={user.id} value={user.id}>
+                    {user.name || user.email || user.id}
+                    {user.email && user.name ? ` (${user.email})` : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
         )}
 

@@ -1,36 +1,44 @@
-/**
- * POST /api/tools/[instanceId]/invoke
- *
- * External API endpoint for invoking a deployed tool instance.
- * Authentication is via X-API-Key header (no session auth).
- *
- * Script-type tools (deployType === 'opensandbox-script') are executed via an
- * ephemeral OpenSandbox container with NFS volumes mounted in — code is read
- * from `paths.toolCode.forSandbox(toolId)` and shared Python deps from
- * `paths.sharedLibs.forSandbox()`. See spec 2026-05-28 §11.1.
- *
- * Service-type tools continue to be invoked via HTTP proxy to the long-lived
- * sandbox endpoint (spec §11.2).
- */
-
+/** External JSON invocation endpoint retained for API, script, and JSON service tools. */
 import { db, toolExecutions, toolInstanceApiKeys, toolInstances, tools } from '@crewmeld/db'
-import { and, eq } from 'drizzle-orm'
-import { NextResponse } from 'next/server'
-import type { NextRequest } from 'next/server'
-import { generateExecutionId } from '@/lib/core/execution-id'
-import { hashApiKey } from '@/lib/tools/api-key-service'
 import { createLogger } from '@crewmeld/logger'
+import { and, eq } from 'drizzle-orm'
+import type { NextRequest } from 'next/server'
+import { NextResponse } from 'next/server'
+import { generateExecutionId } from '@/lib/core/execution-id'
+import { getOpenSandboxClient } from '@/lib/dev-studio/opensandbox-client'
+import { hashApiKey } from '@/lib/tools/api-key-service'
 import { forwardableHeaders } from '@/lib/tools/forwardable-headers'
+import { selectServiceReplica } from '@/lib/tools/service-replica-selector'
+import type { DeployInfo, ServiceSpec } from '@/app/(employee)/skills/types'
 
 const logger = createLogger('API:Tools:Invoke')
 
-/** JSONB shape stored in toolInstances.deploy that this route reads. */
-interface DeployInfo {
-  status?: string
-  endpoint?: string
-  deployType?: 'k8s' | 'opensandbox' | 'opensandbox-script'
-  useProxy?: boolean
-  serviceMethod?: string
+async function authenticate(request: NextRequest, instanceId: string, authMode: string) {
+  if (authMode === 'anonymous') return true
+  const apiKey = request.headers.get('X-API-Key')
+  if (!apiKey) return false
+  const [record] = await db
+    .select({ id: toolInstanceApiKeys.id })
+    .from(toolInstanceApiKeys)
+    .where(
+      and(
+        eq(toolInstanceApiKeys.hashedKey, hashApiKey(apiKey)),
+        eq(toolInstanceApiKeys.instanceId, instanceId),
+        eq(toolInstanceApiKeys.active, true)
+      )
+    )
+    .limit(1)
+  if (!record) return false
+  void db
+    .update(toolInstanceApiKeys)
+    .set({ lastUsedAt: new Date() })
+    .where(eq(toolInstanceApiKeys.id, record.id))
+  return true
+}
+
+function parseInput(body: unknown): { ok: true; input: unknown } | { ok: false } {
+  if (body === null || typeof body !== 'object' || !('input' in body)) return { ok: false }
+  return { ok: true, input: (body as Record<string, unknown>).input }
 }
 
 export async function POST(
@@ -38,65 +46,18 @@ export async function POST(
   { params }: { params: Promise<{ instanceId: string }> }
 ) {
   const start = Date.now()
-
-  // 1. Validate X-API-Key header
-  const apiKey = request.headers.get('X-API-Key')
-  if (!apiKey) {
-    return NextResponse.json(
-      { success: false, error: 'Missing API key' },
-      { status: 401 }
-    )
-  }
-
   const { instanceId } = await params
-
-  // 2. Hash the key and look up a matching active record for this instance
-  const hashedKey = hashApiKey(apiKey)
-
-  const [keyRecord] = await db
-    .select({ id: toolInstanceApiKeys.id })
-    .from(toolInstanceApiKeys)
-    .where(
-      and(
-        eq(toolInstanceApiKeys.hashedKey, hashedKey),
-        eq(toolInstanceApiKeys.instanceId, instanceId),
-        eq(toolInstanceApiKeys.active, true)
-      )
-    )
-    .limit(1)
-
-  if (!keyRecord) {
-    return NextResponse.json(
-      { success: false, error: 'Invalid API key' },
-      { status: 401 }
-    )
-  }
-
-  // 4. Update lastUsedAt asynchronously — fire-and-forget, do not block the request
-  db.update(toolInstanceApiKeys)
-    .set({ lastUsedAt: new Date() })
-    .where(eq(toolInstanceApiKeys.id, keyRecord.id))
-    .catch((err: unknown) => {
-      logger.error('Failed to update lastUsedAt for API key', {
-        keyId: keyRecord.id,
-        error: err instanceof Error ? err.message : String(err),
-      })
-    })
-
-  // 5. Load the tool instance + its template id (needed for NFS code mount
-  //    when the instance is a script-type dev-studio tool). `createdBy` is
-  //    used to attribute the tool_executions row to a real user so the
-  //    /api/employee/tool-execution/[execId]/files/* endpoints can authorize
-  //    follow-up IO access (spec §9.5).
   const [instance] = await db
     .select({
       id: toolInstances.id,
       templateId: toolInstances.templateId,
-      publishedAsApi: toolInstances.publishedAsApi,
+      publishedAsService: toolInstances.publishedAsService,
+      serviceAuthMode: toolInstances.serviceAuthMode,
       deploy: toolInstances.deploy,
       envVars: toolInstances.envVars,
       createdBy: toolInstances.createdBy,
       kind: tools.kind,
+      serviceSpec: tools.serviceSpec,
       apiSpec: tools.apiSpec,
       forwardIdentity: tools.forwardIdentity,
     })
@@ -104,197 +65,139 @@ export async function POST(
     .innerJoin(tools, eq(tools.id, toolInstances.templateId))
     .where(eq(toolInstances.id, instanceId))
     .limit(1)
-
   if (!instance) {
+    return NextResponse.json({ success: false, error: 'Instance not found' }, { status: 404 })
+  }
+  if (!instance.publishedAsService) {
+    return NextResponse.json({ success: false, error: 'Service is not published' }, { status: 403 })
+  }
+  if (!(await authenticate(request, instanceId, instance.serviceAuthMode))) {
     return NextResponse.json(
-      { success: false, error: 'Instance not found' },
-      { status: 404 }
+      { success: false, error: 'Invalid or missing API key' },
+      { status: 401 }
     )
   }
 
-  if (!instance.publishedAsApi) {
+  let parsedBody: unknown
+  try {
+    parsedBody = await request.json()
+  } catch {
+    return NextResponse.json({ success: false, error: 'Invalid JSON body' }, { status: 422 })
+  }
+  const parsedInput = parseInput(parsedBody)
+  if (!parsedInput.ok) {
     return NextResponse.json(
-      { success: false, error: 'Instance not published as API' },
-      { status: 403 }
+      { success: false, error: 'Request body must contain an "input" field' },
+      { status: 422 }
     )
   }
-
-  // Caller's inbound headers, filtered to the forwardable subset (platform
-  // secrets / hop-by-hop headers removed). Made available to every tool kind:
-  // proxied to web-service backends, injected into script stdin as `_headers`,
-  // and exposed to API tools as `ctx.headers` (+ overlaid on their outbound call).
+  const input = parsedInput.input
   const inboundHeaders = forwardableHeaders(request.headers)
 
-  // API tools run in-process (no container, no deploy). Short-circuit here.
   if (instance.kind === 'api') {
     if (!instance.apiSpec) {
       return NextResponse.json({ success: false, error: 'API tool spec missing' }, { status: 500 })
     }
-    let input: unknown
-    try {
-      const body = await request.json()
-      if (body === null || typeof body !== 'object' || !('input' in body)) {
-        return NextResponse.json(
-          { success: false, error: 'Request body must contain an "input" field' },
-          { status: 422 }
-        )
-      }
-      input = (body as Record<string, unknown>)['input']
-    } catch {
-      return NextResponse.json({ success: false, error: 'Invalid JSON body' }, { status: 422 })
-    }
     const { runApiTool } = await import('@/lib/tools/api-tool-runner')
     const { buildApiToolDeps } = await import('@/lib/tools/api-tool-deps')
-    // External invoke path has no platform-resolved caller identity: the request
-    // carries only an API key, not an IM channel user id. If this tool declares
-    // forwardIdentity=true the runner will fail-closed (no identity → no call),
-    // which is correct — external callers must not bypass identity enforcement.
-    const forwardIdentity = instance.forwardIdentity === true
-    const r = await runApiTool(
+    const result = await runApiTool(
       instance.apiSpec as import('@/lib/tools/api-tool-types').ApiToolSpec,
       input,
       buildApiToolDeps(),
-      { toolId: instance.templateId, forwardIdentity, headers: inboundHeaders }
+      {
+        toolId: instance.templateId,
+        forwardIdentity: instance.forwardIdentity === true,
+        headers: inboundHeaders,
+      }
     )
-    const executionTime = Date.now() - start
     return NextResponse.json({
-      success: r.success,
-      ...(r.success ? { result: r.result } : { error: r.error }),
-      executionTime,
+      success: result.success,
+      ...(result.success ? { result: result.result } : { error: result.error }),
+      executionTime: Date.now() - start,
     })
   }
 
   const deploy = instance.deploy as DeployInfo | null
-
   if (deploy?.status !== 'deployed') {
-    return NextResponse.json(
-      { success: false, error: 'Tool not deployed' },
-      { status: 503 }
-    )
+    return NextResponse.json({ success: false, error: 'Tool not deployed' }, { status: 503 })
   }
 
-  const isScript = deploy.deployType === 'opensandbox-script'
-  if (!isScript && !deploy.endpoint) {
-    return NextResponse.json(
-      { success: false, error: 'Tool not deployed (missing endpoint)' },
-      { status: 503 }
-    )
-  }
-
-  // 6. Parse request body and extract input
-  let input: unknown
-  try {
-    const body = await request.json()
-    if (body === null || typeof body !== 'object' || !('input' in body)) {
-      return NextResponse.json(
-        { success: false, error: 'Request body must contain an "input" field' },
-        { status: 422 }
-      )
-    }
-    input = (body as Record<string, unknown>)['input']
-  } catch {
-    return NextResponse.json(
-      { success: false, error: 'Invalid JSON body' },
-      { status: 422 }
-    )
-  }
-
-  // 7. Execute tool — script-type uses ephemeral containers, others use HTTP proxy
-  if (isScript) {
-    // Persist a tool_executions row BEFORE creating the sandbox so the
-    // generated execId is durable: subsequent /tool-execution/[execId]/files
-    // calls can authorize the caller via tool_instances.createdBy.
-    const execId = generateExecutionId('inv')
-    try {
-      await db.insert(toolExecutions).values({
-        id: execId,
-        userId: instance.createdBy,
-        instanceId: instance.id,
-      })
-    } catch (err) {
-      logger.error('Failed to persist tool_executions row', {
-        instanceId,
-        execId,
-        error: err instanceof Error ? err.message : String(err),
-      })
-      return NextResponse.json(
-        { success: false, error: 'Failed to record execution' },
-        { status: 500 }
-      )
-    }
-
+  if (deploy.deployType === 'opensandbox-script') {
+    const executionId = generateExecutionId('inv')
+    await db.insert(toolExecutions).values({
+      id: executionId,
+      userId: instance.createdBy,
+      instanceId: instance.id,
+    })
     const { invokeScriptTool } = await import('@/lib/tools/script-invoker')
     const userEnv = Object.fromEntries(
-      ((instance.envVars as Array<{ name: string; value: string }> | null) ?? []).map((e) => [
-        e.name,
-        String(e.value ?? ''),
+      ((instance.envVars as Array<{ name: string; value: string }> | null) ?? []).map((entry) => [
+        entry.name,
+        String(entry.value ?? ''),
       ])
     )
-    const scriptResult = await invokeScriptTool({
+    const result = await invokeScriptTool({
       toolId: instance.templateId,
       input,
       userEnv,
-      execId,
+      execId: executionId,
       headers: inboundHeaders,
     })
-    return NextResponse.json({
-      success: scriptResult.success,
-      result: scriptResult.result,
-      ...(scriptResult.error ? { error: scriptResult.error } : {}),
-      executionId: execId,
-      executionTime: scriptResult.executionTime,
-    })
+    return NextResponse.json({ ...result, executionId })
   }
 
-  let proxyResponse: Response
+  const serviceSpec = (instance.serviceSpec as ServiceSpec | null) ?? {
+    type: 'json',
+    port: 3000,
+    path: '/',
+    method: 'POST',
+  }
+  if (serviceSpec.type !== 'json') {
+    return NextResponse.json(
+      { success: false, error: `Use /services/${instanceId}/ for ${serviceSpec.type} services.` },
+      { status: 409 }
+    )
+  }
+
+  const replica = await selectServiceReplica(instanceId)
+  const endpoint = replica?.endpoint ?? deploy.endpoint
+  if (!endpoint) {
+    return NextResponse.json(
+      { success: false, error: 'No healthy service replica' },
+      { status: 503 }
+    )
+  }
+
   try {
-    // Forward inbound headers (custom headers, downstream auth) to the tool
-    // backend. Platform-controlled headers are applied afterwards so they
-    // always win over any caller-supplied value.
-    const fetchHeaders: Record<string, string> = { ...inboundHeaders }
-    fetchHeaders['Content-Type'] = 'application/json'
-    if (deploy.deployType === 'opensandbox') {
-      const apiKey = process.env.OPENSANDBOX_API_KEY
-      if (apiKey) fetchHeaders['OPEN-SANDBOX-API-KEY'] = apiKey
+    const headers: Record<string, string> = {
+      ...inboundHeaders,
+      'Content-Type': 'application/json',
+      ...getOpenSandboxClient().proxyHeaders(),
     }
-    proxyResponse = await fetch(deploy.endpoint!, {
-      method: deploy.serviceMethod ?? 'POST',
-      headers: fetchHeaders,
-      body: JSON.stringify(input),
+    const upstream = await fetch(endpoint, {
+      method: serviceSpec.method,
+      headers,
+      body: serviceSpec.method === 'GET' ? undefined : JSON.stringify(input),
     })
-  } catch (err) {
-    logger.error('Proxy fetch failed', {
+    const text = await upstream.text()
+    let result: unknown
+    try {
+      result = text ? JSON.parse(text) : null
+    } catch {
+      result = { raw: text }
+    }
+    if (!upstream.ok) {
+      return NextResponse.json(
+        { success: false, error: `Service returned HTTP ${upstream.status}`, result },
+        { status: 502 }
+      )
+    }
+    return NextResponse.json({ success: true, result, executionTime: Date.now() - start })
+  } catch (error) {
+    logger.error('Service invocation failed', {
       instanceId,
-      endpoint: deploy.endpoint,
-      error: err instanceof Error ? err.message : String(err),
+      error: error instanceof Error ? error.message : String(error),
     })
-    return NextResponse.json(
-      { success: false, error: 'Proxy request failed' },
-      { status: 502 }
-    )
+    return NextResponse.json({ success: false, error: 'Service proxy failed' }, { status: 502 })
   }
-
-  if (!proxyResponse.ok) {
-    logger.error('Proxy returned non-OK status', {
-      instanceId,
-      status: proxyResponse.status,
-    })
-    return NextResponse.json(
-      { success: false, error: 'Proxy request failed' },
-      { status: 502 }
-    )
-  }
-
-  // 8. Parse proxy response — try JSON, fall back to { raw: text }
-  const responseText = await proxyResponse.text()
-  let result: unknown
-  try {
-    result = JSON.parse(responseText)
-  } catch {
-    result = { raw: responseText }
-  }
-
-  // 9. Return success envelope with execution time
-  const executionTime = Date.now() - start
-  return NextResponse.json({ success: true, result, executionTime })
 }

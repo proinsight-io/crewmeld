@@ -17,6 +17,10 @@ export interface ToolParameters {
   required?: string[]
 }
 
+export type CurlServiceType = 'json' | 'http' | 'sse'
+export type CurlAuthMode = 'api-key' | 'anonymous'
+export type CurlMethod = 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH' | 'HEAD'
+
 /** Generate a realistic example value for a single JSON Schema property. */
 function exampleFor(prop: JsonSchemaProp | undefined): unknown {
   if (!prop) return 'value'
@@ -65,14 +69,34 @@ export function buildInputExample(
 export function buildCurlExample(opts: {
   endpoint: string
   parameters: ToolParameters | null | undefined
-  apiKey: string
+  apiKey?: string
+  method?: CurlMethod
+  serviceType?: CurlServiceType
+  authMode?: CurlAuthMode
 }): string {
-  const { endpoint, parameters, apiKey } = opts
+  const {
+    endpoint,
+    parameters,
+    apiKey,
+    method = 'POST',
+    serviceType = 'json',
+    authMode = 'api-key',
+  } = opts
   const inputExample = buildInputExample(parameters)
-  // bash-escape single quotes inside the JSON for the curl -d argument
-  const inputJson = JSON.stringify({ input: inputExample }).replace(/'/g, "'\\''")
-  return `curl -X POST ${endpoint} \\
-  -H "Content-Type: application/json" \\
-  -H "X-API-Key: ${apiKey}" \\
-  -d '${inputJson}'`
+  const lines = [`curl${serviceType === 'sse' ? ' -N' : ''} -X ${method} ${endpoint}`]
+
+  if (serviceType === 'sse') {
+    lines.push('-H "Accept: text/event-stream"')
+  }
+  if (authMode === 'api-key' && apiKey) {
+    lines.push(`-H "X-API-Key: ${apiKey}"`)
+  }
+  if (method !== 'GET' && method !== 'HEAD') {
+    const body = serviceType === 'json' ? { input: inputExample } : inputExample
+    const inputJson = JSON.stringify(body).replace(/'/g, "'\\''")
+    lines.push('-H "Content-Type: application/json"')
+    lines.push(`-d '${inputJson}'`)
+  }
+
+  return lines.join(' \\\n+  ')
 }

@@ -133,7 +133,7 @@ export default function EmployeeChatPage() {
               <Loader2 className='h-5 w-5 animate-spin' />
             </div>
           ) : activeConversationId ? (
-            <ChatPanel conversationId={activeConversationId} />
+            <ChatPanel conversationId={activeConversationId} employeeId={employeeId} />
           ) : (
             <ChatPanel conversationId={null} employeeId={employeeId} />
           )}

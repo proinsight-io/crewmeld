@@ -16,6 +16,7 @@ export const en: LooseMessages = {
     connections: 'Connections',
     channels: 'Channels',
     humanEmployees: 'Collaborators',
+    humanService: 'Human Support',
     sops: 'SOPs',
     logs: 'Audit Logs',
     skills: 'Tools',
@@ -378,6 +379,7 @@ export const en: LooseMessages = {
     tabKnowledge: 'Knowledge Base',
     tabConnections: 'Connections',
     tabPersona: 'Persona',
+    tabPublishApi: 'Digital Employee API Publishing',
     // Overview
     overviewTitle: 'Performance Overview',
     periodMonth: 'This Month',
@@ -1202,7 +1204,8 @@ export const en: LooseMessages = {
     modelEndpointOptional: '(Optional)',
     modelProtocolOpenAICompatible: 'Protocol: OpenAI-compatible',
     modelProtocolAnthropic: 'Protocol: Anthropic',
-    modelEndpointProtocolMismatch: 'This coding model uses the OpenAI-compatible protocol. Enter an OpenAI-compatible endpoint.',
+    modelEndpointProtocolMismatch:
+      'This coding model uses the OpenAI-compatible protocol. Enter an OpenAI-compatible endpoint.',
     modelEndpointOpenAIHint:
       'Set this to use an OpenAI-compatible service (Alibaba Bailian, DeepSeek, SiliconFlow, etc.); leave empty to use the official OpenAI API',
     modelEndpointAnthropicHint:
@@ -1284,6 +1287,7 @@ export const en: LooseMessages = {
     typeEmail: 'Email',
     typeTelegram: 'Telegram',
     typeRagflow: 'Knowledge Base',
+    typeBaiduOcr: 'Baidu Cloud OCR',
     typeWxoa: 'WeChat Official Account',
   },
 
@@ -1478,7 +1482,7 @@ export const en: LooseMessages = {
     nodeConfigApproverAssignee: 'Specified collaborator',
     nodeConfigApproverLeader: "Requester's direct leader",
     nodeConfigApproverLeaderHint:
-      "The card is sent to the direct leader of whoever triggered this flow (resolved from Feishu/DingTalk/WeCom org identity) — no need to pick a person. When no leader can be resolved, it falls back to the collaborator below.",
+      'The card is sent to the direct leader of whoever triggered this flow (resolved from Feishu/DingTalk/WeCom org identity) — no need to pick a person. When no leader can be resolved, it falls back to the collaborator below.',
     nodeConfigApproverSelf: 'Requester themselves',
     nodeConfigApproverSelfHint:
       "The card is sent back to whoever triggered this flow (resolved from their Feishu/DingTalk/WeCom channel identity) — no need to pick a person. When the channel identity can't be resolved, it falls back to the collaborator below.",
@@ -1668,6 +1672,17 @@ export const en: LooseMessages = {
     uploadDrag: 'Drag files here, or click to select',
     uploadInfo: 'Batch upload supported · Max {max} files per batch · 1 GB total size limit',
     uploadFormats: 'Supports PDF, Word, Excel, PPT, TXT, Markdown, CSV, HTML, JSON, images, etc.',
+    qaUploadFormats: 'Only UTF-8 CSV files with question and answer columns are supported',
+    qaUploadPreviewAction: 'Continue to Import Preview',
+    qaUploadSingleFile: 'Preview one CSV file at a time',
+    qaUploadInvalidType: 'Select a file with both a CSV extension and CSV content type',
+    qaUploadTooLarge: 'CSV files cannot exceed 10 MiB',
+    qaPreviewFailed: 'CSV preview validation failed',
+    qaPreviewSummary: '{valid} valid rows and {errors} issues found',
+    qaPreviewError: 'Row {row}: {code}',
+    qaPreviewImportDeferred:
+      'This step validates and previews only. Confirm import will be enabled later.',
+    qaPreviewConfirmDisabled: 'Confirm Import (Not Yet Available)',
     uploadSelected: '{count} files selected ({size} total)',
     uploadErrorTooMany: 'Max {max} files per batch, {count} selected',
     uploadErrorTooLarge: 'Total size cannot exceed 1 GB, current total: {size}',
@@ -1707,6 +1722,10 @@ export const en: LooseMessages = {
     editDataset: 'Edit Knowledge Base',
     editDatasetTitle: 'Edit Knowledge Base',
     addDatasetTitle: 'Add Knowledge Base',
+    datasetTypeLabel: 'Knowledge base type',
+    datasetTypeDocument: 'Documents',
+    datasetTypeQa: 'Q&A (QA, CSV only)',
+    datasetTypeImmutable: 'Knowledge base type cannot be changed after creation',
     datasetNameLabel: 'Name',
     datasetNamePlaceholder: 'e.g. Product Manual, FAQ',
     datasetDescLabel: 'Description',
@@ -1726,6 +1745,9 @@ export const en: LooseMessages = {
     batchDeleted: 'Deleted {count} documents',
     batchFailed: 'Batch operation failed, please retry',
     batchDeleteFailed: 'Batch delete failed, please retry',
+    batchExport: 'Export as ZIP',
+    batchExporting: 'Exporting...',
+    batchExportFailed: 'Batch export failed, please retry',
     parseTriggerSuccess: 'Parsing triggered, processing...',
     emptyDocs: 'No documents, upload files to this knowledge base',
     selectedCount: '{count} selected',
@@ -2658,6 +2680,10 @@ export const en: LooseMessages = {
     // Chinese confirmation words (pipe-separated for regex matching)
     zhConfirmWords: 'confirm|ok|yes|correct|allow|agree|no problem|sure',
     publishApi: 'Publish as API',
+    publishService: 'Publish service',
+    serviceAddress: 'Service address',
+    publicServiceUrlMissing:
+      'No public service prefix is configured, so a public URL cannot be generated yet.',
     develop: 'Develop',
     apiKey: {
       create: 'Create API Key',
@@ -2674,10 +2700,14 @@ export const en: LooseMessages = {
       neverUsed: 'Never used',
     },
     apiDoc: {
-      title: 'API Documentation',
+      title: 'Service Invocation',
       endpoint: 'Endpoint',
       example: 'Example',
       responseExample: 'Response example',
+      anonymousAccess: 'Anonymous',
+      apiKeyAccess: 'API Key',
+      openBrowser: 'Open in browser',
+      copyEndpoint: 'Copy endpoint',
     },
   },
 
@@ -3303,6 +3333,10 @@ You are a general-purpose intelligent assistant that can handle various daily wo
     ragflowEndpoint: 'Knowledge Base API URL',
     ragflowApiKey: 'API Key',
     ragflowTimeout: 'Timeout (ms)',
+    baiduOcrApiKey: 'Baidu OCR API Key',
+    baiduOcrSecretKey: 'Baidu OCR Secret Key',
+    baiduOcrEndpoint: 'OCR endpoint',
+    baiduOcrTimeout: 'Timeout (ms)',
     // WeChat Official Account
     wxoaAppId: 'AppID',
     wxoaAppIdHint: 'Official Account AppID (from Basic Configuration)',
@@ -3643,6 +3677,8 @@ You are a general-purpose intelligent assistant that can handle various daily wo
       documentDownloadFailed: 'Failed to download file',
       documentFileMissing: 'Missing file or fileUrl + filename',
       documentUploadFailed: 'Failed to upload document',
+      qaDirectUploadForbidden: 'Use the CSV import preview flow for QA knowledge bases',
+      qaPreviewTypeInvalid: 'CSV import preview is available only for QA knowledge bases',
       documentDetailFailed: 'Failed to fetch document detail',
       documentUpdateStatusFailed: 'Failed to update document status',
       documentDeleteFailed: 'Failed to delete document',
@@ -3651,6 +3687,8 @@ You are a general-purpose intelligent assistant that can handle various daily wo
       parseFailed: 'Failed to trigger parsing',
       imageMissingId: 'Missing image ID',
       imageFetchFailed: 'Failed to fetch knowledge base image',
+      exportDocumentIdsRequired: 'Please provide the documentIds array',
+      exportFailed: 'Batch export failed',
     },
     knowledgeBinding: {
       invalidJson: 'Invalid JSON body',
@@ -4243,7 +4281,8 @@ You are a general-purpose intelligent assistant that can handle various daily wo
         'Switching restarts the sandbox (~10-30s); chat is unavailable during the restart. Your workspace files and conversation context are preserved.',
       confirm: 'Switch',
       cancel: 'Cancel',
-      replayFailed: 'The model was switched, but replaying the last question failed. Send it again to retry.',
+      replayFailed:
+        'The model was switched, but replaying the last question failed. Send it again to retry.',
     },
     header: {
       title: 'Tool Dev Studio',
@@ -4362,6 +4401,11 @@ You are a general-purpose intelligent assistant that can handle various daily wo
       progressStart: 'Starting service',
       progressInvoke: 'Invoking',
       viewLog: 'View container log',
+      htmlPreviewTitle: 'Interactive HTML service preview',
+      htmlPreviewExpired: 'The web preview has expired or is unavailable. Run the test again.',
+      sseSampleComplete: 'Test sampling complete',
+      sseStreamComplete: 'Event stream complete',
+      contentType: 'Content type',
       logViewerTitle: 'Container logs',
       logExpired: 'Log has expired',
       errorConcurrent: 'A test is already running',

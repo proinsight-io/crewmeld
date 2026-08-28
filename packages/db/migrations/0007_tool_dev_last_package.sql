@@ -1,0 +1,1 @@
+ALTER TABLE "tool_dev_sessions" ADD COLUMN "last_package" jsonb;

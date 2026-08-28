@@ -23,7 +23,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   const start = Date.now()
 
   const [instance] = await db
-    .select({ id: toolInstances.id, deploy: toolInstances.deploy })
+    .select({
+      id: toolInstances.id,
+      templateId: toolInstances.templateId,
+      deploy: toolInstances.deploy,
+      envVars: toolInstances.envVars,
+    })
     .from(toolInstances)
     .where(eq(toolInstances.id, id))
     .limit(1)
@@ -48,7 +53,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
   // Script-type: ephemeral container invoke
   if (deploy.deployType === 'opensandbox-script') {
     const { invokeScriptTool } = await import('@/lib/tools/script-invoker')
-    const result = await invokeScriptTool(deploy, input)
+    const userEnv = Object.fromEntries(
+      ((instance.envVars as Array<{ name: string; value: string }> | null) ?? []).map((entry) => [
+        entry.name,
+        String(entry.value ?? ''),
+      ])
+    )
+    const result = await invokeScriptTool({
+      toolId: instance.templateId,
+      input,
+      userEnv,
+    })
     return Response.json({ ...result, executionTime: result.executionTime })
   }
 
@@ -73,11 +88,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
     const text = await proxyRes.text()
     let result: unknown
-    try { result = JSON.parse(text) } catch { result = { raw: text } }
+    try {
+      result = JSON.parse(text)
+    } catch {
+      result = { raw: text }
+    }
 
     return Response.json({ success: proxyRes.ok, result, executionTime: Date.now() - start })
   } catch (err) {
-    logger.error('Instance invoke failed', { id, error: err instanceof Error ? err.message : String(err) })
+    logger.error('Instance invoke failed', {
+      id,
+      error: err instanceof Error ? err.message : String(err),
+    })
     return Response.json({ success: false, error: 'Invoke failed' }, { status: 502 })
   }
 }

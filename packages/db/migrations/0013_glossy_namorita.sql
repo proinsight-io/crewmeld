@@ -1,0 +1,1 @@
+ALTER TABLE "tools" ADD COLUMN "forward_identity" boolean DEFAULT false NOT NULL;

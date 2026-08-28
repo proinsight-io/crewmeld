@@ -5,6 +5,7 @@ import useSWR from 'swr'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/core/utils/cn'
 import type { ManifestT } from '@/lib/dev-studio/manifest-reader'
+import type { ServiceSseEvent, ServiceTestMetadata } from '@/lib/dev-studio/service-test-result'
 import { useTranslation } from '@/hooks/use-translation'
 import { formatBytes } from './file-tree'
 
@@ -22,6 +23,7 @@ export interface ExecResultShape {
 export interface RunTestResult {
   result: ExecResultShape
   files?: Array<{ path: string; size: number; mime: string }>
+  service?: ServiceTestMetadata
 }
 
 interface TestResultProps {
@@ -120,7 +122,7 @@ export function TestResult({
           executionId={executionId}
         />
       ) : (
-        <RawView result={result.result} />
+        <RawView result={result.result} service={result.service} />
       )}
     </div>
   )
@@ -130,6 +132,14 @@ function PreviewView({ result, manifest, sessionId, executionId }: TestResultPro
   const { t } = useTranslation()
   const outputType = manifest.output.type
   const showFileList = outputType === 'files' || outputType === 'pdf' || outputType === 'image'
+
+  if (result.service?.serviceType === 'http' && result.service.contentType?.includes('text/html')) {
+    return <HtmlServicePreview service={result.service} />
+  }
+
+  if (result.service?.serviceType === 'sse') {
+    return <SseServicePreview service={result.service} />
+  }
 
   // Pull the list straight out of toolIo for file-producing tools. Two
   // fallbacks keep older / synchronous code paths working:
@@ -143,14 +153,13 @@ function PreviewView({ result, manifest, sessionId, executionId }: TestResultPro
     showFileList && !hasFallback && executionId
       ? `/api/employee/tool-execution/${encodeURIComponent(executionId)}/files`
       : null
-  const { data: fetchedList } = useSWR<{ files: Array<{ name: string; size: number; mtime: string }> }>(
-    fetchKey,
-    async (url: string) => {
-      const res = await fetch(url)
-      if (!res.ok) throw new Error(`Files list failed (${res.status})`)
-      return (await res.json()) as { files: Array<{ name: string; size: number; mtime: string }> }
-    }
-  )
+  const { data: fetchedList } = useSWR<{
+    files: Array<{ name: string; size: number; mtime: string }>
+  }>(fetchKey, async (url: string) => {
+    const res = await fetch(url)
+    if (!res.ok) throw new Error(`Files list failed (${res.status})`)
+    return (await res.json()) as { files: Array<{ name: string; size: number; mtime: string }> }
+  })
 
   if (showFileList && (hasFallback || (fetchedList && fetchedList.files.length > 0))) {
     const items = hasFallback
@@ -228,12 +237,98 @@ function PreviewView({ result, manifest, sessionId, executionId }: TestResultPro
 
   // image / pdf — without a files array we have nothing visual to anchor on;
   // fall back to the raw view so the operator at least sees stdout/stderr.
-  return <RawView result={result.result} />
+  return <RawView result={result.result} service={result.service} />
 }
 
-function RawView({ result }: { result: ExecResultShape }) {
+function HtmlServicePreview({ service }: { service: ServiceTestMetadata }) {
   const { t } = useTranslation()
-  const stdoutLines = result.stdout ? result.stdout.split('\n').length : 0
+  const [loadFailed, setLoadFailed] = useState(false)
+  const expired = service.previewExpiresAt
+    ? Date.parse(service.previewExpiresAt) <= Date.now()
+    : false
+  if (!service.previewUrl || expired || loadFailed) {
+    return (
+      <div
+        className='rounded border border-amber-200 bg-amber-50 p-4 text-amber-800 text-sm'
+        data-testid='dev-studio:test-result:html-preview-expired'
+      >
+        {t('devStudio.test.htmlPreviewExpired')}
+      </div>
+    )
+  }
+  return (
+    <div
+      className='overflow-hidden rounded border bg-white'
+      data-testid='dev-studio:test-result:preview'
+    >
+      <iframe
+        src={service.previewUrl}
+        title={t('devStudio.test.htmlPreviewTitle')}
+        sandbox='allow-scripts allow-forms allow-modals allow-downloads'
+        className='h-[520px] w-full border-0'
+        onError={() => setLoadFailed(true)}
+        data-testid='dev-studio:test-result:html-preview'
+      />
+    </div>
+  )
+}
+
+function prettySseData(data: string): string {
+  try {
+    return JSON.stringify(JSON.parse(data) as unknown, null, 2)
+  } catch {
+    return data
+  }
+}
+
+function SseEventRow({ event, index }: { event: ServiceSseEvent; index: number }) {
+  return (
+    <div
+      className='space-y-1 rounded border bg-muted/40 p-2'
+      data-testid={`dev-studio:test-result:sse-event:${index}`}
+    >
+      <div className='flex flex-wrap gap-2 text-muted-foreground text-xs'>
+        <span>#{index + 1}</span>
+        {event.event && <span className='font-medium text-foreground'>{event.event}</span>}
+        {event.id !== undefined && <span>id: {event.id}</span>}
+        {event.retry !== undefined && <span>retry: {event.retry}ms</span>}
+      </div>
+      <pre className='overflow-auto whitespace-pre-wrap break-words font-mono text-xs'>
+        {prettySseData(event.data)}
+      </pre>
+    </div>
+  )
+}
+
+function SseServicePreview({ service }: { service: ServiceTestMetadata }) {
+  const { t } = useTranslation()
+  const events = service.sseEvents ?? []
+  return (
+    <div className='space-y-2' data-testid='dev-studio:test-result:preview'>
+      <div
+        className='flex items-center gap-2 text-muted-foreground text-xs'
+        data-testid='dev-studio:test-result:sse-status'
+      >
+        <span className='h-2 w-2 rounded-full bg-emerald-500' />
+        {service.truncated
+          ? t('devStudio.test.sseSampleComplete')
+          : t('devStudio.test.sseStreamComplete')}
+      </div>
+      {events.map((event, index) => (
+        <SseEventRow
+          key={`${event.id ?? ''}:${event.event ?? ''}:${index}`}
+          event={event}
+          index={index}
+        />
+      ))}
+    </div>
+  )
+}
+
+function RawView({ result, service }: { result: ExecResultShape; service?: ServiceTestMetadata }) {
+  const { t } = useTranslation()
+  const stdout = service?.rawBody ?? result.stdout
+  const stdoutLines = stdout ? stdout.split('\n').length : 0
   const stderrLines = result.stderr ? result.stderr.split('\n').length : 0
   return (
     <div className='space-y-2 font-mono text-xs' data-testid='dev-studio:test-result:raw'>
@@ -242,9 +337,14 @@ function RawView({ result }: { result: ExecResultShape }) {
           {t('devStudio.test.stdoutLines', { lines: stdoutLines })}
         </summary>
         <pre className='mt-1 overflow-auto whitespace-pre-wrap break-words rounded bg-muted p-2'>
-          {result.stdout || '(empty)'}
+          {stdout || '(empty)'}
         </pre>
       </details>
+      {service?.contentType && (
+        <div className='text-muted-foreground'>
+          {t('devStudio.test.contentType')}: {service.contentType}
+        </div>
+      )}
       <details open={result.stderr.length > 0}>
         <summary className='cursor-pointer select-none'>
           {t('devStudio.test.stderrLines', { lines: stderrLines })}

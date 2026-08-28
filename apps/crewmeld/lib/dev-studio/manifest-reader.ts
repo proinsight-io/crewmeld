@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Tool Dev Studio manifest reader/writer (Sub-spec B §4.2).
  *
  * The manifest is the AI-generated contract describing what the tool does,
@@ -139,6 +139,7 @@ export const Manifest = z
     resources: ResourcesSchema,
     service: z
       .object({
+        type: z.enum(['json', 'http', 'sse']).default('json'),
         port: z.number().int().min(1).max(65535),
         path: z.string().regex(/^\//),
         method: z.enum(['GET', 'POST', 'PUT', 'DELETE', 'PATCH']).default('POST'),

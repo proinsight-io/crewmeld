@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { type ReactElement, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { useTranslation } from '@/hooks/use-translation'
@@ -27,7 +27,7 @@ function QuestionStep({
   info: OpencodeQuestionInfo
   answer: string[]
   onChange: (next: string[]) => void
-}): JSX.Element {
+}): ReactElement {
   const { t } = useTranslation()
   const showCustom = info.custom !== false
   // When the user types in the custom textarea, the answer for this question is the typed text
@@ -130,7 +130,7 @@ function QuestionStep({
  * multi-select, and custom free-text answers. Submits all answers together
  * when the operator reaches the last step and confirms.
  */
-export function OpencodeQuestionCard({ question, onSubmit, onDismiss }: Props): JSX.Element {
+export function OpencodeQuestionCard({ question, onSubmit, onDismiss }: Props): ReactElement {
   const total = question.questions.length
   const [step, setStep] = useState(0)
   const [answers, setAnswers] = useState<string[][]>(() => question.questions.map(() => []))

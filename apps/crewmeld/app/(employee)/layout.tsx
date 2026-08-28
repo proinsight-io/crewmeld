@@ -87,6 +87,12 @@ const NAV_ITEMS: ReadonlyArray<NavItem> = [
     permissions: ['employee:list', 'employee:edit'],
   },
   {
+    path: '/human-service',
+    nameKey: 'nav.humanService',
+    icon: MessageSquare,
+    permissions: ['employee:list', 'employee:edit'],
+  },
+  {
     path: '/sops',
     nameKey: 'nav.sops',
     icon: GitBranch,

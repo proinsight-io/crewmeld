@@ -1,16 +1,30 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { FileText, Loader2, MessageSquare, Paperclip, Send, X } from 'lucide-react'
+import { FileText, Headset, Loader2, MessageSquare, Paperclip, Send, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
 import { useTranslation } from '@/hooks/use-translation'
+import type { ChatKnowledgeBase } from '@/lib/conversation/chat-knowledge'
 import { type MessageFileAttachment, useConversationStore } from '@/stores/conversation/store'
+import { KnowledgeScopeBar } from './knowledge-scope-bar'
 import { MessageBubble } from './message-bubble'
 
 interface ChatPanelProps {
   conversationId: string | null
   employeeId?: string
+}
+
+interface TopQuestion {
+  id: string
+  question: string
+}
+
+interface ModeSwitchTarget {
+  token: number
+  employeeId?: string
+  initialConversationId: string | null
+  conversationId: string | null
 }
 
 export function ChatPanel({ conversationId, employeeId }: ChatPanelProps) {
@@ -29,10 +43,41 @@ export function ChatPanel({ conversationId, employeeId }: ChatPanelProps) {
   const [input, setInput] = useState('')
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
   const [isUploading, setIsUploading] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [serviceMode, setServiceMode] = useState<'ai' | 'human'>('ai')
+  const [serviceModeLoading, setServiceModeLoading] = useState(false)
+  const [modeSwitching, setModeSwitching] = useState(false)
+  const [knowledgeBases, setKnowledgeBases] = useState<ChatKnowledgeBase[]>([])
+  const [selectedKnowledgeBaseIds, setSelectedKnowledgeBaseIds] = useState<string[]>([])
+  const [topQuestions, setTopQuestions] = useState<TopQuestion[]>([])
+  const [topLoading, setTopLoading] = useState(false)
+  const [topError, setTopError] = useState<string | null>(null)
+  const [topRequestVersion, setTopRequestVersion] = useState(0)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const viewportRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const topRequestControllerRef = useRef<AbortController | null>(null)
+  const topRequestTokenRef = useRef(0)
+  const isSubmittingRef = useRef(false)
+  const serviceModeRequestTokenRef = useRef(0)
+  const serviceModeReadyConversationRef = useRef<string | null>(null)
+  const modeSwitchingRef = useRef(false)
+  const modeSwitchTokenRef = useRef(0)
+  const modeSwitchTargetRef = useRef<ModeSwitchTarget | null>(null)
+  const knowledgeSwitchingRef = useRef(false)
+  const currentConversationIdRef = useRef(conversationId)
+  const currentEmployeeIdRef = useRef(employeeId)
+  currentConversationIdRef.current = conversationId
+  currentEmployeeIdRef.current = employeeId
+
+  const selectedKnowledgeBase =
+    selectedKnowledgeBaseIds.length === 1
+      ? knowledgeBases.find((knowledgeBase) => knowledgeBase.id === selectedKnowledgeBaseIds[0])
+      : undefined
+  const serviceModeInitializing =
+    Boolean(conversationId) &&
+    (serviceModeLoading || serviceModeReadyConversationRef.current !== conversationId)
 
   // Cache viewport ref to avoid querySelector on every scroll
   useEffect(() => {
@@ -45,6 +90,115 @@ export function ChatPanel({ conversationId, employeeId }: ChatPanelProps) {
       loadMessages(conversationId)
     }
   }, [conversationId, loadMessages])
+
+  useEffect(() => {
+    setKnowledgeBases([])
+    setSelectedKnowledgeBaseIds([])
+    setTopQuestions([])
+    setTopError(null)
+    topRequestControllerRef.current?.abort()
+    topRequestTokenRef.current += 1
+    if (!employeeId) return
+    let cancelled = false
+    void fetch(`/api/employee/employees/${employeeId}/chat-knowledge-bases`)
+      .then(async (response) => {
+        if (!response.ok) return []
+        const body = (await response.json()) as { data?: ChatKnowledgeBase[] }
+        return body.data ?? []
+      })
+      .then((datasets) => {
+        if (!cancelled) setKnowledgeBases(datasets)
+      })
+      .catch(() => {
+        if (!cancelled) setKnowledgeBases([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [employeeId])
+
+  useEffect(() => {
+    setTopQuestions([])
+    setTopError(null)
+    topRequestControllerRef.current?.abort()
+
+    if (!employeeId || !selectedKnowledgeBase) {
+      setTopLoading(false)
+      return
+    }
+
+    const controller = new AbortController()
+    const token = ++topRequestTokenRef.current
+    topRequestControllerRef.current = controller
+    setTopLoading(true)
+
+    void fetch(
+      `/api/employee/employees/${employeeId}/chat-knowledge-bases/${selectedKnowledgeBase.id}/questions/top?topN=3`,
+      { signal: controller.signal }
+    )
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Failed to load top questions')
+        const body = (await response.json()) as { data?: TopQuestion[] }
+        return Array.isArray(body.data) ? body.data.slice(0, 3) : []
+      })
+      .then((questions) => {
+        if (controller.signal.aborted || token !== topRequestTokenRef.current) return
+        setTopQuestions(questions)
+      })
+      .catch(() => {
+        if (controller.signal.aborted || token !== topRequestTokenRef.current) return
+        setTopError('加载高频问题失败')
+      })
+      .finally(() => {
+        if (!controller.signal.aborted && token === topRequestTokenRef.current) {
+          setTopLoading(false)
+        }
+      })
+
+    return () => controller.abort()
+  }, [selectedKnowledgeBase, topRequestVersion])
+
+  useEffect(() => {
+    const pendingModeSwitch = modeSwitchTargetRef.current
+    const adoptsPendingConversation = Boolean(
+      modeSwitchingRef.current &&
+        pendingModeSwitch &&
+        pendingModeSwitch.employeeId === employeeId &&
+        pendingModeSwitch.conversationId === conversationId
+    )
+    if (!adoptsPendingConversation) {
+      modeSwitchTokenRef.current += 1
+      modeSwitchingRef.current = false
+      modeSwitchTargetRef.current = null
+      setModeSwitching(false)
+    }
+    if (!conversationId) {
+      setServiceMode('ai')
+      setServiceModeLoading(false)
+      serviceModeReadyConversationRef.current = null
+      return
+    }
+    const controller = new AbortController()
+    const token = ++serviceModeRequestTokenRef.current
+    serviceModeReadyConversationRef.current = null
+    setServiceModeLoading(true)
+    void fetch(`/api/employee/conversations/${conversationId}/events`, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) return
+        const body = (await response.json()) as { data?: { mode?: string } }
+        if (controller.signal.aborted || token !== serviceModeRequestTokenRef.current) return
+        setServiceMode(body.data?.mode === 'human_service' ? 'human' : 'ai')
+        serviceModeReadyConversationRef.current = conversationId
+        setServiceModeLoading(false)
+      })
+      .catch(() => {
+        // If the mode cannot be read, keep quick questions disabled rather than
+        // risking an AI send while the conversation might be in human mode.
+      })
+    return () => {
+      controller.abort()
+    }
+  }, [conversationId, employeeId])
 
   // Poll for new messages (detect async backend messages like approval results, SOP completion notifications)
   useEffect(() => {
@@ -78,10 +232,54 @@ export function ChatPanel({ conversationId, employeeId }: ChatPanelProps) {
     }
   }, [messages, streamingContent, progressMessage])
 
+  const beginSubmitting = useCallback(() => {
+    if (isSubmittingRef.current) return false
+    isSubmittingRef.current = true
+    setIsSubmitting(true)
+    return true
+  }, [])
+
+  const finishSubmitting = useCallback(() => {
+    isSubmittingRef.current = false
+    setIsSubmitting(false)
+  }, [])
+
+  const sendAiText = useCallback(
+    async (content: string) => {
+      await sendMessage(
+        content,
+        conversationId ? undefined : employeeId,
+        undefined,
+        selectedKnowledgeBaseIds
+      )
+    },
+    [conversationId, employeeId, selectedKnowledgeBaseIds, sendMessage]
+  )
+
+  const sendText = useCallback(
+    async (content: string) => {
+      if (!beginSubmitting()) return
+      try {
+        await sendAiText(content)
+      } finally {
+        finishSubmitting()
+      }
+    },
+    [beginSubmitting, finishSubmitting, sendAiText]
+  )
+
   const handleSend = useCallback(async () => {
     const trimmed = input.trim()
-    if ((!trimmed && pendingFiles.length === 0) || isStreaming || isUploading) return
+    if (
+      (!trimmed && pendingFiles.length === 0) ||
+      isStreaming ||
+      isUploading ||
+      isSubmittingRef.current ||
+      !beginSubmitting()
+    )
+      return
 
+    try {
     const filesToUpload = [...pendingFiles]
     setInput('')
     setPendingFiles([])
@@ -92,7 +290,7 @@ export function ChatPanel({ conversationId, employeeId }: ChatPanelProps) {
     // key, which the SOP seed / tools never see). Text-only sends don't need
     // this — sendMessage creates the conversation lazily.
     let convId = conversationId
-    if (!convId && filesToUpload.length > 0 && employeeId) {
+    if (!convId && employeeId && (filesToUpload.length > 0 || serviceMode === 'human')) {
       convId = await createConversation(employeeId)
       if (!convId) {
         // Creation failed — restore pending files so the user can retry.
@@ -135,11 +333,33 @@ export function ChatPanel({ conversationId, employeeId }: ChatPanelProps) {
     if (!finalContent && uploadedFiles.length === 0) return
 
     // sendMessage handles conversation creation internally (auto-creates when no active conversation, using employeeId)
+    if (serviceMode === 'human' && convId) {
+      await fetch(`/api/employee/conversations/${convId}/events`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          type: 'human_customer_message',
+          data: { content: finalContent, files: uploadedFiles },
+        }),
+      })
+      await loadMessages(convId)
+      return
+    }
+
+    if (uploadedFiles.length === 0) {
+      await sendAiText(finalContent)
+      return
+    }
+
     await sendMessage(
       finalContent,
       conversationId ? undefined : employeeId,
-      uploadedFiles.length > 0 ? uploadedFiles : undefined
+      uploadedFiles,
+      selectedKnowledgeBaseIds
     )
+    } finally {
+      finishSubmitting()
+    }
   }, [
     input,
     pendingFiles,
@@ -149,7 +369,91 @@ export function ChatPanel({ conversationId, employeeId }: ChatPanelProps) {
     createConversation,
     conversationId,
     employeeId,
+    serviceMode,
+    loadMessages,
+    selectedKnowledgeBaseIds,
+    beginSubmitting,
+    finishSubmitting,
+    sendAiText,
   ])
+
+  const handleKnowledgeScopeChange = useCallback(
+    async (ids: string[]) => {
+      if (
+        knowledgeSwitchingRef.current ||
+        (ids.length === selectedKnowledgeBaseIds.length &&
+          ids.every((id, index) => id === selectedKnowledgeBaseIds[index]))
+      )
+        return
+
+      knowledgeSwitchingRef.current = true
+      try {
+        if (conversationId && employeeId) {
+          const nextConversationId = await createConversation(employeeId)
+          if (!nextConversationId) return
+        }
+        topRequestControllerRef.current?.abort()
+        topRequestTokenRef.current += 1
+        setTopQuestions([])
+        setTopError(null)
+        setTopLoading(ids.length === 1)
+        setSelectedKnowledgeBaseIds(ids)
+      } finally {
+        knowledgeSwitchingRef.current = false
+      }
+    },
+    [conversationId, createConversation, employeeId, selectedKnowledgeBaseIds]
+  )
+
+  const retryTopQuestions = useCallback(() => {
+    setTopRequestVersion((version) => version + 1)
+  }, [])
+
+  const toggleServiceMode = useCallback(async () => {
+    if (modeSwitchingRef.current || serviceModeInitializing) return
+    modeSwitchingRef.current = true
+    setModeSwitching(true)
+    const token = ++modeSwitchTokenRef.current
+    const targetEmployeeId = employeeId
+    modeSwitchTargetRef.current = {
+      token,
+      employeeId: targetEmployeeId,
+      initialConversationId: conversationId,
+      conversationId,
+    }
+    const nextMode = serviceMode === 'ai' ? 'human' : 'ai'
+    try {
+      let targetId = conversationId
+      if (!targetId && employeeId) {
+        targetId = await createConversation(employeeId)
+        if (!targetId) return
+        if (token !== modeSwitchTokenRef.current || !modeSwitchTargetRef.current) return
+        modeSwitchTargetRef.current.conversationId = targetId
+      }
+      if (!targetId) return
+      const response = await fetch(`/api/employee/conversations/${targetId}/events`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'service_mode.changed', data: { mode: nextMode } }),
+      })
+      const target = modeSwitchTargetRef.current
+      const sameTarget =
+        target?.token === token &&
+        target.employeeId === targetEmployeeId &&
+        currentEmployeeIdRef.current === targetEmployeeId &&
+        (currentConversationIdRef.current === target.conversationId ||
+          (target.initialConversationId === null && currentConversationIdRef.current === null))
+      if (response.ok && sameTarget && token === modeSwitchTokenRef.current) {
+        setServiceMode(nextMode)
+      }
+    } finally {
+      if (token === modeSwitchTokenRef.current) {
+        modeSwitchingRef.current = false
+        modeSwitchTargetRef.current = null
+        setModeSwitching(false)
+      }
+    }
+  }, [conversationId, createConversation, employeeId, serviceMode, serviceModeInitializing])
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? [])
@@ -176,6 +480,11 @@ export function ChatPanel({ conversationId, employeeId }: ChatPanelProps) {
 
   return (
     <div className='flex h-full flex-col'>
+      <KnowledgeScopeBar
+        datasets={knowledgeBases}
+        selectedIds={selectedKnowledgeBaseIds}
+        onChange={handleKnowledgeScopeChange}
+      />
       {/* Message list */}
       <ScrollArea className='flex-1 px-4' ref={scrollRef}>
         <div className='mx-auto max-w-3xl py-4'>
@@ -252,12 +561,78 @@ export function ChatPanel({ conversationId, employeeId }: ChatPanelProps) {
               <span>{progressMessage}</span>
             </div>
           )}
+
+          {selectedKnowledgeBase && (
+            <section
+              className='mt-4 rounded-xl border border-blue-100 bg-blue-50/50 p-3'
+              data-testid='chat:top-questions'
+              aria-busy={topLoading}
+            >
+              <h2 className='mb-2 font-medium text-blue-900 text-sm'>您可能想咨询以下问题</h2>
+              {topLoading ? (
+                <div className='flex items-center gap-2 text-blue-700 text-sm' role='status' aria-live='polite'>
+                  <Loader2 className='h-3.5 w-3.5 animate-spin' />
+                  正在加载高频问题
+                </div>
+              ) : topError ? (
+                <div className='flex items-center justify-between gap-2 text-red-600 text-sm' role='alert'>
+                  <span>高频问题加载失败</span>
+                  <Button type='button' size='sm' variant='outline' onClick={retryTopQuestions}>
+                    重试
+                  </Button>
+                </div>
+              ) : topQuestions.length === 0 ? (
+                <p className='text-gray-600 text-sm' role='status' aria-live='polite'>
+                  暂无高频问题，您可以直接输入问题
+                </p>
+              ) : (
+                <div className='flex flex-wrap gap-2'>
+                  {topQuestions.map((question) => (
+                    <Button
+                      key={question.id}
+                      type='button'
+                      variant='outline'
+                      disabled={
+                        isStreaming ||
+                        isUploading ||
+                        isSubmitting ||
+                        modeSwitching ||
+                        serviceModeInitializing ||
+                        serviceMode === 'human'
+                      }
+                      onClick={() => void sendText(question.question)}
+                      className='h-auto whitespace-normal px-3 py-2 text-left text-sm'
+                    >
+                      {question.question}
+                    </Button>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
         </div>
       </ScrollArea>
 
       {/* Input area */}
       <div className='border-gray-200 border-t bg-white px-4 py-3'>
         <div className='mx-auto max-w-3xl'>
+          <div className='mb-2 flex items-center justify-between'>
+            <span className='text-gray-500 text-xs'>
+              {serviceMode === 'ai' ? 'AI 智能回复' : '人工客服回复'}
+            </span>
+            <Button
+              type='button'
+              size='sm'
+              variant={serviceMode === 'human' ? 'default' : 'outline'}
+              onClick={toggleServiceMode}
+              disabled={serviceModeInitializing || isSubmitting || modeSwitching}
+              data-testid='chat:service-mode-toggle'
+              title='切换 AI 或人工客服模式'
+            >
+              <Headset className='mr-1.5 h-3.5 w-3.5' />
+              {serviceMode === 'ai' ? '转人工客服' : '切回 AI'}
+            </Button>
+          </div>
           {/* Pending files preview */}
           {pendingFiles.length > 0 && (
             <div className='mb-2 flex flex-wrap gap-1.5'>
@@ -302,7 +677,7 @@ export function ChatPanel({ conversationId, employeeId }: ChatPanelProps) {
               type='button'
               size='icon'
               variant='ghost'
-              disabled={isStreaming || isUploading}
+              disabled={isStreaming || isUploading || isSubmitting}
               onClick={() => fileInputRef.current?.click()}
               className='h-10 w-10 shrink-0 rounded-xl text-gray-400 hover:text-gray-600'
               title={t('conversation.attachmentTitle')}
@@ -319,7 +694,7 @@ export function ChatPanel({ conversationId, employeeId }: ChatPanelProps) {
               onKeyDown={handleKeyDown}
               placeholder={t('conversation.inputPlaceholder')}
               rows={1}
-              disabled={isStreaming || isUploading}
+              disabled={isStreaming || isUploading || isSubmitting}
               className='flex-1 resize-none rounded-xl border border-gray-300 px-4 py-3 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 disabled:opacity-50'
               style={{ maxHeight: '120px' }}
               onInput={(e) => {
@@ -332,7 +707,12 @@ export function ChatPanel({ conversationId, employeeId }: ChatPanelProps) {
             <Button
               data-testid='chat:send'
               size='icon'
-              disabled={(!input.trim() && pendingFiles.length === 0) || isStreaming || isUploading}
+              disabled={
+                (!input.trim() && pendingFiles.length === 0) ||
+                isStreaming ||
+                isUploading ||
+                isSubmitting
+              }
               onClick={handleSend}
               className='h-10 w-10 shrink-0 rounded-xl'
             >

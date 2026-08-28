@@ -58,8 +58,10 @@ export const CHANNEL_TYPE_LIST: ConnectionType[] = [
 /** Pure system connection types (excluding channels) */
 export const SYSTEM_CONNECTION_TYPE_LIST: ConnectionType[] = [
   /* 'crm', */ 'database',
-  'openclaw', /* 'dify', */ 'n8n',
+  'openclaw',
+  /* 'dify', */ 'n8n',
   'ragflow',
+  'baidu_ocr',
   'custom_api',
 ]
 
@@ -153,6 +155,12 @@ export interface ConnectionConfig {
   /** External knowledge base */
   ragflowEndpoint?: string
   ragflowTimeoutMs?: number
+  /** Baidu OCR */
+  baiduOcrApiKey?: string
+  baiduOcrSecretKey?: string
+  baiduOcrEndpoint?: string
+  baiduOcrTokenEndpoint?: string
+  baiduOcrTimeoutMs?: number
   /** General */
   headers?: Record<string, string>
   timeout?: number
@@ -210,6 +218,7 @@ export const CONNECTION_TYPE_I18N_KEYS: Record<ConnectionType, string> = {
   email: 'connections.typeEmail',
   telegram: 'connections.typeTelegram',
   ragflow: 'connections.typeRagflow',
+  baidu_ocr: 'connections.typeBaiduOcr',
   wxoa: 'connections.typeWxoa',
 }
 
@@ -227,6 +236,7 @@ export const CONNECTION_TYPE_ICONS: Record<ConnectionType, string> = {
   email: '✉️',
   telegram: '✈️',
   ragflow: '📚',
+  baidu_ocr: '🔎',
   wxoa: '📢',
 }
 
@@ -589,6 +599,36 @@ export const CONNECTION_CONFIG_FIELDS: Record<
       type: 'number',
       required: false,
       placeholder: '30000',
+    },
+  ],
+  baidu_ocr: [
+    {
+      key: 'baiduOcrApiKey',
+      label: 'connFields.baiduOcrApiKey',
+      type: 'password',
+      required: true,
+      placeholder: 'API Key',
+    },
+    {
+      key: 'baiduOcrSecretKey',
+      label: 'connFields.baiduOcrSecretKey',
+      type: 'password',
+      required: true,
+      placeholder: 'Secret Key',
+    },
+    {
+      key: 'baiduOcrEndpoint',
+      label: 'connFields.baiduOcrEndpoint',
+      type: 'text',
+      required: false,
+      placeholder: 'https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic',
+    },
+    {
+      key: 'baiduOcrTimeoutMs',
+      label: 'connFields.baiduOcrTimeout',
+      type: 'number',
+      required: false,
+      placeholder: '15000',
     },
   ],
   wxoa: [
