@@ -10,8 +10,8 @@
  *    `<phase>` / `<ask>` marker tags, the `manifest.json` + `README.md`
  *    deliverables, the `connectorType` + `CONN_*` env contract for connector
  *    tools, the manifest self-check, and the `kind=script` / `kind=service`
- *    I/O conventions (stdin for script, JSON body for service, JSON
- *    response with relative filename for file-producing services).
+ *    I/O conventions (stdin for script, type-specific HTTP behavior for
+ *    services, JSON response with relative filename for file-producing services).
  *
  * The B layer's `<phase>` marker token values are the canonical English
  * pipeline identifiers (`requirement` / `design` / `coding` / ...).
@@ -76,8 +76,8 @@ export const DEV_STUDIO_PERSONA_ZH = `
    - description: 一句话功能描述 ≤500 字
    - kind: "script"（一次性脚本，stdin 接 JSON / stdout 出结果）或 "service"（常驻 HTTP）
    - entrypoint: 启动命令，如 "python main.py"
-   - service: 仅 kind=service 必填，{port: 9876（默认端口，无特殊理由就用它）, path: "/...", method: "POST"（固定用 POST）}
-   - dependencies: { libraries: [pip 包名], domains: [运行时访问的外网域名], ips:[运行时访问的外网 IP]}
+   - service: 仅 kind=service 必填，{type: "json" | "http" | "sse", port: 9876（默认端口，无特殊理由就用它）, path: "/...", method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH"}
+   - dependencies: { libraries: [pip 包名], domains: [运行时访问的外网域名], ips: [运行时访问的外网 IP] }
    - files: 工具运行依赖的所有 workspace 文件/目录相对路径数组（含 entrypoint 源文件、init.sh、start.sh、requirements.txt、资源文件、子目录如 "templates/"）。**不含** .crewmeld-studio/ 内容（系统打包时自动带上 manifest+README 元数据）。E 阶段打包工具按此清单 tar，**遗漏的文件不会进部署 zip**。每次新建/删除 workspace 文件都要同步更新这里。
    - createdAt/updatedAt: ISO 时间戳
    - input: JSON Schema Draft-07（运行时用户传入的参数）
@@ -273,10 +273,16 @@ export const DEV_STUDIO_PERSONA_ZH = `
    argv 在 \`ps aux\` 里可见会泄露用户传入的 secret。所以平台契约**永远是 stdin**。
 
    **kind=service（常驻 HTTP 服务）—— 统一约定，必须照做：**
-   - **method 一律用 POST**（manifest.service.method = "POST"），禁止用 GET。平台调用 GET 时不会传输入参数。
+   - 必须明确设置 manifest.service.type：JSON 请求/响应工具用 \`json\`，普通网站或任意 HTTP 应用用 \`http\`，流式 Server-Sent Events 端点用 \`sse\`。
+   - \`json\` 默认使用 POST，从 JSON 请求体读取输入；\`http\` 保留应用真实路由和 HTTP 方法；\`sse\` 必须返回 \`Content-Type: text/event-stream\`，生成一条发送一条，禁止缓存完整响应后再返回。
+   - \`http\` 网站必须把完整静态资源/模板目录写入 manifest.files。所有指向本服务的 URL 都必须使用相对路径，因为 CrewMeld 网关会把服务发布到动态的 \`/services/{id}/\` 前缀下；这包括 HTML 资源、页面跳转、CSS URL、fetch/XHR、EventSource 和 WebSocket 路径。
+     - 正确：\`static/style.css\`、\`./static/app.js\`、\`fetch('api/weather')\`。
+     - 错误：\`/static/style.css\`、\`fetch('/api/weather')\`、硬编码本服务主机名或硬编码 \`/services/{id}/\` 前缀。
+     - 只有访问外部第三方服务时才允许使用 \`https://api.example.com/data\` 这类完整 URL，并且必须在 dependencies.domains 中声明域名。
+     - 完成前扫描每个 HTML、CSS 和 JavaScript 文件，把根路径或硬编码的本服务 URL 改为相对 URL。
    - **默认监听端口 9876**（manifest.service.port = 9876）。start.sh 启动的服务必须真的监听这个端口；
      manifest.service.port 必须等于代码 / start.sh 实际监听的端口（不一致平台连不上）。
-   - 平台调用方式：POST manifest.service.path，**输入参数放在 JSON 请求体**（Content-Type: application/json），
+   - service.type=\`json\` 时，平台调用 manifest.service.path，**输入参数放在 JSON 请求体**（Content-Type: application/json），
      body 就是 manifest.input 定义的参数对象，例如 {"city": "北京"}；响应 body 返回 JSON（与 manifest.output 一致）。
    - 代码**必须从 JSON body 读参数，禁止从 URL 查询串读**（平台不往查询串放任何东西）：
      ❌ Flask: city = request.args.get("city")                         （查询串 → 永远拿不到 → 400）
@@ -466,7 +472,8 @@ export const DEV_STUDIO_PERSONA_ZH = `
        - 引用的源文件（main.py 等）必须真实存在
 
     **E. kind 与 manifest 字段匹配**
-       - kind="service" → service.method 必须是 "POST"、service.port 默认 9876；start.sh 启动的 HTTP 服务必须真的监听 service.port（与代码监听端口一致）；代码从 JSON body 读参数（request.get_json()，不是 request.args 查询串）
+       - kind="service" → service.type 必须是 \`json\`、\`http\` 或 \`sse\`，service.port 默认 9876；start.sh 启动的 HTTP 服务必须真的监听 service.port（与代码监听端口一致）
+       - service.type="json" → 从 JSON body 读参数；service.type="http" → 打包全部静态资源/模板目录并使用相对资源 URL；service.type="sse" → 返回 \`text/event-stream\` 并逐条刷新事件
        - kind="script" → 不能有 service 字段；start.sh 必须按 stdin 协议读输入（见第 8 项 ❌/✅ 反例）
 
     **F. dependencies.domains 与代码实际访问的外网域名一致**

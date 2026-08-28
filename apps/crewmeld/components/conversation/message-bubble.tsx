@@ -163,10 +163,21 @@ export function MessageBubble({
   const isUser = role === 'user'
   const hasRefs = !isUser && !isStreaming && references && references.length > 0
 
-  // Filter out attachment annotation lines for LLM ([附件: name=..., url=..., ...]), keep only user-readable content
+  // Strip the LLM-only scaffolding appended to a user message with attachments:
+  // the OCR extraction block (ocr-preparation.ts), the [附件: ...] annotation
+  // (engine.ts), and the auto-generated attachment instruction sentence
+  // (customer-service.ts buildAttachmentInstruction) — none of it is something
+  // the user typed, so the bubble should only show their actual text/image.
   const displayContent =
     isUser && files && files.length > 0 && content
-      ? content.replace(/\n*\[附件: [^\]]+\]\n*/g, '').trimEnd() || null
+      ? content
+          .replace(/\n*\[OCR识别内容\][\s\S]*?\[OCR识别内容结束\]\n*/g, '\n')
+          .replace(/\n*\[附件: [^\]]+\]\n*/g, '')
+          .replace(
+            /\n*(?:附件已上传（[^）]*）。请先结合附件内容理解用户意图，再回答；若无法确定意图，请先向用户提问。|请先识别附件（[^）]*）中的文字、表格或图示并判断用户意图；若意图不明确，请先向用户提问，不要编造答案。)\s*$/,
+            ''
+          )
+          .trim() || null
       : content
 
   return (

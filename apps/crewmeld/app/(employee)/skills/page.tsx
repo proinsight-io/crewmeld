@@ -34,17 +34,18 @@ import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
 import { copyToClipboard } from '@/lib/core/utils/clipboard'
 import { cn } from '@/lib/core/utils/cn'
+import type { ApiToolPackage } from '@/lib/tools/api-tool-package'
 import { useTranslation } from '@/hooks/use-translation'
 import { PermissionGuard } from '../components/permission-guard'
 // import { loadOfficialTools } from './load-official-skills'
 import { AiToolGenerator } from './components/ai-tool-generator'
-import { ApiKeyPanel } from './components/api-key-panel'
 import { ApiToolEditor } from './components/api-tool-editor'
 import { DevStudioDialog } from './components/dev-studio/dev-studio-dialog'
 import { useSessionList } from './components/dev-studio/hooks/use-session-list'
 import { RedeployPrompt } from './components/redeploy-prompt'
+import { ServiceCallPanel } from './components/service-call-panel'
+import { ServicePublishSettings } from './components/service-publish-settings'
 import { ToolEditor } from './components/skill-editor'
-import type { ApiToolPackage } from '@/lib/tools/api-tool-package'
 import type { DeployInfo, GitHubProjectContext, SkillPackage, ToolInstance } from './types'
 import { skillEnvName } from './types'
 
@@ -256,10 +257,7 @@ function TemplateCard({
               : t('skills.installedAt', { date: skill.uploadedAt })}
           </span>
           {onToggleForwardIdentity ? (
-            <span
-              className='flex items-center gap-1'
-              onClick={(e) => e.stopPropagation()}
-            >
+            <span className='flex items-center gap-1' onClick={(e) => e.stopPropagation()}>
               <Switch
                 id={`fwd-identity-${skill.id}`}
                 checked={skill.forwardIdentity ?? false}
@@ -433,6 +431,7 @@ function InstanceCard({
   deploying,
   undeploying,
   onTogglePublishApi,
+  onServiceChanged,
 }: {
   instance: ToolInstance
   template: SkillPackage
@@ -446,6 +445,7 @@ function InstanceCard({
   deploying?: boolean
   undeploying?: boolean
   onTogglePublishApi?: (checked: boolean) => void
+  onServiceChanged?: (instance: ToolInstance) => void
 }) {
   const { t } = useTranslation()
   const deployStatus = instance.deploy?.status
@@ -606,19 +606,27 @@ function InstanceCard({
       {onTogglePublishApi && (
         <div className='mb-3 flex items-center gap-2'>
           <Switch
-            checked={!!instance.publishedAsApi}
+            checked={!!instance.publishedAsService}
             onCheckedChange={onTogglePublishApi}
             data-testid={`skills:switch:publish-api:${instance.id}`}
           />
-          <span className='text-sm text-gray-600'>{t('skills.publishApi')}</span>
+          <span className='text-gray-600 text-sm'>{t('skills.publishService')}</span>
         </div>
       )}
 
       {/* API Key management panel — visible when published as API */}
-      {instance.publishedAsApi && (
-        <ApiKeyPanel
-          instanceId={instance.id}
-          parameters={template?.parameters as Parameters<typeof ApiKeyPanel>[0]['parameters']}
+      {instance.publishedAsService && onServiceChanged && (
+        <ServicePublishSettings
+          instance={instance}
+          template={template}
+          onChanged={onServiceChanged}
+        />
+      )}
+      {instance.publishedAsService && (
+        <ServiceCallPanel
+          instance={instance}
+          template={template}
+          parameters={template.parameters}
         />
       )}
 
@@ -1089,24 +1097,24 @@ export default function SkillsPage() {
   const handleTogglePublishApi = async (inst: ToolInstance, checked: boolean) => {
     // Optimistically update UI
     setInstances((prev) =>
-      prev.map((i) => (i.id === inst.id ? { ...i, publishedAsApi: checked } : i))
+      prev.map((i) => (i.id === inst.id ? { ...i, publishedAsService: checked } : i))
     )
     try {
-      const res = await fetch(`/api/employee/skills/instances/${inst.id}/publish-api`, {
+      const res = await fetch(`/api/employee/skills/instances/${inst.id}/service`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ publishedAsApi: checked }),
+        body: JSON.stringify({ publishedAsService: checked }),
       })
       if (!res.ok) {
         // Revert on failure
         setInstances((prev) =>
-          prev.map((i) => (i.id === inst.id ? { ...i, publishedAsApi: !checked } : i))
+          prev.map((i) => (i.id === inst.id ? { ...i, publishedAsService: !checked } : i))
         )
         showToast('info', t('skills.saveFailed'))
       }
     } catch {
       setInstances((prev) =>
-        prev.map((i) => (i.id === inst.id ? { ...i, publishedAsApi: !checked } : i))
+        prev.map((i) => (i.id === inst.id ? { ...i, publishedAsService: !checked } : i))
       )
       showToast('info', t('skills.saveFailed'))
     }
@@ -1152,25 +1160,25 @@ export default function SkillsPage() {
   // Toggle publishedAsApi for the instance shown in the publish dialog
   const handlePublishDialogToggle = async (checked: boolean) => {
     if (!publishDialogInstance) return
-    const prev = publishDialogInstance.publishedAsApi
+    const prev = publishDialogInstance.publishedAsService
     // Optimistic update
-    setPublishDialogInstance((i) => (i ? { ...i, publishedAsApi: checked } : i))
+    setPublishDialogInstance((i) => (i ? { ...i, publishedAsService: checked } : i))
     try {
       const res = await fetch(
-        `/api/employee/skills/instances/${publishDialogInstance.id}/publish-api`,
+        `/api/employee/skills/instances/${publishDialogInstance.id}/service`,
         {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ publishedAsApi: checked }),
+          body: JSON.stringify({ publishedAsService: checked }),
         }
       )
       if (!res.ok) {
         // Revert on failure
-        setPublishDialogInstance((i) => (i ? { ...i, publishedAsApi: prev } : i))
+        setPublishDialogInstance((i) => (i ? { ...i, publishedAsService: prev } : i))
         showToast('info', t('skills.saveFailed'))
       }
     } catch {
-      setPublishDialogInstance((i) => (i ? { ...i, publishedAsApi: prev } : i))
+      setPublishDialogInstance((i) => (i ? { ...i, publishedAsService: prev } : i))
       showToast('info', t('skills.saveFailed'))
     }
   }
@@ -1206,7 +1214,8 @@ export default function SkillsPage() {
       typeof ct === 'object' && ct !== null && (ct as { type?: string }).type === 'openclaw'
     const isApiTool = installed.kind === 'api'
     // API tools have no instance-list view; all other clickable tools do.
-    const clickable = !isApiTool && (installed.code || isOpenclaw || installed.source === 'dev-studio')
+    const clickable =
+      !isApiTool && (installed.code || isOpenclaw || installed.source === 'dev-studio')
     return {
       onUninstall: () => setDeleteTarget({ id: installed.id, name: installed.name }),
       onClick: clickable ? () => handleTemplateClick(installed) : undefined,
@@ -1595,8 +1604,8 @@ export default function SkillsPage() {
     if (
       !parsed ||
       typeof parsed !== 'object' ||
-      (parsed as Record<string, unknown>)['_crewmeld_api_tool'] !== true ||
-      !(parsed as Record<string, unknown>)['apiSpec']
+      (parsed as Record<string, unknown>)._crewmeld_api_tool !== true ||
+      !(parsed as Record<string, unknown>).apiSpec
     ) {
       showToast('info', '无效的 .cmapi 文件：缺少必要字段')
       return
@@ -1622,9 +1631,7 @@ export default function SkillsPage() {
     // Pre-fill mapping: match requirement name to connection name (case-insensitive)
     const defaultMapping: Record<string, string> = {}
     for (const req of pkg.connectionRequirements ?? []) {
-      const match = connections.find(
-        (c) => c.name.toLowerCase() === req.name.toLowerCase()
-      )
+      const match = connections.find((c) => c.name.toLowerCase() === req.name.toLowerCase())
       if (match) defaultMapping[req.ref] = match.id
     }
 
@@ -1902,6 +1909,11 @@ export default function SkillsPage() {
                   deploying={deployingIds.has(inst.id)}
                   undeploying={undeployingIds.has(inst.id)}
                   onTogglePublishApi={(checked) => handleTogglePublishApi(inst, checked)}
+                  onServiceChanged={(updated) =>
+                    setInstances((current) =>
+                      current.map((item) => (item.id === updated.id ? updated : item))
+                    )
+                  }
                 />
               ))}
             </div>
@@ -2682,25 +2694,33 @@ export default function SkillsPage() {
                 {/* Publish toggle */}
                 <div className='mb-4 flex items-center gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3'>
                   <Switch
-                    checked={!!publishDialogInstance.publishedAsApi}
+                    checked={!!publishDialogInstance.publishedAsService}
                     onCheckedChange={handlePublishDialogToggle}
                     data-testid={`dialog:publish-api:switch:${publishDialogInstance.id}`}
                   />
                   <div>
-                    <p className='font-medium text-gray-800 text-sm'>{t('skills.publishApi')}</p>
+                    <p className='font-medium text-gray-800 text-sm'>
+                      {t('skills.publishService')}
+                    </p>
                     <p className='text-gray-500 text-xs'>
-                      启用后，外部系统可通过 API Key 调用此工具
+                      启用后，可配置 API Key 或匿名访问，并按需绑定公网域名
                     </p>
                   </div>
                 </div>
 
                 {/* API key management — only when published */}
-                {publishDialogInstance.publishedAsApi && (
-                  <ApiKeyPanel
-                    instanceId={publishDialogInstance.id}
-                    parameters={
-                      publishDialogTool.parameters as Parameters<typeof ApiKeyPanel>[0]['parameters']
-                    }
+                {publishDialogInstance.publishedAsService && (
+                  <ServicePublishSettings
+                    instance={publishDialogInstance}
+                    template={publishDialogTool}
+                    onChanged={setPublishDialogInstance}
+                  />
+                )}
+                {publishDialogInstance.publishedAsService && (
+                  <ServiceCallPanel
+                    instance={publishDialogInstance}
+                    template={publishDialogTool}
+                    parameters={publishDialogTool.parameters}
                   />
                 )}
 

@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import type { KnowledgeBaseType } from '@crewmeld/db/schema'
 import {
   AlertCircle,
   Database,
@@ -65,6 +66,7 @@ export function RagflowDatasetList() {
   const [editTarget, setEditTarget] = useState<{ id: string } | null>(null)
   const [formName, setFormName] = useState('')
   const [formDesc, setFormDesc] = useState('')
+  const [formType, setFormType] = useState<KnowledgeBaseType>('document')
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
 
@@ -102,6 +104,7 @@ export function RagflowDatasetList() {
     setEditTarget(null)
     setFormName('')
     setFormDesc('')
+    setFormType('document')
     setFormError(null)
     setShowFormDialog(true)
   }
@@ -110,6 +113,7 @@ export function RagflowDatasetList() {
     setEditTarget({ id: ds.id })
     setFormName(ds.name)
     setFormDesc(ds.description ?? '')
+    setFormType(ds.type ?? 'document')
     setFormError(null)
     setShowFormDialog(true)
   }
@@ -130,6 +134,7 @@ export function RagflowDatasetList() {
           body: JSON.stringify({
             name: formName.trim(),
             description: formDesc.trim(),
+            ...(isEdit ? {} : { type: formType }),
           }),
         }
       )
@@ -139,11 +144,10 @@ export function RagflowDatasetList() {
         setEditTarget(null)
         setFormName('')
         setFormDesc('')
+        setFormType('document')
         fetchDatasets()
       } else {
-        setFormError(
-          json.error ?? t(isEdit ? 'knowledge.updateFailed' : 'knowledge.createFailed')
-        )
+        setFormError(json.error ?? t(isEdit ? 'knowledge.updateFailed' : 'knowledge.createFailed'))
       }
     } catch {
       setFormError(t('common.networkError'))
@@ -275,10 +279,7 @@ export function RagflowDatasetList() {
           />
         </div>
         <PermissionGuard requires='knowledge:create'>
-          <Button
-            onClick={openCreateDialog}
-            data-testid='knowledge:ragflow:create'
-          >
+          <Button onClick={openCreateDialog} data-testid='knowledge:ragflow:create'>
             <Plus className='h-4 w-4' />
             {t('knowledge.addKnowledge')}
           </Button>
@@ -375,6 +376,7 @@ export function RagflowDatasetList() {
             setEditTarget(null)
             setFormName('')
             setFormDesc('')
+            setFormType('document')
             setFormError(null)
           }
           setShowFormDialog(open)
@@ -383,9 +385,7 @@ export function RagflowDatasetList() {
         <DialogContent className='sm:max-w-md'>
           <DialogHeader>
             <DialogTitle>
-              {editTarget
-                ? t('knowledge.editDatasetTitle')
-                : t('knowledge.addDatasetTitle')}
+              {editTarget ? t('knowledge.editDatasetTitle') : t('knowledge.addDatasetTitle')}
             </DialogTitle>
           </DialogHeader>
           <div className='space-y-4 py-2'>
@@ -394,6 +394,28 @@ export function RagflowDatasetList() {
                 {formError}
               </div>
             )}
+            <div>
+              <label
+                htmlFor='ragflow-form-type'
+                className='mb-1.5 block font-medium text-gray-700 text-sm'
+              >
+                {t('knowledge.datasetTypeLabel')}
+              </label>
+              <select
+                id='ragflow-form-type'
+                value={formType}
+                onChange={(e) => setFormType(e.target.value as KnowledgeBaseType)}
+                disabled={editTarget !== null}
+                data-testid='knowledge:ragflow:form:type'
+                className='w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-gray-900 text-sm focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-500'
+              >
+                <option value='document'>{t('knowledge.datasetTypeDocument')}</option>
+                <option value='qa'>{t('knowledge.datasetTypeQa')}</option>
+              </select>
+              {editTarget && (
+                <p className='mt-1 text-gray-500 text-xs'>{t('knowledge.datasetTypeImmutable')}</p>
+              )}
+            </div>
             <div>
               <label
                 htmlFor='ragflow-form-name'

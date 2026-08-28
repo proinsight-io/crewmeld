@@ -21,7 +21,11 @@ function rowToInstance(
     presetParams: row.presetParams as ToolInstance['presetParams'],
     envVars: row.envVars as ToolInstance['envVars'],
     deploy: row.deploy as ToolInstance['deploy'],
-    publishedAsApi: row.publishedAsApi,
+    publishedAsService: row.publishedAsService,
+    serviceAuthMode: row.serviceAuthMode as ToolInstance['serviceAuthMode'],
+    serviceVisibility: row.serviceVisibility as ToolInstance['serviceVisibility'],
+    serviceDomain: row.serviceDomain,
+    desiredReplicas: row.desiredReplicas,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   }
@@ -85,12 +89,13 @@ async function _POST(request: NextRequest) {
   }
 
   const body = await request.json()
-  const { templateId, name, presetParams, envVars, connectionId } = body as {
+  const { templateId, name, presetParams, envVars, connectionId, desiredReplicas } = body as {
     templateId: string
     name?: string
     presetParams?: Record<string, string>
     envVars?: Array<{ name: string; value: string }>
     connectionId?: string
+    desiredReplicas?: number
   }
 
   if (!templateId) {
@@ -138,6 +143,10 @@ async function _POST(request: NextRequest) {
     presetParams: presetParams ?? null,
     envVars: envVars ?? null,
     deploy: deployField,
+    desiredReplicas:
+      Number.isInteger(desiredReplicas) && desiredReplicas! >= 1 && desiredReplicas! <= 20
+        ? desiredReplicas
+        : 1,
     createdBy: auth.userId!,
     createdAt: now,
     updatedAt: now,
@@ -154,6 +163,13 @@ async function _POST(request: NextRequest) {
         presetParams: presetParams ?? undefined,
         envVars: envVars ?? undefined,
         deploy: deployField ?? undefined,
+        publishedAsService: false,
+        serviceAuthMode: 'api-key',
+        serviceVisibility: 'internal',
+        desiredReplicas:
+          Number.isInteger(desiredReplicas) && desiredReplicas! >= 1 && desiredReplicas! <= 20
+            ? desiredReplicas
+            : 1,
         createdAt: now.toISOString(),
         updatedAt: now.toISOString(),
       } satisfies ToolInstance,

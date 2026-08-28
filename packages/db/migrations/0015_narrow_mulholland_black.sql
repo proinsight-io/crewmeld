@@ -1,0 +1,1 @@
+ALTER TABLE "sop_definitions" ADD COLUMN "visibility_rules" jsonb;

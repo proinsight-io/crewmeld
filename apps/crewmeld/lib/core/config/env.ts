@@ -218,6 +218,7 @@ export const env = createEnv({
     SOCKET_PORT:                           z.number().optional(),                  // Port for WebSocket server
     PORT:                                  z.number().optional(),                  // Main application port
     CREWMELD_SANDBOX_CALLBACK_BASE_URL:    z.string().optional(),                  // Base URL async sandbox tools POST their callback to; must include protocol and be reachable from where the tool runs (cluster-reachable for pod tools, NOT localhost)
+    CREWMELD_SERVICE_PUBLIC_BASE_URL:      z.string().url().optional(),            // Shared public origin for published services, e.g. https://services.example.com
     APP_BASE_URL:                          z.string().optional(),                  // Optional server-side override for the canonical base URL (back-compat); normally unnecessary since NEXT_PUBLIC_APP_URL is runtime-injected via next-runtime-env
     WEBHOOK_BASE_URL:                       z.string().optional(),                  // Externally-reachable base URL for inbound third-party webhooks; falls back to getBaseUrl() when unset
     ALLOWED_ORIGINS:                       z.string().optional(),                  // CORS allowed origins

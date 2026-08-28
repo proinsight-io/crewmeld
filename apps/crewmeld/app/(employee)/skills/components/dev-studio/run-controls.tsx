@@ -136,12 +136,7 @@ export function RunControls({
         </span>
       )}
       <div className='flex-1' />
-      <Button
-        type='button'
-        size='sm'
-        onClick={onAdopt}
-        data-testid='dev-studio:run-controls:adopt'
-      >
+      <Button type='button' size='sm' onClick={onAdopt} data-testid='dev-studio:run-controls:adopt'>
         {t('devStudio.adopt.button')}
       </Button>
     </div>
@@ -175,13 +170,20 @@ export function buildCommand(
     return `echo '${paramsEscaped}' | bash start.sh`
   }
   if (variant === 'workspace-curl') {
-    const { port, path, method } = manifest.service ?? { port: 0, path: '/', method: 'POST' }
-    return [
-      'bash start.sh &',
-      `curl -X ${method} localhost:${port}${path} \\`,
-      "  -H 'Content-Type: application/json' \\",
-      `  -d '${paramsEscaped}'`,
-    ].join('\n')
+    const { type, port, path, method } = manifest.service ?? {
+      type: 'json',
+      port: 0,
+      path: '/',
+      method: 'POST',
+    }
+    const sendsBody = method !== 'GET'
+    const curlParts = [`curl${type === 'sse' ? ' -N' : ''} -X ${method} localhost:${port}${path}`]
+    if (type === 'sse') curlParts.push("  -H 'Accept: text/event-stream'")
+    if (sendsBody) {
+      curlParts.push("  -H 'Content-Type: application/json'")
+      curlParts.push(`  -d '${paramsEscaped}'`)
+    }
+    return ['bash start.sh &', curlParts.join(' \\\n')].join('\n')
   }
   // host-curl
   const origin = typeof window !== 'undefined' ? window.location.origin : FALLBACK_ORIGIN

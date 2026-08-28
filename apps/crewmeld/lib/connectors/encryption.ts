@@ -89,6 +89,8 @@ export function maskSensitiveFields(config: Record<string, unknown>): Record<str
     'telegramBotToken',
     'telegramWebhookSecret',
     'n8nApiKey',
+    'baiduOcrApiKey',
+    'baiduOcrSecretKey',
   ]
   const masked = { ...config }
 

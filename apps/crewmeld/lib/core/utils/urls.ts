@@ -42,6 +42,48 @@ export function getBaseUrl(): string {
   return normalizeBaseUrl(baseUrl)
 }
 
+/** Return the optional public origin used for shared service URLs. */
+export function getServicePublicBaseUrl(): string | undefined {
+  const baseUrl = process.env.CREWMELD_SERVICE_PUBLIC_BASE_URL?.trim()
+  if (!baseUrl) return undefined
+  return baseUrl.replace(/\/+$/, '')
+}
+
+/** Build the shared public URL for a published service instance. */
+export function buildServicePublicUrl(
+  publicBaseUrl: string | undefined,
+  instanceId: string
+): string | undefined {
+  if (!publicBaseUrl) return undefined
+  return `${publicBaseUrl.replace(/\/+$/, '')}/services/${encodeURIComponent(instanceId)}/`
+}
+
+function hostnameFromUrlOrHeader(value: string | null | undefined): string | null {
+  const firstValue = value?.split(',')[0]?.trim()
+  if (!firstValue) return null
+  try {
+    const url = firstValue.includes('://') ? new URL(firstValue) : new URL(`http://${firstValue}`)
+    return url.hostname.toLowerCase()
+  } catch {
+    return null
+  }
+}
+
+/** Compare URL or Host-header values while tolerating proxy port rewriting. */
+export function haveSameHostname(
+  left: string | null | undefined,
+  right: string | null | undefined
+): boolean {
+  const leftHostname = hostnameFromUrlOrHeader(left)
+  return leftHostname !== null && leftHostname === hostnameFromUrlOrHeader(right)
+}
+
+/** Return whether a URL or Host-header value identifies the local machine. */
+export function isLoopbackHostname(value: string | null | undefined): boolean {
+  const hostname = hostnameFromUrlOrHeader(value)
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]'
+}
+
 /**
  * Base URL baked into the callback URL handed to async sandbox tools (pod relay
  * / api self-post / http relay POST their result back here). MUST be reachable

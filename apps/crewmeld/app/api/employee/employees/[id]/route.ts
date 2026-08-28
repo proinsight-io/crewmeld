@@ -196,6 +196,13 @@ const UpdateEmployeeSchema = z.object({
   avatar: z.string().min(1).max(16).optional(),
   modelConfigId: z.string().nullable().optional(),
   ragflowDatasetIds: z.array(z.string()).optional(),
+  customerService: z.boolean().optional(),
+  trackUnansweredQuestions: z.boolean().optional(),
+  greeting: z.string().max(2000).nullable().optional(),
+  ocrProvider: z.enum(['model', 'baidu_ocr']).nullable().optional(),
+  ocrModelId: z.string().max(200).nullable().optional(),
+  ocrConnectionId: z.string().max(200).nullable().optional(),
+  ocrAllowedDomains: z.array(z.string().trim().min(1).max(253)).max(100).optional(),
 })
 
 /**
@@ -236,9 +243,37 @@ async function _PATCH(request: NextRequest, { params }: { params: Promise<{ id: 
     if (parsed.data.description !== undefined) updates.description = parsed.data.description
     if (parsed.data.avatar !== undefined) updates.avatar = parsed.data.avatar
     if (parsed.data.modelConfigId !== undefined) updates.modelConfigId = parsed.data.modelConfigId
-    if (parsed.data.ragflowDatasetIds !== undefined) {
-      const existingConfig = (existing[0].config as Record<string, unknown>) ?? {}
-      updates.config = { ...existingConfig, ragflowDatasetIds: parsed.data.ragflowDatasetIds }
+    const hasConfigUpdate =
+      parsed.data.ragflowDatasetIds !== undefined ||
+      parsed.data.customerService !== undefined ||
+      parsed.data.trackUnansweredQuestions !== undefined ||
+      parsed.data.greeting !== undefined ||
+      parsed.data.ocrProvider !== undefined ||
+      parsed.data.ocrModelId !== undefined ||
+      parsed.data.ocrConnectionId !== undefined ||
+      parsed.data.ocrAllowedDomains !== undefined
+    if (hasConfigUpdate) {
+      updates.config = {
+        ...((existing[0].config as Record<string, unknown>) ?? {}),
+        ...(parsed.data.ragflowDatasetIds === undefined
+          ? {}
+          : { ragflowDatasetIds: parsed.data.ragflowDatasetIds }),
+        ...(parsed.data.customerService === undefined
+          ? {}
+          : { customerService: parsed.data.customerService }),
+        ...(parsed.data.trackUnansweredQuestions === undefined
+          ? {}
+          : { trackUnansweredQuestions: parsed.data.trackUnansweredQuestions }),
+        ...(parsed.data.greeting === undefined ? {} : { greeting: parsed.data.greeting }),
+        ...(parsed.data.ocrProvider === undefined ? {} : { ocrProvider: parsed.data.ocrProvider }),
+        ...(parsed.data.ocrModelId === undefined ? {} : { ocrModelId: parsed.data.ocrModelId }),
+        ...(parsed.data.ocrConnectionId === undefined
+          ? {}
+          : { ocrConnectionId: parsed.data.ocrConnectionId }),
+        ...(parsed.data.ocrAllowedDomains === undefined
+          ? {}
+          : { ocrAllowedDomains: parsed.data.ocrAllowedDomains }),
+      }
     }
 
     await db.update(digitalEmployees).set(updates).where(eq(digitalEmployees.id, id))

@@ -92,7 +92,13 @@ export async function seedSopFilesFromSession(
     copied++
   }
 
-  logger.info({ sessionId, sopExecId, copied, srcDir, dstDir }, 'seeded sop-files from session io')
+  logger.info('seeded sop-files from session io', {
+    sessionId,
+    sopExecId,
+    copied,
+    srcDir,
+    dstDir,
+  })
 
   return { copied, sopFilesDir: dstDir }
 }

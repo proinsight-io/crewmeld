@@ -35,6 +35,29 @@ export interface DeployInfo {
   deployType?: 'k8s' | 'opensandbox' | 'opensandbox-script'
   /** Whether the endpoint goes through OpenSandbox proxy (needs OPEN-SANDBOX-API-KEY header) */
   useProxy?: boolean
+  /** HTTP service mode copied from the dev-studio manifest. */
+  serviceType?: ServiceType
+  /** Number of ready replicas. */
+  readyReplicas?: number
+}
+
+export type ServiceType = 'json' | 'http' | 'sse'
+export type ServiceAuthMode = 'api-key' | 'anonymous'
+export type ServiceVisibility = 'internal' | 'public'
+
+export interface ServiceSpec {
+  type: ServiceType
+  port: number
+  path: string
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'
+}
+
+export interface ServiceReplica {
+  id: string
+  ordinal: number
+  name: string
+  status: 'creating' | 'ready' | 'failed' | 'stopping'
+  errorMessage?: string | null
 }
 
 export type SkillLanguage = 'javascript' | 'python'
@@ -102,7 +125,9 @@ export interface SkillPackage {
    * - 'script': container-based execution (default for legacy tools)
    * - 'api': in-process JS sandbox with pre/request/post stages
    */
-  kind?: 'script' | 'api'
+  kind?: 'script' | 'service' | 'api'
+  /** HTTP service contract for kind='service'. */
+  serviceSpec?: ServiceSpec
   /** API-tool spec (only when kind='api'). */
   apiSpec?: ApiToolSpecInline
   /**
@@ -171,8 +196,13 @@ export interface ToolInstance {
   envVars?: Array<{ name: string; value: string }>
   /** Instance-specific deploy info */
   deploy?: DeployInfo
-  /** Whether this instance is published as an external API */
-  publishedAsApi?: boolean
+  /** Whether this instance is published through the service gateway. */
+  publishedAsService?: boolean
+  serviceAuthMode?: ServiceAuthMode
+  serviceVisibility?: ServiceVisibility
+  serviceDomain?: string | null
+  desiredReplicas?: number
+  replicas?: ServiceReplica[]
   createdAt: string
   updatedAt: string
 }

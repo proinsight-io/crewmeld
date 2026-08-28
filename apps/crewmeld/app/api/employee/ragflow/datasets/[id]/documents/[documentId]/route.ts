@@ -12,6 +12,7 @@ import {
   renameDocument,
   updateDocumentEnabled,
 } from '@/lib/ragflow'
+import { deleteDocumentImages } from '@/lib/knowledge/document-images/repository'
 
 const logger = createLogger('RagflowDocumentDetailAPI')
 
@@ -105,6 +106,14 @@ async function _DELETE(
     const { id, documentId } = await params
     const config = await loadRagflowConfig()
     await deleteDocument(config, id, documentId)
+    try {
+      await deleteDocumentImages(documentId)
+    } catch (cleanupError) {
+      logger.warn('Document deleted but extracted image cleanup failed', {
+        documentId,
+        error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+      })
+    }
 
     return apiOk(null)
   } catch (error) {

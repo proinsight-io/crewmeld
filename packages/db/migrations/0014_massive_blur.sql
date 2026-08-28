@@ -1,0 +1,2 @@
+ALTER TABLE "tool_dev_sessions" ADD COLUMN "connection_id" text;--> statement-breakpoint
+ALTER TABLE "tool_dev_sessions" ADD CONSTRAINT "tool_dev_sessions_connection_id_system_connections_id_fk" FOREIGN KEY ("connection_id") REFERENCES "public"."system_connections"("id") ON DELETE set null ON UPDATE no action;

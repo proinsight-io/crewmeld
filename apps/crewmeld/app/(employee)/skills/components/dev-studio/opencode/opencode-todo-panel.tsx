@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { type ReactElement, useState } from 'react'
 import { CheckSquare, ChevronDown, ChevronUp, Circle, Loader2, Square } from 'lucide-react'
 import { useTranslation } from '@/hooks/use-translation'
 import type { OpencodeTodo } from '../hooks/use-opencode-stream'
@@ -16,7 +16,7 @@ interface Props {
  * - Collapsed (default): compact bar with progress + active todo preview.
  * - Expanded: full list with per-status styles.
  */
-export function OpencodeTodoPanel({ todos, busy }: Props): JSX.Element | null {
+export function OpencodeTodoPanel({ todos, busy }: Props): ReactElement | null {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
 
@@ -82,7 +82,7 @@ function pickActiveTodo(todos: OpencodeTodo[]): OpencodeTodo | null {
   return completed.length > 0 ? (completed[completed.length - 1] ?? null) : null
 }
 
-function TodoRow({ todo, idx }: { todo: OpencodeTodo; idx: number }): JSX.Element {
+function TodoRow({ todo, idx }: { todo: OpencodeTodo; idx: number }): ReactElement {
   return (
     <li className='flex items-start gap-1.5' data-testid={`dev-studio:opencode-todo:${idx}`}>
       <TodoStatusIcon status={todo.status} />
@@ -91,7 +91,7 @@ function TodoRow({ todo, idx }: { todo: OpencodeTodo; idx: number }): JSX.Elemen
   )
 }
 
-function TodoStatusIcon({ status }: { status: string }): JSX.Element {
+function TodoStatusIcon({ status }: { status: string }): ReactElement {
   switch (status) {
     case 'completed':
       return <CheckSquare className='mt-px h-3 w-3 shrink-0 text-green-600' />

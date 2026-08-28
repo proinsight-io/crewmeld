@@ -8,10 +8,12 @@
 import { db, toolInstances, tools as toolsTable } from '@crewmeld/db'
 import { createLogger } from '@crewmeld/logger'
 import { inArray } from 'drizzle-orm'
-import type { SkillPackage } from '@/app/(employee)/skills/types'
 import type { OpenAITool } from '@/lib/conversation/types'
 import { t } from '@/lib/core/server-i18n'
+import { buildServicePublicUrl, getBaseUrl, getServicePublicBaseUrl } from '@/lib/core/utils/urls'
 import type { ApiToolSpec } from '@/lib/tools/api-tool-types'
+import { buildServiceAccessUrl } from '@/lib/tools/service-access-url'
+import type { SkillPackage } from '@/app/(employee)/skills/types'
 import { allocateSopFiles } from './sop-files-workspace'
 
 const logger = createLogger('SopToolBuilder')
@@ -20,11 +22,53 @@ const logger = createLogger('SopToolBuilder')
 function buildToolDescription(
   description: string | undefined | null,
   apiDoc: string | undefined | null,
-  fallbackName: string
+  fallbackName: string,
+  webServiceGuidance?: string
 ): string {
   const base = description || t('sopCallTool', undefined, { name: fallbackName })
-  if (!apiDoc) return base
-  return `${base}\n\n${apiDoc}`
+  return [base, apiDoc, webServiceGuidance].filter(Boolean).join('\n\n')
+}
+
+interface WebServiceGuidanceInput {
+  instanceId: string
+  instanceName: string
+  deployStatus?: string
+  publishedAsService: boolean
+  authMode: string
+  visibility: string
+  customDomain?: string | null
+  serviceType?: string
+}
+
+function buildWebServiceGuidance(input: WebServiceGuidanceInput): string | undefined {
+  if (
+    input.deployStatus !== 'deployed' ||
+    !input.publishedAsService ||
+    input.authMode !== 'anonymous' ||
+    input.serviceType !== 'http'
+  ) {
+    return undefined
+  }
+
+  const visibility = input.visibility === 'public' ? 'public' : 'internal'
+  const sharedPublicUrl = buildServicePublicUrl(getServicePublicBaseUrl(), input.instanceId)
+  const serviceUrl = buildServiceAccessUrl({
+    instanceId: input.instanceId,
+    visibility,
+    internalBaseUrl: getBaseUrl(),
+    customDomain: input.customDomain,
+    sharedPublicUrl,
+  })
+  const linkText = input.instanceName.replace(/\[/g, '\\[').replace(/\]/g, '\\]')
+
+  return [
+    '重要：HTTP Web 页面使用说明：',
+    '- 这是供用户在浏览器中交互的网页入口，不是可由 AI 调用的 JSON API。',
+    '- 禁止调用此工具或向网页入口发送 HTTP 请求，也不要尝试探测服务状态。',
+    `- 网页入口：[${linkText}](${serviceUrl})`,
+    '- 当用户需要使用此服务时，直接在最终答案中原样返回上面的 Markdown 链接。',
+    '- 必须原样保留链接地址和服务名称，不要返回页面 HTML 源码。',
+  ].join('\n')
 }
 
 interface ToolParameters {
@@ -118,6 +162,10 @@ export async function buildToolDefinitionsFromIds(instanceIds: string[]): Promis
       deploy: toolInstances.deploy,
       presetParams: toolInstances.presetParams,
       envVars: toolInstances.envVars,
+      publishedAsService: toolInstances.publishedAsService,
+      serviceAuthMode: toolInstances.serviceAuthMode,
+      serviceVisibility: toolInstances.serviceVisibility,
+      serviceDomain: toolInstances.serviceDomain,
     })
     .from(toolInstances)
     .where(inArray(toolInstances.id, instanceIds))
@@ -143,6 +191,7 @@ export async function buildToolDefinitionsFromIds(instanceIds: string[]): Promis
             forwardIdentity: toolsTable.forwardIdentity,
             kind: toolsTable.kind,
             apiSpec: toolsTable.apiSpec,
+            serviceSpec: toolsTable.serviceSpec,
           })
           .from(toolsTable)
           .where(inArray(toolsTable.id, templateIds))
@@ -163,7 +212,12 @@ export async function buildToolDefinitionsFromIds(instanceIds: string[]): Promis
   )
 
   for (const row of instanceRows) {
-    const deploy = row.deploy as { status?: string; endpoint?: string; deployType?: string; useProxy?: boolean } | null
+    const deploy = row.deploy as {
+      status?: string
+      endpoint?: string
+      deployType?: string
+      useProxy?: boolean
+    } | null
     const template = templateMap.get(row.templateId)
 
     // API-kind tools run in-process (node:vm sandbox) — they have no deploy or
@@ -259,7 +313,21 @@ export async function buildToolDefinitionsFromIds(instanceIds: string[]): Promis
       type: 'function',
       function: {
         name: toolName,
-        description: buildToolDescription(template?.description, template?.apiDoc, row.name),
+        description: buildToolDescription(
+          template?.description,
+          template?.apiDoc,
+          row.name,
+          buildWebServiceGuidance({
+            instanceId: row.id,
+            instanceName: row.name,
+            deployStatus: deploy?.status,
+            publishedAsService: row.publishedAsService,
+            authMode: row.serviceAuthMode,
+            visibility: row.serviceVisibility,
+            customDomain: row.serviceDomain,
+            serviceType: (template?.serviceSpec as { type?: string } | null)?.type,
+          })
+        ),
         parameters: buildToolParameters(
           template?.parameters as ToolParameters | null
         ) as OpenAITool['function']['parameters'],
@@ -322,10 +390,11 @@ export async function materializeMountedTools(
       // Pod already exists; nothing to do.
       continue
     }
-    logger.info(
-      `Mounted tool ${toolName} has no endpoint; deploying shared instance Pod`,
-      { sopExecutionId, skillId: info.skill.id, instanceId: info.toolId }
-    )
+    logger.info(`Mounted tool ${toolName} has no endpoint; deploying shared instance Pod`, {
+      sopExecutionId,
+      skillId: info.skill.id,
+      instanceId: info.toolId,
+    })
     if (!k8sModule) k8sModule = await import('@/lib/k8s/deploy-skill')
     if (!dbModule) dbModule = await import('@crewmeld/db')
 

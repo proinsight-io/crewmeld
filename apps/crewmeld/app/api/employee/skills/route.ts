@@ -31,6 +31,7 @@ function rowToSkill(row: typeof tools.$inferSelect): SkillPackage {
     connectorType: row.connectorType as SkillPackage['connectorType'],
     needsFileMount: row.needsFileMount ?? false,
     kind: (row.kind as SkillPackage['kind']) ?? 'script',
+    serviceSpec: row.serviceSpec as SkillPackage['serviceSpec'],
     apiSpec: row.apiSpec as SkillPackage['apiSpec'],
     forwardIdentity: row.forwardIdentity ?? false,
   }
@@ -84,6 +85,7 @@ async function _POST(request: NextRequest) {
         needsFileMount: skill.needsFileMount ?? false,
         // Preserve kind/apiSpec when provided; default to 'script' to keep legacy rows unchanged.
         kind: skill.kind ?? 'script',
+        serviceSpec: skill.serviceSpec ?? null,
         apiSpec: skill.apiSpec ?? null,
         forwardIdentity: skill.forwardIdentity ?? false,
         updatedAt: now,
@@ -109,6 +111,7 @@ async function _POST(request: NextRequest) {
       connectorType: skill.connectorType ?? null,
       needsFileMount: skill.needsFileMount ?? false,
       kind: skill.kind ?? 'script',
+      serviceSpec: skill.serviceSpec ?? null,
       apiSpec: skill.apiSpec ?? null,
       forwardIdentity: skill.forwardIdentity ?? false,
       createdBy: auth.userId!,

@@ -17,16 +17,19 @@
  * SSE frame format: `event: <type>\ndata: <JSON>\n\n`
  */
 import { db, toolExecutions } from '@crewmeld/db'
+import { createLogger } from '@crewmeld/logger'
 import { z } from 'zod'
-import { generateExecutionId } from '@/lib/core/execution-id'
 import { getCurrentUserRole } from '@/lib/auth/rbac/check-role'
 import { acquireLock, releaseLock } from '@/lib/core/config/redis'
+import { generateExecutionId } from '@/lib/core/execution-id'
+import { type LoaderEvent, runFreshTest } from '@/lib/dev-studio/sandbox-loader'
 import { sessionStore } from '@/lib/dev-studio/session-store'
-import { runFreshTest, type LoaderEvent } from '@/lib/dev-studio/sandbox-loader'
 
 interface RouteContext {
   params: Promise<{ sessionId: string }>
 }
+
+const logger = createLogger('DevStudioRunTestRoute')
 
 /** Request body schema for the SSE run-test endpoint. */
 const RunTestBodySchema = z
@@ -56,9 +59,10 @@ export async function POST(req: Request, ctx: RouteContext): Promise<Response> {
   if (!auth.authenticated || !auth.userId) {
     return new Response('Unauthorized', { status: 401 })
   }
+  const userId = auth.userId
 
   const session = await sessionStore.get(sessionId)
-  if (!session || session.userId !== auth.userId) {
+  if (!session || session.userId !== userId) {
     return new Response('Not Found', { status: 404 })
   }
 
@@ -85,7 +89,11 @@ export async function POST(req: Request, ctx: RouteContext): Promise<Response> {
   const acquired = await acquireLock(lk, executionId, 600)
   if (!acquired) {
     return Response.json(
-      { error: 'concurrent-execution', detail: 'Another test run is already in progress.', retryable: true },
+      {
+        error: 'concurrent-execution',
+        detail: 'Another test run is already in progress.',
+        retryable: true,
+      },
       { status: 409 }
     )
   }
@@ -99,7 +107,7 @@ export async function POST(req: Request, ctx: RouteContext): Promise<Response> {
   try {
     await db.insert(toolExecutions).values({
       id: executionId,
-      userId: auth.userId,
+      userId,
       sessionId,
     })
   } catch (err) {
@@ -130,22 +138,42 @@ export async function POST(req: Request, ctx: RouteContext): Promise<Response> {
       // /tool-execution/[executionId]/files/* even before sync completes.
       emit({ type: 'start', executionId })
 
-      runFreshTest({ sessionId, executionId, input, env, extraEgress, connectionId, emit })
+      runFreshTest({
+        userId,
+        sessionId,
+        executionId,
+        input,
+        env,
+        extraEgress,
+        connectionId: connectionId ?? undefined,
+        emit,
+      })
         .catch((err: unknown) => {
           const message = err instanceof Error ? err.message : String(err)
-          console.error('[run-test] runFreshTest failed:', message, err instanceof Error ? err.stack : '')
-          const errorPhase = sseFrame('phase', JSON.stringify({
-            type: 'phase',
-            step: 'invoke',
-            status: 'error',
-            errorMessage: `Unexpected error: ${message}`,
-          }))
-          const doneEvt = sseFrame('done', JSON.stringify({
-            type: 'done',
+          logger.error('runFreshTest failed', {
+            sessionId,
             executionId,
-            sandboxId: '',
-            kept: false,
-          }))
+            error: message,
+            stack: err instanceof Error ? err.stack : undefined,
+          })
+          const errorPhase = sseFrame(
+            'phase',
+            JSON.stringify({
+              type: 'phase',
+              step: 'invoke',
+              status: 'error',
+              errorMessage: `Unexpected error: ${message}`,
+            })
+          )
+          const doneEvt = sseFrame(
+            'done',
+            JSON.stringify({
+              type: 'done',
+              executionId,
+              sandboxId: '',
+              kept: false,
+            })
+          )
           try {
             controller.enqueue(encoder.encode(errorPhase))
             controller.enqueue(encoder.encode(doneEvt))

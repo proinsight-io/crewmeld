@@ -10,6 +10,8 @@ import { OverviewTab } from '@/components/employee-detail/overview-tab'
 import { useTranslation } from '@/hooks/use-translation'
 import type { TranslationKey } from '@/locales'
 import { ConnectionsTab } from './components/connections-tab'
+import { CustomerServiceSettings } from './components/customer-service-settings'
+import { PublishApiTab } from './components/publish-api-tab'
 import { SkillBindingsTab } from './components/skill-bindings-tab'
 
 interface BoundModel {
@@ -46,6 +48,7 @@ const BASE_TAB_KEYS = [
   { key: 'knowledge', labelKey: 'employees.tabKnowledge' as TranslationKey },
   { key: 'connections', labelKey: 'employees.tabConnections' as TranslationKey },
   { key: 'persona', labelKey: 'employees.tabPersona' as TranslationKey },
+  { key: 'publish-api', labelKey: 'employees.tabPublishApi' as TranslationKey },
 ] as const
 
 type TabKey = (typeof BASE_TAB_KEYS)[number]['key']
@@ -188,7 +191,17 @@ export default function EmployeeDetailPage() {
             onModelChange={fetchEmployee}
           />
         )}
-        {activeTab === 'persona' && <PersonaEditor employeeId={employeeId} />}
+        {activeTab === 'persona' && (
+          <div className='space-y-6'>
+            <PersonaEditor employeeId={employeeId} />
+            <CustomerServiceSettings
+              employeeId={employeeId}
+              config={employee.config}
+              onUpdate={fetchEmployee}
+            />
+          </div>
+        )}
+        {activeTab === 'publish-api' && <PublishApiTab employeeId={employeeId} />}
       </div>
     </div>
   )

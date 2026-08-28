@@ -129,7 +129,10 @@ type CmtoolDeployResult = CmtoolServiceResult | CmtoolScriptResult
  *   manifest's declared libraries. Invoke creates an ephemeral container per
  *   call (see `app/api/tools/[instanceId]/invoke/route.ts`).
  */
-async function deployCmtoolSkill(skill: SkillPackage): Promise<CmtoolDeployResult> {
+async function deployCmtoolSkill(
+  skill: SkillPackage,
+  replicaOrdinal = 0
+): Promise<CmtoolDeployResult> {
   // Code on NFS lives under the tool TEMPLATE id, not the instance id. When
   // deploying an instance, the route passes `templateId` separately; fall back
   // to `id` for backwards compat with callers that haven't been migrated yet.
@@ -162,7 +165,7 @@ async function deployCmtoolSkill(skill: SkillPackage): Promise<CmtoolDeployResul
     }
     return {
       kind: 'service',
-      endpoint: `http://mock-k8s:${mockPort}`,
+      endpoint: `http://mock-k8s:${mockPort + replicaOrdinal}`,
       nodePort: mockPort,
       sandboxId: 'mock-sandbox',
       useProxy: false,
@@ -304,6 +307,8 @@ async function deployCmtoolSkill(skill: SkillPackage): Promise<CmtoolDeployResul
       'crewmeld.purpose': 'deploy',
       'crewmeld.skill-id': skill.id,
       'crewmeld.skill-name': skill.name,
+      'crewmeld.replica-ordinal': String(replicaOrdinal),
+      'crewmeld.replica-name': `${skill.name}-${replicaOrdinal}`,
     },
   }
   logger.info('Creating deploy sandbox for dev-studio service tool', {
@@ -420,6 +425,27 @@ export async function deploySkill(skill: SkillPackage): Promise<DeploySkillResul
     nodePort: r.nodePort,
     sandboxId: r.sandboxId,
     useProxy: r.useProxy,
+  }
+}
+
+/** Create one independently routable OpenSandbox replica for a service tool. */
+export async function deployServiceReplica(
+  skill: SkillPackage,
+  replicaOrdinal: number
+): Promise<Extract<DeploySkillResult, { deployType: 'opensandbox' }>> {
+  if (skill.source !== 'dev-studio') {
+    throw new Error('Only dev-studio service tools support replicas.')
+  }
+  const result = await deployCmtoolSkill(skill, replicaOrdinal)
+  if (result.kind !== 'service') {
+    throw new Error('Replica deployment requires manifest kind=service.')
+  }
+  return {
+    deployType: 'opensandbox',
+    endpoint: result.endpoint,
+    nodePort: result.nodePort,
+    sandboxId: result.sandboxId,
+    useProxy: result.useProxy,
   }
 }
 

@@ -1,5 +1,6 @@
 'use client'
 
+import type { ReactElement } from 'react'
 import { Button } from '@/components/ui/button'
 
 /** Represents an opencode permission.asked event requiring user approval. */
@@ -22,7 +23,7 @@ export function OpencodePermissionCard({
 }: {
   permission: OpencodePermission
   onReply: (reply: 'once' | 'always' | 'reject') => void
-}): JSX.Element {
+}): ReactElement {
   return (
     <div
       data-testid='opencode-permission:card'

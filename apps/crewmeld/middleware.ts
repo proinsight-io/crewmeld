@@ -1,6 +1,11 @@
 import { type NextRequest, NextResponse } from 'next/server'
 import { getEnv } from '@/lib/core/config/env'
-import { getBaseUrl } from '@/lib/core/utils/urls'
+import {
+  getBaseUrl,
+  getServicePublicBaseUrl,
+  haveSameHostname,
+  isLoopbackHostname,
+} from '@/lib/core/utils/urls'
 
 /**
  * Resolves the Access-Control-Allow-Origin value for a request based on the
@@ -70,16 +75,57 @@ function applyCorsHeaders(res: NextResponse, requestOrigin: string | null): Next
  * in next.config.ts. The middleware must not also set CORS headers on them, or the
  * response would carry two Access-Control-Allow-Origin values (invalid CORS).
  */
-const PUBLIC_CORS_PATHS: RegExp[] = [
-  /^\/api\/form(?:\/|$)/,
-  /^\/api\/workflows\/[^/]+\/execute$/,
-]
+const PUBLIC_CORS_PATHS: RegExp[] = [/^\/api\/form(?:\/|$)/, /^\/api\/workflows\/[^/]+\/execute$/]
 
 export function isPublicCorsPath(pathname: string): boolean {
   return PUBLIC_CORS_PATHS.some((re) => re.test(pathname))
 }
 
+/** Return the internal gateway path when a request arrived on a custom hostname. */
+export function serviceGatewayRewritePath(
+  requestHost: string | null,
+  canonicalHost: string | null,
+  pathname: string,
+  publicServiceHost?: string | null
+): string | null {
+  if (
+    !requestHost ||
+    !canonicalHost ||
+    haveSameHostname(requestHost, canonicalHost) ||
+    isLoopbackHostname(requestHost) ||
+    haveSameHostname(requestHost, publicServiceHost) ||
+    pathname.startsWith('/service-gateway')
+  ) {
+    return null
+  }
+  return `/service-gateway${pathname}`
+}
+
 export function middleware(req: NextRequest): NextResponse {
+  const forwardedHost = req.headers.get('x-forwarded-host')
+  const requestHost = forwardedHost ?? req.headers.get('host')
+  let canonicalHost: string | null = null
+  let publicServiceHost: string | null = null
+  try {
+    canonicalHost = new URL(getBaseUrl()).host
+    const publicServiceBaseUrl = getServicePublicBaseUrl()
+    publicServiceHost = publicServiceBaseUrl ? new URL(publicServiceBaseUrl).host : null
+  } catch {
+    canonicalHost = null
+    publicServiceHost = null
+  }
+  const gatewayPath = serviceGatewayRewritePath(
+    requestHost,
+    canonicalHost,
+    req.nextUrl.pathname,
+    publicServiceHost
+  )
+  if (gatewayPath) {
+    const rewriteUrl = req.nextUrl.clone()
+    rewriteUrl.pathname = gatewayPath
+    return NextResponse.rewrite(rewriteUrl)
+  }
+
   // Endpoints with their own unconditional public CORS in next.config are excluded
   // here to avoid double-setting Access-Control-Allow-Origin.
   if (isPublicCorsPath(req.nextUrl.pathname)) {
@@ -97,5 +143,5 @@ export function middleware(req: NextRequest): NextResponse {
 }
 
 export const config = {
-  matcher: ['/api/:path*'],
+  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
 }

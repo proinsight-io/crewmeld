@@ -977,7 +977,8 @@ async function handleAsyncResponse<TConfig>(
   }
 
   // Send attachments
-  if (result.files.length > 0 && plugin.outbound.sendFile) {
+  const sendFile = plugin.outbound.sendFile
+  if (result.files.length > 0 && sendFile) {
     for (const file of result.files) {
       try {
         logger.info(`[${channelId}] Sending attachment`, {
@@ -986,7 +987,7 @@ async function handleAsyncResponse<TConfig>(
           fileName: file.name,
         })
         await sendWithRetry(() =>
-          plugin.outbound.sendFile(
+          sendFile(
             { receiveId: finalReceiveId, receiveIdType: finalReceiveIdType, file },
             config
           )

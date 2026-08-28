@@ -306,8 +306,8 @@ export async function promoteSopFilesToConversation(
       if (!stat.isFile()) continue
       size = stat.size
     } catch (e) {
-      // Missing on NFS (e.g. a legacy K8s tool that only pushed to MinIO) →
-      // skip so the caller falls back to the MinIO copy.
+      // A missing NFS output was not materialized in the shared workspace.
+      // Skip it and leave the original file reference unchanged.
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue
       throw e
     }

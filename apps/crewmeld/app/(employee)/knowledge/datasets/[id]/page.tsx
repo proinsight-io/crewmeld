@@ -1,9 +1,11 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
+import type { KnowledgeBaseType } from '@crewmeld/db/schema'
 import { ArrowLeft, Database, HardDrive, RefreshCw, Search, Upload } from 'lucide-react'
 import Link from 'next/link'
 import { useParams } from 'next/navigation'
+import { QaQuestionList } from '@/components/knowledge/qa-question-list'
 import { RagflowDocumentList } from '@/components/knowledge/ragflow-document-list'
 import { RagflowUploadDialog } from '@/components/knowledge/ragflow-upload-dialog'
 import { Button } from '@/components/ui/button'
@@ -13,7 +15,9 @@ import { useTranslation } from '@/hooks/use-translation'
 export default function RagflowDatasetDetailPage() {
   const { t } = useTranslation()
   const { id } = useParams<{ id: string }>()
-  const [dataset, setDataset] = useState<RagflowDataset | null>(null)
+  const [dataset, setDataset] = useState<
+    (RagflowDataset & { type?: KnowledgeBaseType; metadata?: { id?: string } }) | null
+  >(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showUpload, setShowUpload] = useState(false)
@@ -163,8 +167,11 @@ export default function RagflowDatasetDetailPage() {
         extFilter={extFilter}
       />
 
+      {dataset.type === 'qa' && <QaQuestionList knowledgeBaseId={dataset.metadata?.id ?? id} />}
+
       <RagflowUploadDialog
         datasetId={id}
+        datasetType={dataset.type ?? 'document'}
         open={showUpload}
         onOpenChange={setShowUpload}
         onSuccess={() => setRefreshKey((k) => k + 1)}

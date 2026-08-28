@@ -1,4 +1,6 @@
+import { conversationMessages, db, humanHandoffs } from '@crewmeld/db'
 import { createLogger } from '@crewmeld/logger'
+import { and, eq } from 'drizzle-orm'
 import type { NextRequest } from 'next/server'
 import { z } from 'zod'
 import { apiErr } from '@/lib/api/response'
@@ -28,6 +30,8 @@ const FileAttachmentSchema = z.object({
 const SendMessageSchema = z.object({
   content: z.string().max(10000),
   files: z.array(FileAttachmentSchema).max(10).optional(),
+  knowledgeBaseIds: z.array(z.string().min(1).max(200)).max(50).optional(),
+  serviceMode: z.enum(['ai', 'human_service']).optional(),
 })
 
 /**
@@ -53,11 +57,55 @@ async function _POST(request: NextRequest, { params }: { params: Promise<{ id: s
       return apiErr('api.conversation.messageEmpty', { status: 400 })
     }
 
+    const humanRequested =
+      parsed.data.serviceMode === 'human_service' ||
+      parsed.data.knowledgeBaseIds?.some(
+        (id) => id === '人工客服' || id === 'human_service' || id === 'human-service'
+      ) ||
+      parsed.data.knowledgeBaseIds?.includes('人工客服')
+    if (humanRequested) {
+      const [handoff] = await db
+        .select({ id: humanHandoffs.id })
+        .from(humanHandoffs)
+        .where(
+          and(eq(humanHandoffs.conversationId, conversationId), eq(humanHandoffs.status, 'open'))
+        )
+        .limit(1)
+      if (!handoff) {
+        await db
+          .insert(humanHandoffs)
+          .values({ id: crypto.randomUUID(), conversationId, status: 'open' })
+      }
+      if (parsed.data.content.trim()) {
+        await db.insert(conversationMessages).values({
+          id: crypto.randomUUID(),
+          conversationId,
+          role: 'user',
+          content: parsed.data.content,
+          metadata: { serviceMode: 'human_service', senderId: session.user.id },
+        })
+      }
+      const encoder = new TextEncoder()
+      const body = JSON.stringify({ mode: 'human_service', accepted: true })
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(`data: ${body}\\n\\n`))
+          controller.enqueue(encoder.encode('data: [DONE]\\n\\n'))
+          controller.close()
+        },
+      })
+      return new Response(stream, { headers: SSE_HEADERS })
+    }
+
     const stream = await processMessage(
       conversationId,
       parsed.data.content,
       session.user.id,
-      parsed.data.files
+      parsed.data.files,
+      undefined,
+      undefined,
+      undefined,
+      parsed.data.knowledgeBaseIds
     )
 
     return new Response(stream, { headers: SSE_HEADERS })

@@ -1,0 +1,1 @@
+ALTER TABLE "tools" ADD COLUMN "needs_file_mount" boolean DEFAULT false NOT NULL;

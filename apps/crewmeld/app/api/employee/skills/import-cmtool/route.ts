@@ -54,6 +54,8 @@ function rowToSkill(row: typeof tools.$inferSelect): SkillPackage {
     code: row.code ?? undefined,
     presetParams: row.presetParams as SkillPackage['presetParams'],
     language: (row.language as SkillPackage['language']) ?? 'javascript',
+    kind: (row.kind as SkillPackage['kind']) ?? 'script',
+    serviceSpec: row.serviceSpec as SkillPackage['serviceSpec'],
     deploy: row.deploy as SkillPackage['deploy'],
     envVars: row.envVars as SkillPackage['envVars'],
     apiDoc: row.apiDoc ?? undefined,
@@ -95,7 +97,7 @@ async function _POST(request: NextRequest) {
     const manifestText = (await manifestEntry.buffer()).toString('utf-8')
     manifest = Manifest.parse(JSON.parse(manifestText))
   } catch (err) {
-    logger.warn({ err: (err as Error).message }, 'cmtool manifest parse failed')
+    logger.warn('cmtool manifest parse failed', { err: (err as Error).message })
     return apiErr('api.skill.importManifestInvalid', { status: 400 })
   }
 
@@ -116,7 +118,7 @@ async function _POST(request: NextRequest) {
   try {
     await syncZipToCode(toolId, zipBytes, sha256)
   } catch (err) {
-    logger.error({ err: (err as Error).message, toolId }, 'cmtool NFS code sync failed')
+    logger.error('cmtool NFS code sync failed', { err: (err as Error).message, toolId })
     return apiErr('api.skill.importFailed', { status: 500 })
   }
 
@@ -131,10 +133,10 @@ async function _POST(request: NextRequest) {
   } catch (err) {
     await fs.rm(paths.toolCode.forBff(toolId), { recursive: true, force: true }).catch(() => {})
     if (err instanceof AdoptError) {
-      logger.error({ err: err.detail, toolId }, 'cmtool dependency prewarm failed')
+      logger.error('cmtool dependency prewarm failed', { err: err.detail, toolId })
       return apiErr('api.skill.importDepsFailed', { status: 422 })
     }
-    logger.error({ err: (err as Error).message, toolId }, 'cmtool dependency prewarm error')
+    logger.error('cmtool dependency prewarm error', { err: (err as Error).message, toolId })
     return apiErr('api.skill.importFailed', { status: 500 })
   }
 
@@ -161,7 +163,7 @@ async function _POST(request: NextRequest) {
       updatedAt: now,
     })
   } catch (err) {
-    logger.error({ err: (err as Error).message, toolId }, 'tool insert failed')
+    logger.error('tool insert failed', { err: (err as Error).message, toolId })
     // Roll back the NFS code dir so a failed import leaves no orphan workspace.
     await fs.rm(paths.toolCode.forBff(toolId), { recursive: true, force: true }).catch(() => {})
     return apiErr('api.skill.importFailed', { status: 500 })
@@ -169,7 +171,7 @@ async function _POST(request: NextRequest) {
 
   const [inserted] = await db.select().from(tools).where(eq(tools.id, toolId)).limit(1)
 
-  logger.info({ toolId, name: manifest.name, sha256 }, 'cmtool imported')
+  logger.info('cmtool imported', { toolId, name: manifest.name, sha256 })
   return apiOk(null, { extra: { skill: inserted ? rowToSkill(inserted) : null } })
 }
 

@@ -1,5 +1,6 @@
 import { createLogger } from '@crewmeld/logger'
 import type { ConnectionOptions, Worker } from 'bullmq'
+import { initQaSyncWorker, recoverQaSyncJobs } from '@/lib/knowledge/qa/sync-queue'
 import { initSopWorkers } from '@/lib/sop/queue'
 import { initSchedulerWorker, syncScheduledTasks } from '@/lib/sop/scheduler'
 
@@ -53,8 +54,21 @@ export function registerBackgroundWorkers(): void {
   initSchedulerWorker()
   void syncScheduledTasks()
 
+  const qaSyncWorker = initQaSyncWorker()
+  if (qaSyncWorker) workers.push(qaSyncWorker)
+  void (async () => {
+    try {
+      const { qaSyncRepository } = await import('@/lib/knowledge/qa/sync-repository')
+      await recoverQaSyncJobs(qaSyncRepository)
+    } catch (error) {
+      logger.error('QA sync cold recovery failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      })
+    }
+  })()
+
   registered = true
-  logger.info('Registered SOP workers + scheduler worker')
+  logger.info('Registered SOP, scheduler, and QA sync workers')
 }
 
 /**

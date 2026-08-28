@@ -1,4 +1,4 @@
-import { conversations, db, digitalEmployees } from '@crewmeld/db'
+import { conversationMessages, conversations, db, digitalEmployees } from '@crewmeld/db'
 import { createLogger } from '@crewmeld/logger'
 import { and, desc, eq, gt, ne, sql } from 'drizzle-orm'
 import type { NextRequest } from 'next/server'
@@ -7,6 +7,8 @@ import { z } from 'zod'
 import { apiErr, apiOk } from '@/lib/api/response'
 import { withAudit } from '@/lib/audit/with-audit'
 import { getSession } from '@/lib/auth'
+import { createConversationGreeting } from '@/lib/conversation/greeting'
+import { resolveWebIdentity } from '@/lib/identity/web-identity'
 
 const logger = createLogger('ConversationsAPI')
 
@@ -35,7 +37,7 @@ async function _POST(request: NextRequest) {
 
     // Verify employee exists
     const [employee] = await db
-      .select({ id: digitalEmployees.id })
+      .select({ id: digitalEmployees.id, config: digitalEmployees.config })
       .from(digitalEmployees)
       .where(eq(digitalEmployees.id, employeeId))
       .limit(1)
@@ -49,15 +51,45 @@ async function _POST(request: NextRequest) {
       session.user.id
 
     const conversationId = uuidv4()
-    await db.insert(conversations).values({
-      id: conversationId,
-      employeeId,
-      userId: session.user.id,
-      workspaceId,
-      channel,
-      metadata: {
-        senderName: session.user.name ?? undefined,
-      },
+    const now = new Date()
+    const identity = channel === 'web' ? await resolveWebIdentity(session.user.id) : null
+    const greeting = createConversationGreeting(
+      employee.config,
+      { id: session.user.id, name: session.user.name, email: session.user.email },
+      identity
+    )
+    const greetingMessage = greeting
+      ? {
+          id: uuidv4(),
+          role: 'assistant' as const,
+          content: greeting,
+          metadata: { source: 'greeting' },
+          createdAt: now.toISOString(),
+        }
+      : null
+    await db.transaction(async (tx) => {
+      await tx.insert(conversations).values({
+        id: conversationId,
+        employeeId,
+        userId: session.user.id,
+        workspaceId,
+        channel,
+        messageCount: greetingMessage ? 1 : 0,
+        lastMessageAt: greetingMessage ? now : null,
+        metadata: {
+          senderName: session.user.name ?? undefined,
+        },
+      })
+      if (greetingMessage) {
+        await tx.insert(conversationMessages).values({
+          id: greetingMessage.id,
+          conversationId,
+          role: greetingMessage.role,
+          content: greetingMessage.content,
+          metadata: greetingMessage.metadata,
+          createdAt: now,
+        })
+      }
     })
 
     logger.info(`Conversation created: ${conversationId}, employee=${employeeId}`)
@@ -68,7 +100,8 @@ async function _POST(request: NextRequest) {
         employeeId,
         channel,
         status: 'active',
-        createdAt: new Date().toISOString(),
+        createdAt: now.toISOString(),
+        greetingMessage,
       },
       { status: 201 }
     )

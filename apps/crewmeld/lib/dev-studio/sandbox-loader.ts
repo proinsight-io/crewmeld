@@ -18,15 +18,18 @@ import path from 'node:path'
 import { createLogger } from '@crewmeld/logger'
 import { resolveConnectionEnvVars } from '@/lib/connectors/resolve-conn-env'
 import { getRedisClient } from '@/lib/core/config/redis'
-import { syncWorkspaceToCode } from './code-sync'
-import { type ManifestT, readManifestFromTool } from './manifest-reader'
 import { getSandboxSettings } from '@/lib/sandbox/settings'
+import { syncWorkspaceToCode } from './code-sync'
+import { seedSopFilesFromSession } from './io-sync'
+import { type ManifestT, readManifestFromTool } from './manifest-reader'
 import { buildToolNetworkPolicy, validateManifestDomains } from './network-policy-builder'
 import { getOpenSandboxClient, type OpenSandboxClient } from './opensandbox-client'
 import { applyManifestDefaults, DEFAULT_IMAGE } from './package-defaults'
 import { paths } from './paths'
-import { seedSopFilesFromSession } from './io-sync'
+import { createHtmlServicePreview, destroySessionServicePreview } from './service-preview-lifecycle'
+import type { ServiceSseEvent, ServiceTestMetadata } from './service-test-result'
 import { sessionStore } from './session-store'
+import { sampleSseStream } from './sse-sampler'
 
 const logger = createLogger('SandboxLoader')
 
@@ -114,6 +117,57 @@ export function isBinaryContentType(contentType: string): boolean {
   if (ct.startsWith('application/vnd.openxmlformats-officedocument')) return true
   if (ct.startsWith('application/vnd.ms-')) return true
   return false
+}
+
+type ServiceType = NonNullable<ManifestT['service']>['type']
+
+export interface ParsedServiceResponse {
+  data?: unknown
+  service: ServiceTestMetadata
+}
+
+/** Parse a Dev Studio smoke-test response into data and transport metadata. */
+export async function parseServiceResponse(
+  response: Response,
+  serviceType: ServiceType,
+  onSseEvent?: (event: ServiceSseEvent, index: number) => void
+): Promise<ParsedServiceResponse> {
+  const contentType = response.headers.get('content-type') ?? ''
+  if (serviceType === 'sse') {
+    const sample = await sampleSseStream(response, { onEvent: onSseEvent })
+    return {
+      service: {
+        serviceType,
+        ...(contentType ? { contentType } : {}),
+        rawBody: sample.rawBody,
+        sseEvents: sample.events,
+        truncated: sample.truncated,
+      },
+    }
+  }
+
+  if (contentType.includes('application/json')) {
+    return {
+      data: (await response.json()) as unknown,
+      service: { serviceType, ...(contentType ? { contentType } : {}) },
+    }
+  }
+
+  const text = await response.text()
+  try {
+    return {
+      data: JSON.parse(text) as unknown,
+      service: { serviceType, ...(contentType ? { contentType } : {}) },
+    }
+  } catch {
+    return {
+      service: {
+        serviceType,
+        ...(contentType ? { contentType } : {}),
+        rawBody: text,
+      },
+    }
+  }
 }
 
 /**
@@ -218,6 +272,13 @@ export interface ResultEvent {
   success: boolean
   data?: unknown
   schemaError?: string
+  service?: ServiceTestMetadata
+}
+
+export interface ServiceStreamEvent {
+  type: 'service-event'
+  event: ServiceSseEvent
+  index: number
 }
 
 export interface DoneEvent {
@@ -239,9 +300,10 @@ export interface StartEvent {
   executionId: string
 }
 
-export type LoaderEvent = StartEvent | PhaseEvent | ResultEvent | DoneEvent
+export type LoaderEvent = StartEvent | PhaseEvent | ResultEvent | ServiceStreamEvent | DoneEvent
 
 export interface RunFreshTestArgs {
+  userId: string
   sessionId: string
   executionId: string
   input: Record<string, unknown>
@@ -395,6 +457,7 @@ export async function runFreshTest(args: RunFreshTestArgs): Promise<void> {
   args.emit({ type: 'phase', step: 'cache-libs', status: 'start' })
 
   const client = getOpenSandboxClient()
+  await destroySessionServicePreview(args.sessionId, client)
   const hasLibs = withDefaults.dependencies.libraries.length > 0
 
   if (!hasLibs) {
@@ -626,6 +689,7 @@ export async function runFreshTest(args: RunFreshTestArgs): Promise<void> {
 
     let invokeResult: unknown
     let httpStatus: number | undefined
+    let serviceResult: ServiceTestMetadata | undefined
 
     if (withDefaults.kind === 'service') {
       const endpoint = await client.getEndpoint(sandboxId, withDefaults.service!.port)
@@ -734,16 +798,13 @@ export async function runFreshTest(args: RunFreshTestArgs): Promise<void> {
         return
       }
 
-      if (contentType.includes('application/json')) {
-        invokeResult = (await res.json()) as unknown
-      } else {
-        const text = await res.text()
-        try {
-          invokeResult = JSON.parse(text) as unknown
-        } catch {
-          invokeResult = { raw: text }
-        }
-      }
+      const parsedService = await parseServiceResponse(
+        res,
+        withDefaults.service!.type,
+        (event, index) => args.emit({ type: 'service-event', event, index })
+      )
+      invokeResult = parsedService.data
+      serviceResult = parsedService.service
     } else {
       // kind=script: exec start.sh with stdin. Same `_sopExecutionId` +
       // `_sopFileDir` + `_callId` injection as the service branch — the
@@ -812,24 +873,49 @@ export async function runFreshTest(args: RunFreshTestArgs): Promise<void> {
       }
     }
 
+    let previewKept = false
+    let previewHandledCleanup = false
+    if (
+      withDefaults.kind === 'service' &&
+      withDefaults.service!.type === 'http' &&
+      serviceResult?.contentType?.toLowerCase().includes('text/html')
+    ) {
+      const preview = await createHtmlServicePreview(client, {
+        userId: args.userId,
+        sessionId: args.sessionId,
+        executionId: args.executionId,
+        sandboxId,
+        port: withDefaults.service!.port,
+        servicePath: withDefaults.service!.path,
+        service: serviceResult,
+      })
+      serviceResult = preview.service
+      previewKept = preview.kept
+      previewHandledCleanup = true
+    }
+
     args.emit({
       type: 'result',
       success: true,
       data: invokeResult,
       schemaError,
+      service: serviceResult,
     })
 
     // ── Step 10: cleanup ───────────────────────────────────────────
-    try {
-      await client.destroy(sandboxId)
-    } catch (e) {
-      logger.warn('Sandbox destroy failed (non-fatal)', { sandboxId, error: e })
+    if (!previewHandledCleanup) {
+      try {
+        await client.destroy(sandboxId)
+      } catch (e) {
+        logger.warn('Sandbox destroy failed (non-fatal)', { sandboxId, error: e })
+      }
     }
     args.emit({
       type: 'done',
       executionId: args.executionId,
       sandboxId,
-      kept: false,
+      kept: previewKept,
+      retainUntil: previewKept ? serviceResult?.previewExpiresAt : undefined,
     })
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e)
@@ -855,10 +941,7 @@ export async function runFreshTest(args: RunFreshTestArgs): Promise<void> {
  * populate the shared libs cache directory. Runs unconditionally on every
  * test that declares libraries; pip skips already-satisfied packages.
  */
-async function buildLibsViaBuilder(
-  client: OpenSandboxClient,
-  manifest: ManifestT
-): Promise<void> {
+async function buildLibsViaBuilder(client: OpenSandboxClient, manifest: ManifestT): Promise<void> {
   const image = manifest.image ?? DEFAULT_IMAGE
   const pipIndexUrl = process.env.CREWMELD_SANDBOX_PIP_INDEX ?? ''
   const builderEnv: Record<string, string> = {
@@ -892,7 +975,7 @@ async function buildLibsViaBuilder(
     await client.waitUntilRunning(builderId, { timeoutMs: 60_000, intervalMs: 500 })
 
     // Write requirements.txt into the builder sandbox
-    const reqContent = manifest.dependencies.libraries.join('\n') + '\n'
+    const reqContent = `${manifest.dependencies.libraries.join('\n')}\n`
     const files = await client.getFiles(builderId)
     await files.writeFiles([{ path: '/build/requirements.txt', data: reqContent }])
 

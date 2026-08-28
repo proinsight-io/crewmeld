@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   AlertCircle,
+  Archive,
   ChevronDown,
   ChevronsUpDown,
   ChevronUp,
@@ -166,6 +167,7 @@ export function RagflowDocumentList({
   const [batchParsing, setBatchParsing] = useState(false)
   const [batchToggling, setBatchToggling] = useState(false)
   const [batchDeleting, setBatchDeleting] = useState(false)
+  const [batchExporting, setBatchExporting] = useState(false)
   const [parseDetailTarget, setParseDetailTarget] = useState<RagflowDocumentInfo | null>(null)
   const [sortOrder, setSortOrder] = useState<SortOrder>(null)
   const [toasts, setToasts] = useState<ToastItem[]>([])
@@ -410,6 +412,37 @@ export function RagflowDocumentList({
     }
   }
 
+  async function handleBatchExport() {
+    const ids = Array.from(selectedIds)
+    setBatchExporting(true)
+    try {
+      const res = await fetch(`/api/employee/ragflow/datasets/${datasetId}/documents/export`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentIds: ids }),
+      })
+      if (!res.ok) {
+        setError(t('knowledge.batchExportFailed'))
+        return
+      }
+      const disposition = res.headers.get('content-disposition') ?? ''
+      const match = /filename\*=UTF-8''([^;]+)/.exec(disposition)
+      const filename = match ? decodeURIComponent(match[1]) : 'documents-export.zip'
+      const blob = await res.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      a.click()
+      URL.revokeObjectURL(url)
+      setSelectedIds(new Set())
+    } catch {
+      setError(t('knowledge.batchExportFailed'))
+    } finally {
+      setBatchExporting(false)
+    }
+  }
+
   async function handleBatchDelete() {
     const ids = Array.from(selectedIds)
     setBatchDeleting(true)
@@ -549,7 +582,7 @@ export function RagflowDocumentList({
           <Button
             size='sm'
             onClick={handleBatchParse}
-            disabled={batchParsing || batchToggling || batchDeleting}
+            disabled={batchParsing || batchToggling || batchDeleting || batchExporting}
             className='h-7 bg-blue-600 px-3 text-xs hover:bg-blue-700'
             data-testid='knowledge:ragflow:batch-parse'
           >
@@ -563,7 +596,7 @@ export function RagflowDocumentList({
           <Button
             size='sm'
             onClick={() => handleBatchToggleEnabled(true)}
-            disabled={batchParsing || batchToggling || batchDeleting}
+            disabled={batchParsing || batchToggling || batchDeleting || batchExporting}
             className='h-7 bg-blue-600 px-3 text-xs hover:bg-blue-700'
             data-testid='knowledge:ragflow:batch-enable'
           >
@@ -573,7 +606,7 @@ export function RagflowDocumentList({
           <Button
             size='sm'
             onClick={() => handleBatchToggleEnabled(false)}
-            disabled={batchParsing || batchToggling || batchDeleting}
+            disabled={batchParsing || batchToggling || batchDeleting || batchExporting}
             className='h-7 bg-blue-600 px-3 text-xs hover:bg-blue-700'
             data-testid='knowledge:ragflow:batch-disable'
           >
@@ -581,8 +614,22 @@ export function RagflowDocumentList({
           </Button>
           <Button
             size='sm'
+            onClick={handleBatchExport}
+            disabled={batchParsing || batchToggling || batchDeleting || batchExporting}
+            className='h-7 bg-blue-600 px-3 text-xs hover:bg-blue-700'
+            data-testid='knowledge:ragflow:batch-export'
+          >
+            {batchExporting ? (
+              <Loader2 className='mr-1 h-3.5 w-3.5 animate-spin' />
+            ) : (
+              <Archive className='mr-1 h-3.5 w-3.5' />
+            )}
+            {batchExporting ? t('knowledge.batchExporting') : t('knowledge.batchExport')}
+          </Button>
+          <Button
+            size='sm'
             onClick={handleBatchDelete}
-            disabled={batchParsing || batchToggling || batchDeleting}
+            disabled={batchParsing || batchToggling || batchDeleting || batchExporting}
             className='h-7 bg-blue-600 px-3 text-xs hover:bg-blue-700'
             data-testid='knowledge:ragflow:batch-delete'
           >
@@ -592,7 +639,7 @@ export function RagflowDocumentList({
           <Button
             size='sm'
             onClick={() => setSelectedIds(new Set())}
-            disabled={batchParsing || batchToggling || batchDeleting}
+            disabled={batchParsing || batchToggling || batchDeleting || batchExporting}
             className='h-7 bg-blue-600 px-3 text-xs hover:bg-blue-700'
             data-testid='knowledge:ragflow:batch-cancel'
           >

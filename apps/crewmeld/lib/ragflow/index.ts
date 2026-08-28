@@ -9,6 +9,7 @@ export {
   getDataset,
   getDocument,
   getDocumentChunks,
+  getDocumentParseStatus,
   getImage,
   healthCheck,
   listDatasets,

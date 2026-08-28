@@ -12,18 +12,7 @@
 
 const SOP_EXECUTION_ID_PATTERN = /\bsop_\d{8}_[0-9a-f-]{6,24}\b/gi
 
-/**
- * Markers indicating the sentence is an honest "not found" report, not an
- * active-task claim.
- *
- * These are literal phrase fragments matched against the LLM's own reply
- * text, not identifiers or UI copy — the Chinese entries are required
- * because the bound model frequently answers in Chinese (per this
- * platform's target market) and the match must work against that output
- * verbatim. This is intentionally exempt from the "no Chinese in code"
- * convention, which targets identifiers/comments/log text, not
- * language-matching data.
- */
+/** Markers indicating the sentence is an honest "not found" report, not an active-task claim. */
 const NOT_FOUND_MARKERS = [
   '未找到',
   '没有找到',

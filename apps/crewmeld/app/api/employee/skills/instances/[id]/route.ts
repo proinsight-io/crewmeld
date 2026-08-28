@@ -7,6 +7,7 @@ import { apiAuthErr, apiErr, apiOk } from '@/lib/api/response'
 import { withAudit } from '@/lib/audit/with-audit'
 import { requirePermission } from '@/lib/auth/rbac/check-permission'
 import { undeploySkill } from '@/lib/k8s/deploy-skill'
+import { destroyServiceReplicas } from '@/lib/tools/service-deployment-manager'
 import type { DeployInfo } from '@/app/(employee)/skills/types'
 
 const logger = createLogger('InstanceAPI')
@@ -68,7 +69,9 @@ async function _DELETE(_request: NextRequest, { params }: { params: Promise<{ id
   const deploy = existing.deploy as DeployInfo | null
   if (deploy?.status === 'deployed') {
     try {
-      if (deploy.deployType === 'opensandbox-script') {
+      if ((deploy.readyReplicas ?? 0) > 0) {
+        await destroyServiceReplicas(id)
+      } else if (deploy.deployType === 'opensandbox-script') {
         // Script-type dev-studio tool: no persistent sandbox to tear down.
         // Code stays on NFS until the tool itself is deleted.
       } else if (deploy.deployType === 'opensandbox' && deploy.sandboxId) {

@@ -205,7 +205,11 @@ export async function GET(_req: Request, ctx: RouteContext): Promise<Response> {
     )
   }
 
-  return new Response(payload, {
+  const body = payload.buffer.slice(
+    payload.byteOffset,
+    payload.byteOffset + payload.byteLength
+  ) as ArrayBuffer
+  return new Response(body, {
     status: 200,
     headers: {
       'content-type': mime,

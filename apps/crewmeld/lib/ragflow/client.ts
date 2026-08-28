@@ -449,6 +449,18 @@ export async function getDocument(
   return list[0]
 }
 
+/** Returns a normalized parse state for background synchronization. */
+export async function getDocumentParseStatus(
+  config: RagflowConfig,
+  datasetId: string,
+  documentId: string
+): Promise<'running' | 'done' | 'failed'> {
+  const document = await getDocument(config, datasetId, documentId)
+  if (document.run === '3') return 'done'
+  if (document.run === '2' || document.run === '4') return 'failed'
+  return 'running'
+}
+
 /**
  * PUT /api/v1/datasets/{datasetId}/documents - update document enabled status
  */
@@ -531,8 +543,16 @@ export const DEFAULT_PARSER_CONFIG: RagflowParserConfig = {
  * Build same-origin proxy URL for a chunk image_id. Markdown images embedded
  * in LLM prompts (`![](url)`) point here so the chat UI can render KB images
  * without exposing the RagFlow API key.
+ *
+ * `publicEmployeeId` routes through the employee-API-key-authenticated public
+ * endpoint instead of the admin-session-gated one, for conversations served
+ * over the public employee API (no admin session available, e.g. the H5
+ * client).
  */
-export function buildImageProxyUrl(imageId: string): string {
+export function buildImageProxyUrl(imageId: string, publicEmployeeId?: string): string {
+  if (publicEmployeeId) {
+    return `/api/public/employees/${encodeURIComponent(publicEmployeeId)}/ragflow/images/${encodeURIComponent(imageId)}`
+  }
   return `/api/employee/ragflow/images/${encodeURIComponent(imageId)}`
 }
 

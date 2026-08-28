@@ -1,4 +1,13 @@
-import { boolean, index, jsonb, pgTable, text, timestamp } from 'drizzle-orm/pg-core'
+import {
+  boolean,
+  index,
+  integer,
+  jsonb,
+  pgTable,
+  text,
+  timestamp,
+  uniqueIndex,
+} from 'drizzle-orm/pg-core'
 import { systemConnections } from './system-connections'
 import { tools } from './tools'
 
@@ -28,8 +37,16 @@ export const toolInstances = pgTable(
     envVars: jsonb('env_vars'),
     /** K8S deployment info JSONB: { status, endpoint, nodePort, deployedAt, errorMessage } */
     deploy: jsonb('deploy'),
-    /** Whether this instance is published as an external API endpoint */
-    publishedAsApi: boolean('published_as_api').notNull().default(false),
+    /** Whether this instance is published through the service gateway. */
+    publishedAsService: boolean('published_as_api').notNull().default(false),
+    /** Service gateway authentication mode. */
+    serviceAuthMode: text('service_auth_mode').notNull().default('api-key'),
+    /** Service exposure scope. */
+    serviceVisibility: text('service_visibility').notNull().default('internal'),
+    /** Optional public hostname routed to this service. */
+    serviceDomain: text('service_domain'),
+    /** Desired number of OpenSandbox replicas. */
+    desiredReplicas: integer('desired_replicas').notNull().default(1),
     /** Creator user ID */
     createdBy: text('created_by').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -39,5 +56,6 @@ export const toolInstances = pgTable(
     templateIdIdx: index('ti_template_id_idx').on(table.templateId),
     connectionIdIdx: index('ti_connection_id_idx').on(table.connectionId),
     createdByIdx: index('ti_created_by_idx').on(table.createdBy),
+    serviceDomainUnique: uniqueIndex('ti_service_domain_unique_idx').on(table.serviceDomain),
   })
 )

@@ -71,7 +71,7 @@ After requirements clarification is complete, output according to the following 
    - description: one-line capability summary, ≤500 characters
    - kind: "script" (one-shot script — takes JSON on stdin, emits result on stdout) or "service" (long-running HTTP)
    - entrypoint: launch command, e.g. "python main.py"
-   - service: required only when kind=service — {port: 9876 (the default; use it unless there's a reason not to), path: "/...", method: "POST" (always POST)}
+   - service: required only when kind=service — {type: "json" | "http" | "sse", port: 9876 (the default; use it unless there's a reason not to), path: "/...", method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH"}
    - dependencies: { libraries: [pip package names], domains: [external domains the tool hits at runtime], ips: [internal IPs the tool accesses at runtime] }
    - files: an array of relative paths inside workspace that the tool runtime depends on (the entrypoint source, init.sh, start.sh, requirements.txt, resource files, subdirectories like "templates/"). **Does NOT include** .crewmeld-studio/ content (the system auto-includes manifest+README metadata at packaging time). The E-phase packaging step tars files listed here — **anything missing won't be in the deployment zip**. Sync this array every time you add or remove a workspace file.
    - createdAt/updatedAt: ISO timestamps
@@ -268,10 +268,16 @@ After requirements clarification is complete, output according to the following 
    argv is visible in \`ps aux\` and leaks user-supplied secrets. So the platform contract is **always stdin**.
 
    **kind=service (long-running HTTP service) — unified conventions, follow them strictly:**
-   - **method is always POST** (manifest.service.method = "POST"); GET is forbidden. The platform never sends input as a query string.
+   - Set manifest.service.type explicitly: \`json\` for a JSON request/response tool, \`http\` for a normal website or arbitrary HTTP app, or \`sse\` for a streaming Server-Sent Events endpoint.
+   - For \`json\`, use POST by default and read input parameters from the JSON request body. For \`http\`, preserve the app's real routes and HTTP methods. For \`sse\`, return \`Content-Type: text/event-stream\`, flush events as they are produced, and do not buffer the complete response.
+   - An \`http\` website must package its complete static/templates directory in manifest.files. Every URL that targets this service MUST stay relative because the CrewMeld gateway publishes it below a dynamic \`/services/{id}/\` prefix. This includes HTML assets, navigation, CSS URLs, fetch/XHR, EventSource, and WebSocket paths.
+     - Correct: \`static/style.css\`, \`./static/app.js\`, and \`fetch('api/weather')\`.
+     - Wrong: \`/static/style.css\`, \`fetch('/api/weather')\`, hard-coded application hosts, or a hard-coded \`/services/{id}/\` prefix.
+     - A full URL such as \`https://api.example.com/data\` is allowed only for an external third-party service, and its domain must be declared in dependencies.domains.
+     - Before finishing, scan every HTML, CSS, and JavaScript file for root-relative or hard-coded self-service URLs and replace them with relative URLs.
    - **Default listen port is 9876** (manifest.service.port = 9876). The service started by start.sh MUST actually listen on this port;
      manifest.service.port MUST equal the port your code / start.sh actually binds (mismatch → platform can't connect).
-   - How the platform invokes you: POST manifest.service.path, with **input parameters in the JSON request body** (Content-Type: application/json),
+   - For service.type=\`json\`, the platform invokes manifest.service.path with **input parameters in the JSON request body** (Content-Type: application/json),
      where the body is the parameter object defined by manifest.input, e.g. {"city": "Beijing"}; the response body returns JSON (matching manifest.output).
    - Your code **MUST read parameters from the JSON body, never from the URL query string** (the platform doesn't put anything in the query string):
      ❌ Flask: city = request.args.get("city")                         (query string → never set → 400)
@@ -460,7 +466,8 @@ After requirements clarification is complete, output according to the following 
        - Referenced source files (main.py, etc.) must actually exist
 
     **E. kind matches the manifest fields**
-       - kind="service" → service.method MUST be "POST", service.port defaults to 9876; the HTTP service started by start.sh must actually listen on service.port (matches the port your code binds); the code reads parameters from the JSON body (request.get_json(), not request.args query string)
+       - kind="service" → service.type MUST be \`json\`, \`http\`, or \`sse\`; service.port defaults to 9876; the HTTP service started by start.sh must actually listen on service.port (matches the port your code binds)
+       - service.type="json" → read parameters from the JSON body; service.type="http" → package all referenced static/template directories and use relative asset URLs; service.type="sse" → return \`text/event-stream\` and flush events incrementally
        - kind="script" → no service field allowed; start.sh MUST read input via the stdin protocol (see ❌/✅ examples in item 8)
 
     **F. dependencies.domains matches the external domains the code actually hits**

@@ -6,6 +6,7 @@ import { Textarea } from '@/components/ui/textarea'
 import type { OnConnectionChange } from '@/lib/dev-studio/connection-context'
 import type { ManifestT } from '@/lib/dev-studio/manifest-reader'
 import type { DoneEvent, PhaseEvent, ResultEvent } from '@/lib/dev-studio/sandbox-loader'
+import type { ServiceSseEvent } from '@/lib/dev-studio/service-test-result'
 import { useTranslation } from '@/hooks/use-translation'
 import { AdoptConfirmDialog } from './adopt-confirm-dialog'
 import { ConnectionPicker } from './connection-picker'
@@ -101,6 +102,7 @@ export function TestPanel({
   const [running, setRunning] = useState(false)
   const [events, setEvents] = useState<PhaseEvent[]>([])
   const [result, setResult] = useState<RunTestResult | null>(null)
+  const [streamedServiceEvents, setStreamedServiceEvents] = useState<ServiceSseEvent[]>([])
   const [doneEvent, setDoneEvent] = useState<DoneEvent | null>(null)
   const [adoptOpen, setAdoptOpen] = useState(false)
 
@@ -214,6 +216,7 @@ export function TestPanel({
     setRunError(null)
     setEvents([])
     setResult(null)
+    setStreamedServiceEvents([])
     setDoneEvent(null)
 
     const abort = new AbortController()
@@ -253,6 +256,7 @@ export function TestPanel({
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buf = ''
+      let liveServiceEvents: ServiceSseEvent[] = []
 
       while (true) {
         const { value, done } = await reader.read()
@@ -271,18 +275,39 @@ export function TestPanel({
 
             if (eventType === 'phase') {
               setEvents((prev) => [...prev, parsed as unknown as PhaseEvent])
+            } else if (eventType === 'service-event') {
+              const streamEvent = parsed as unknown as {
+                index: number
+                event: ServiceSseEvent
+              }
+              liveServiceEvents = [...liveServiceEvents]
+              liveServiceEvents[streamEvent.index] = streamEvent.event
+              liveServiceEvents = liveServiceEvents.filter(Boolean)
+              setStreamedServiceEvents(liveServiceEvents)
             } else if (eventType === 'result') {
               const resultEvt = parsed as unknown as ResultEvent
+              const service = resultEvt.service
+                ? {
+                    ...resultEvt.service,
+                    sseEvents:
+                      resultEvt.service.sseEvents && resultEvt.service.sseEvents.length > 0
+                        ? resultEvt.service.sseEvents
+                        : liveServiceEvents,
+                  }
+                : undefined
               setResult({
                 result: {
                   stdout:
                     typeof resultEvt.data === 'string'
                       ? resultEvt.data
-                      : JSON.stringify(resultEvt.data ?? '', null, 2),
+                      : resultEvt.data === undefined
+                        ? ''
+                        : JSON.stringify(resultEvt.data, null, 2),
                   stderr: resultEvt.schemaError ?? '',
                   exitCode: resultEvt.success ? 0 : 1,
                   durationMs: 0,
                 },
+                service,
               })
             } else if (eventType === 'done') {
               setDoneEvent(parsed as unknown as DoneEvent)
@@ -377,6 +402,7 @@ export function TestPanel({
           setResult(null)
           setRunError(null)
           setEvents([])
+          setStreamedServiceEvents([])
           setDoneEvent(null)
         }}
         onAdopt={() => {
@@ -396,9 +422,19 @@ export function TestPanel({
       {/* Progress timeline — visible once streaming starts */}
       {events.length > 0 && <TestProgress events={events} />}
 
-      {result && (
+      {(result || streamedServiceEvents.length > 0) && (
         <TestResult
-          result={result}
+          result={
+            result ?? {
+              result: { stdout: '', stderr: '', exitCode: 0, durationMs: 0 },
+              service: {
+                serviceType: 'sse',
+                contentType: 'text/event-stream',
+                sseEvents: streamedServiceEvents,
+                truncated: false,
+              },
+            }
+          }
           manifest={manifest}
           sessionId={sessionId}
           executionId={doneEvent?.executionId}

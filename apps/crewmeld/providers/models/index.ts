@@ -342,3 +342,31 @@ export function getMaxOutputTokensForModel(modelId: string): number {
   }
   return STANDARD_MAX_OUTPUT_TOKENS
 }
+
+// ---------------------------------------------------------------------------
+// Context window
+// ---------------------------------------------------------------------------
+
+/** Fallback context window for models absent from the registry (e.g. custom/BYOK model names). */
+const STANDARD_CONTEXT_WINDOW = 32000
+
+/**
+ * Get the context window (in tokens) for a specific model.
+ *
+ * Falls back to {@link STANDARD_CONTEXT_WINDOW} for models that aren't in the
+ * static registry (custom BYOK model names) or that omit `contextWindow`.
+ *
+ * @param modelId - The model ID
+ */
+export function getContextWindowForModel(modelId: string): number {
+  const normalizedModelId = modelId.toLowerCase()
+  for (const provider of Object.values(PROVIDER_DEFINITIONS)) {
+    for (const model of provider.models) {
+      const baseModelId = model.id.toLowerCase()
+      if (normalizedModelId === baseModelId || normalizedModelId.startsWith(`${baseModelId}-`)) {
+        return model.contextWindow || STANDARD_CONTEXT_WINDOW
+      }
+    }
+  }
+  return STANDARD_CONTEXT_WINDOW
+}

@@ -12,6 +12,14 @@ import {
   RagflowClientError,
   RagflowErrorType,
 } from '@/lib/ragflow'
+import {
+  createDatasetWithMetadata,
+  InvalidKnowledgeThresholdError,
+  reconcileAndMergeDatasetMetadata,
+  PartialDatasetCreationError,
+} from '@/lib/ragflow/knowledge-metadata'
+import { knowledgeMetadataRepository } from '@/lib/ragflow/knowledge-metadata-repository'
+import type { KnowledgeBaseType } from '@crewmeld/db/schema'
 
 const logger = createLogger('RagflowDatasetsAPI')
 
@@ -33,7 +41,7 @@ export async function GET(request: NextRequest) {
     const config = await loadRagflowConfig()
     const datasets = await listDatasets(config, { page, pageSize, name })
 
-    return apiOk(datasets)
+    return apiOk(await reconcileAndMergeDatasetMetadata(knowledgeMetadataRepository, datasets))
   } catch (error) {
     if (error instanceof RagflowClientError) {
       if (error.type === RagflowErrorType.ConfigMissing) {
@@ -59,7 +67,14 @@ async function _POST(request: NextRequest) {
       return apiAuthErr(auth)
     }
 
-    const body = (await request.json()) as { name?: string; description?: string }
+    const body = (await request.json()) as {
+      name?: string
+      description?: string
+      type?: KnowledgeBaseType
+      thresholdOverride?: number | null
+      enabled?: boolean
+      navigation?: Record<string, unknown>
+    }
     if (!body.name?.trim()) {
       return apiErr('api.ragflow.datasetNameRequired', { status: 400 })
     }
@@ -68,14 +83,47 @@ async function _POST(request: NextRequest) {
     // Apply the project-wide default parser_config (auto_keywords +
     // auto_questions + layout_recognize) so every new dataset benefits from
     // LLM-assisted chunk tagging at ingestion time.
-    const dataset = await createDataset(config, {
-      name: body.name.trim(),
-      description: body.description?.trim(),
-      parser_config: DEFAULT_PARSER_CONFIG,
-    })
+    if (body.type !== undefined && body.type !== 'document' && body.type !== 'qa') {
+      return apiErr('api.common.invalidParams', { status: 400 })
+    }
+    const creation = await createDatasetWithMetadata(
+      knowledgeMetadataRepository,
+      {
+        create: () => createDataset(config, {
+          name: body.name!.trim(),
+          description: body.description?.trim(),
+          chunk_method: body.type === 'qa' ? 'qa' : undefined,
+          parser_config: DEFAULT_PARSER_CONFIG,
+        }),
+        delete: (datasetId) => deleteDataset(config, datasetId),
+      },
+      {
+        name: body.name.trim(),
+        type: body.type,
+        thresholdOverride: body.thresholdOverride,
+        enabled: body.enabled,
+        navigation: body.navigation,
+      }
+    )
 
-    return apiOk(dataset, { status: 201 })
+    return apiOk({ ...creation.dataset, metadata: creation.metadata, type: creation.metadata.type }, { status: 201 })
   } catch (error) {
+    if (error instanceof InvalidKnowledgeThresholdError) {
+      return apiErr('api.common.invalidParams', {
+        status: 400,
+        extra: { code: error.code },
+      })
+    }
+    if (error instanceof PartialDatasetCreationError) {
+      logger.error('RAGFlow dataset metadata compensation failed', {
+        code: error.code,
+        datasetId: error.datasetId,
+      })
+      return apiErr('api.common.invalidParams', {
+        status: 500,
+        extra: { code: error.code, datasetId: error.datasetId },
+      })
+    }
     if (error instanceof RagflowClientError) {
       return apiErr('api.ragflow.upstreamError', { status: 502, extra: { detail: error.message } })
     }

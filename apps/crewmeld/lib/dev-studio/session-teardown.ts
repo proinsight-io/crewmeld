@@ -14,6 +14,7 @@ import { eq } from 'drizzle-orm'
 import { getDevStudioEnv } from './env'
 import { OpenSandboxClient } from './opensandbox-client'
 import { paths } from './paths'
+import { destroySessionServicePreview } from './service-preview-lifecycle'
 import type { SessionRecord } from './session-store'
 
 const log = createLogger('dev-studio:session-teardown')
@@ -29,6 +30,8 @@ const log = createLogger('dev-studio:session-teardown')
  * @param session - The fully-loaded session row to tear down.
  */
 export async function purgeSession(session: SessionRecord): Promise<void> {
+  await destroySessionServicePreview(session.id)
+
   // Best-effort container destroy; the OpenSandbox TTL is the backstop.
   if (session.activeContainerId) {
     try {
@@ -59,10 +62,11 @@ export async function purgeSession(session: SessionRecord): Promise<void> {
       await rm(sessionRoot, { recursive: true, force: true })
     } catch (e) {
       // Non-fatal; the DB records are already gone.
-      log.warn(
-        { err: e, sessionRoot, sessionId: session.id },
-        'failed to delete workspace directory'
-      )
+      log.warn('failed to delete workspace directory', {
+        err: e,
+        sessionRoot,
+        sessionId: session.id,
+      })
     }
   }
 }

@@ -148,6 +148,37 @@ export async function getConversationFile(key: string): Promise<{
   }
 }
 
+/** Read a conversation attachment into memory for OCR and other bounded processors. */
+export async function readConversationFileBytes(
+  key: string,
+  maxBytes = 6 * 1024 * 1024
+): Promise<Buffer | null> {
+  const parts = key.split('/')
+  if (parts.length !== 3 || parts[0] !== 'conversations' || !parts[1]) return null
+  const convId = parts[1]
+  const safeName = nodePath.basename(parts[2].replace(/^\d+_/, ''))
+  try {
+    const [convRow] = await db
+      .select({ createdAt: conversations.createdAt })
+      .from(conversations)
+      .where(eq(conversations.id, convId))
+      .limit(1)
+    if (!convRow) return null
+    const root = paths.conversationIo.forBff(convId, convRow.createdAt)
+    const filePath = paths.safeResolve(root, safeName)
+    if (!filePath) return null
+    const stat = await fs.stat(filePath)
+    if (stat.size > maxBytes) throw new Error(`Attachment exceeds OCR limit (${maxBytes} bytes)`)
+    return await fs.readFile(filePath)
+  } catch (error) {
+    logger.warn('Conversation file byte read failed', {
+      key,
+      error: error instanceof Error ? error.message : String(error),
+    })
+    return null
+  }
+}
+
 /**
  * Delete a conversation's uploaded files from its NFS conv-io directory.
  *

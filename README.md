@@ -83,7 +83,7 @@ Visual canvas editor: drag-and-drop node orchestration, edges defining flow, nod
 
 Execution tracking: execution record list (filterable by SOP type / time / status), step-level timeline, streaming logs, and pending approval queue.
 
-### 3. Tool Template & Instance System
+### 3. Tool Template, Instance & Service Publishing
 
 ![Tool Template & Instance System](./intro/en/04-Tools.gif)
 
@@ -97,6 +97,22 @@ Template sources:
 ZIP import/export (cross-environment migration): environment variables marked as "secret" are cleared on export and must be filled in manually after import to prevent credential leakage.
 
 OpenSandbox deployment: tool instance code runs in isolated OpenSandbox containers (Docker or Kubernetes runtime), separated from the main platform process; supports JavaScript and Python; sandbox failures do not affect platform stability.
+
+Dev Studio can now build and test three service types declared by `service.type` in the tool manifest:
+
+| Type | Use Case | Test & Invocation Behavior |
+|------|----------|----------------------------|
+| `json` | Structured tool / API | JSON request and response, published through the tool invocation API |
+| `http` | Web pages or general HTTP services | Interactive HTML preview; methods, query strings, redirects, and relative static assets are proxied intact |
+| `sse` | Streaming HTTP services | Event-stream preview and transparent streaming with proxy buffering disabled |
+
+Service publishing separates development from runtime delivery:
+
+- Authentication — choose API Key or anonymous access; invocation documentation is available for both modes
+- Network exposure — internal by default at `/services/{instanceId}/`; optionally publish through a shared public origin or a service-specific domain and reverse proxy
+- Web entry links — published HTTP pages expose a clickable service link to bound digital employees, preferring the public URL and falling back to the internal URL
+- Horizontal scaling — set or change 1–20 OpenSandbox replicas (`instance-0` ... `instance-n`); only ready replicas receive traffic
+- Load balancing — the CrewMeld service gateway uses Redis-backed round robin across application replicas, with a local fallback and browser-session affinity
 
 ### 4. Channel Integration
 
@@ -125,6 +141,9 @@ The interaction channel between users and digital employees:
 - History browsing — dual-pane layout (conversation list + channel tag on the left, message details on the right), filterable by channel
 - Soft delete — conversation deletion is logical (soft delete), preserving traceability
 - Automatic language adaptation — based on automatic detection of the message language; LLM replies use the language of the user's message
+- Customer-service mode — restrict a digital employee to scoped knowledge retrieval without executing SOPs or external tools
+- Multimodal input — files, images, and PDFs can be processed by a vision model or Baidu AI Cloud OCR before answering
+- Human handoff — the original conversation can move to the human-service workbench without losing message history
 
 ### 6. Knowledge Base (RAGFlow)
 
@@ -138,6 +157,10 @@ Integrated capabilities:
 - Hybrid retrieval — vector search (powered by the built-in bge-m3 Chinese model) fused with BM25 keyword search
 - Many-to-many binding — one employee can bind multiple knowledge bases; one knowledge base can be used by multiple employees
 - Search logs — search behavior is persisted, serving as foundational data for citation analysis and recall optimization
+- QA operations — manage question-answer entries, preview imports, import/export CSV, and synchronize changes to RAGFlow
+- Question analytics — aggregate real user questions, classify or merge similar questions, promote them into QA, and surface per-category Top 3 questions
+- Knowledge-gap tracking — record unanswered or low-similarity questions with occurrence counts for continuous knowledge-base improvement
+- Rich document delivery — extract and bind document images so customer-service answers can return relevant visual content
 
 ### 7. LLM Providers
 
@@ -165,6 +188,19 @@ Visual scheduled-job management with configurable timezones.
 - Structured logging — outputs structured logs for external aggregation
 - Multi-language UI — supports Simplified Chinese and English, switching automatically based on browser / cookie
 
+### 10. AI Customer Service
+
+CrewMeld can turn a digital employee into a knowledge-grounded customer-service agent while keeping the same conversation runtime used by the admin console, public APIs, the standalone H5 client, and messaging channels.
+
+- Service persona — enable customer-service mode and configure a greeting with identity variables such as `{{user.name}}` and `{{user.email}}`
+- Category-scoped support — customers can select a product or business knowledge base; retrieval and suggested questions remain within that category
+- Top questions — each category displays up to three frequently asked questions ranked from real consultation history
+- Multimodal understanding — process uploaded files and safe HTTPS attachments through a configured vision model or Baidu OCR, with an optional source-domain allowlist
+- Knowledge operations — maintain document and QA knowledge bases, analyze repeated questions, and review questions that the AI could not answer reliably
+- Human support — handoffs move through open, assigned, and resolved states; authorized support users can claim, reply to, and close a conversation
+- Standalone H5 client — supports conversation creation, history, file upload, knowledge-category selection, and SSE streaming replies
+- Digital employee API — publish the complete conversation capability with per-key identity, allowed origins, support-user allowlists, OpenAPI, and Swagger documentation
+
 ---
 
 ## Technical Architecture
@@ -189,10 +225,10 @@ Visual scheduled-job management with configurable timezones.
 └─────────────────────────────────────────────────────────────┘
                           ↓ LLM decides + invokes tools
 ┌─────────────────────────────────────────────────────────────┐
-│  Tool Layer │ OpenSandbox-isolated Node.js / Python         │
-│             │ processes, code-isolated. AI writes programs  │
-│             │ that operate external systems via user-added  │
-│             │ "connections"                                 │
+│  Tool & Service Layer │ OpenSandbox-isolated Node.js /      │
+│                       │ Python processes; JSON tools and     │
+│                       │ HTTP/SSE services use connections    │
+│                       │ to operate external systems          │
 └─────────────────────────────────────────────────────────────┘
                           ↓ accessed via user-added connections
 ┌─────────────────────────────────────────────────────────────┐
@@ -205,6 +241,57 @@ Visual scheduled-job management with configurable timezones.
 │  Infrastructure │ PostgreSQL + Redis + MinIO + RAGFlow + LLM│
 └─────────────────────────────────────────────────────────────┘
 ```
+
+### AI Customer Service Architecture
+
+```text
+Web / Customer-service H5 / Channels / Digital Employee API
+                              │
+                              ▼
+               Identity + API Key + Origin Policy
+                              │
+                              ▼
+                    Shared Conversation Runtime
+                 ┌────────────┼──────────────┐
+                 ▼            ▼              ▼
+        Scoped RAG/QA     OCR & files     Human handoff
+                 │            │              │
+                 ▼            ▼              ▼
+         RAGFlow + DB   Vision/Baidu OCR  Support workbench
+                 └────────────┼──────────────┘
+                              ▼
+          SSE response + persisted conversation history
+                              │
+                              ▼
+       Top questions + unanswered-question operations
+```
+
+All entry points share the same conversation runtime. Customer-service mode applies a runtime guard that allows grounded knowledge retrieval but skips SOP and tool execution. PostgreSQL is the management source for QA entries, question analytics, and handoff state, while RAGFlow handles document parsing and retrieval.
+
+### Published Service Architecture
+
+```text
+Browser / API client
+          │
+          ▼
+Public reverse proxy (optional) or internal service URL
+          │
+          ▼
+CrewMeld Service Gateway
+  authentication · path forwarding · session affinity
+          │
+          ▼
+Redis-backed round-robin selector
+       ┌──┴──────────┐
+       ▼             ▼
+instance-0       instance-1 ... instance-n
+       │             │
+       └──────┬──────┘
+              ▼
+       OpenSandbox runtimes
+```
+
+CrewMeld performs service-level load balancing in its application gateway; Nginx or an Ingress is only needed when exposing a public domain. Scaling reconciles independent OpenSandbox runtimes, routes traffic only to ready replicas, and preserves HTTP paths, query strings, response bodies, redirects, and SSE streams.
 
 ### Core Tech Stack
 
@@ -220,7 +307,10 @@ Visual scheduled-job management with configurable timezones.
 | Real-time | Socket.IO + Redis Adapter |
 | Object Storage | MinIO (S3-compatible) |
 | Knowledge Base | RAGFlow v0.23.1 (standalone service) |
-| Tool Sandbox | OpenSandbox (Docker / Kubernetes runtime) |
+| Tool & Service Runtime | OpenSandbox (Docker / Kubernetes runtime) |
+| Service Gateway | Next.js transparent HTTP/SSE proxy + Redis round robin |
+| Customer Service | Shared conversation runtime + H5 client + human handoff workbench |
+| OCR | Multimodal LLM or Baidu AI Cloud OCR |
 | Auth | better-auth |
 | Deployment | Docker Compose / Helm / Kubernetes |
 | Testing | Vitest unit tests + Playwright E2E |
@@ -235,7 +325,8 @@ crewmeld/
 │   ├── app/api/employee/     # BFF routes
 │   ├── providers/            # LLM adapters
 │   ├── tools/                # HTTP tool implementations
-│   └── lib/                  # Core service layer (SOP / conversation / channels / k8s / i18n)
+│   └── lib/                  # SOP / conversation / customer service / tool gateway / channels / k8s / i18n
+├── apps/customer-service-h5/ # Standalone customer-service Web client
 ├── packages/
 │   ├── db/                   # Database schema + migrations
 │   └── logger/               # Structured logging
@@ -285,6 +376,12 @@ Required (no defaults — must be set explicitly):
 | `DATABASE_URL` | PostgreSQL connection string |
 | `NEXT_PUBLIC_APP_URL` | App base URL (defaults to `http://localhost:6100`) |
 | `REDIS_URL` | Required for queues and real-time clustering |
+
+Optional published-service configuration:
+
+| Variable | Description |
+|----------|-------------|
+| `CREWMELD_SERVICE_PUBLIC_BASE_URL` | Shared public origin for published services, such as `https://services.example.com`; proxy `/services/{instanceId}/` to CrewMeld |
 
 Secrets (auto-generated and written to `.env` when launching via `start.sh` / `start.bat` / `start.ps1`):
 

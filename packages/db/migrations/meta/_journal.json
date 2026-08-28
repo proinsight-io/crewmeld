@@ -15,6 +15,216 @@
       "when": 1777130559632,
       "tag": "0001_faithful_the_enforcers",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1779182922461,
+      "tag": "0002_seed_openclaw_tool",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1779265800000,
+      "tag": "0003_update_openclaw_seed",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1779346800000,
+      "tag": "0004_sandbox_permissions",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1779346860000,
+      "tag": "0005_add_tools_needs_file_mount",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1779582058520,
+      "tag": "0006_tool_dev_studio_b_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1779751120564,
+      "tag": "0007_tool_dev_last_package",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1779846571558,
+      "tag": "0008_confused_robin_chapel",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1779980009745,
+      "tag": "0009_naive_anthem",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1779980483505,
+      "tag": "0010_far_matthew_murdock",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1780301576901,
+      "tag": "0011_fresh_sphinx",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1780799315989,
+      "tag": "0012_add_tool_kind_apispec",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1780901143549,
+      "tag": "0013_glossy_namorita",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1780915538520,
+      "tag": "0014_massive_blur",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1781146508020,
+      "tag": "0015_narrow_mulholland_black",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1781663524528,
+      "tag": "0016_damp_young_avengers",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1781691374161,
+      "tag": "0017_glossy_mathemanic",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1781692667658,
+      "tag": "0018_watery_supernaut",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1782339451734,
+      "tag": "0019_dry_king_cobra",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1785580000000,
+      "tag": "0020_knowledge_bases_qa",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1785660000000,
+      "tag": "0021_employee_api_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1785661000000,
+      "tag": "0021_tool_instance_api_key_identity",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1785662000000,
+      "tag": "0022_human_handoffs",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1785744000000,
+      "tag": "0024_knowledge_question_analytics",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1785830400000,
+      "tag": "0025_employee_api_key_origins",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1785916800000,
+      "tag": "0026_knowledge_unanswered_questions",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1785916860000,
+      "tag": "0027_qa_permissions",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1785916920000,
+      "tag": "0028_knowledge_document_images",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1786003200000,
+      "tag": "0029_ragflow_post_parse_image_binding",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1787404575482,
+      "tag": "0020_faulty_paibok",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1787836800000,
+      "tag": "0031_ai_customer_service_backfill",
+      "breakpoints": true
     }
   ]
 }

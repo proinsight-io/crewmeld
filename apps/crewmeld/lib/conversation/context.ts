@@ -2,12 +2,29 @@
  * Context window management — sliding window + token budget
  */
 
+import { getContextWindowForModel } from '@/providers/models'
 import type { ContextWindowConfig, EngineMessage } from './types'
 
 const DEFAULT_CONFIG: ContextWindowConfig = {
-  maxTokens: 8000,
+  maxTokens: 32000,
   reservedForResponse: 2000,
   reservedForTools: 500,
+}
+
+/**
+ * Resolve a context-window config sized to the employee's actual bound model,
+ * instead of the fixed {@link DEFAULT_CONFIG}. A customer-service system
+ * prompt carries the full knowledge-base reference block, which alone can run
+ * into the thousands of tokens — sizing the budget off a generic constant
+ * rather than the model's real window silently starves the conversation of
+ * any room for history or even the current user message.
+ */
+export function resolveContextConfig(modelId: string): ContextWindowConfig {
+  return {
+    maxTokens: getContextWindowForModel(modelId),
+    reservedForResponse: DEFAULT_CONFIG.reservedForResponse,
+    reservedForTools: DEFAULT_CONFIG.reservedForTools,
+  }
 }
 
 /**
@@ -83,15 +100,21 @@ export function buildContextWindow(
   const budget =
     config.maxTokens - config.reservedForResponse - config.reservedForTools - systemTokens
 
-  if (budget <= 0 || messages.length === 0) {
+  if (messages.length === 0) {
     return []
   }
 
-  // Reverse iterate from newest to oldest
-  const selected: EngineMessage[] = []
-  let usedTokens = 0
+  // The newest message is the user's current turn — drop everything else
+  // before ever dropping this one. A model given a system prompt with no
+  // messages at all has no idea what was asked, and free-associates instead
+  // (this is what a KB-heavy system prompt eating the whole token budget
+  // used to produce). Older history is expendable; the current question isn't.
+  const newest = messages[messages.length - 1]
+  const selected: EngineMessage[] = [newest]
+  let usedTokens = estimateMessageTokens(newest)
 
-  for (let i = messages.length - 1; i >= 0; i--) {
+  // Reverse iterate remaining history from newest to oldest
+  for (let i = messages.length - 2; i >= 0; i--) {
     const msg = messages[i]
     const msgTokens = estimateMessageTokens(msg)
 
